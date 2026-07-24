@@ -206,6 +206,18 @@ type UserIpRow = {
   hit_count: number;
 };
 
+type PersonalRecordSet = {
+  reps: number;
+  weight: string | null;
+};
+
+type PersonalRecord = {
+  exerciseName: string;
+  kind: 'estimated_1rm' | 'reps';
+  current: PersonalRecordSet;
+  previous: PersonalRecordSet;
+};
+
 const adminIdentifiers = new Set(
   ['mzootfb@gmail.com', 'mzootfb', ...(env.ADMIN_IDENTIFIERS ?? '').split(',')]
     .map((value) => value.trim().toLowerCase())
@@ -218,6 +230,25 @@ function refreshTokenHash(token: string) {
 
 function publicUser(user: Pick<UserRow, 'id' | 'username' | 'name'>) {
   return { id: user.id, username: user.username, name: user.name ?? user.username };
+}
+
+function setWeight(set: PersonalRecordSet) {
+  const value = set.weight === null ? 0 : Number(set.weight);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function estimatedOneRepMax(set: PersonalRecordSet) {
+  return setWeight(set) * (1 + set.reps / 30);
+}
+
+function detectPersonalRecord(current: PersonalRecordSet, previousSets: PersonalRecordSet[], exerciseName: string): PersonalRecord | null {
+  const weighted = setWeight(current) > 0;
+  const comparable = previousSets.filter((set) => weighted ? setWeight(set) > 0 : setWeight(set) <= 0);
+  if (!comparable.length) return null;
+  const score = weighted ? estimatedOneRepMax : (set: PersonalRecordSet) => set.reps;
+  const previous = comparable.reduce((best, set) => score(set) > score(best) ? set : best);
+  if (score(current) <= score(previous)) return null;
+  return { exerciseName, kind: weighted ? 'estimated_1rm' : 'reps', current, previous };
 }
 
 async function signAccessToken(user: Pick<UserRow, 'id' | 'username'>) {
@@ -869,9 +900,17 @@ app.post('/v1/sessions/:id/sets', async (request, reply) => {
   const params = idParamsSchema.safeParse(request.params);
   const parsed = workoutSetSchema.safeParse(request.body);
   if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid workout set payload.' });
-  const [session, exercise] = await Promise.all([
+  const [session, exercise, previousSets] = await Promise.all([
     sql<{ id: string; status: string }[]>`SELECT id, status FROM workout_sessions WHERE id = ${params.data.id} AND user_id = ${userId} LIMIT 1`,
-    sql<{ id: string }[]>`SELECT id FROM exercises WHERE id = ${parsed.data.exerciseId} LIMIT 1`,
+    sql<{ id: string; name: string }[]>`SELECT id, name FROM exercises WHERE id = ${parsed.data.exerciseId} LIMIT 1`,
+    parsed.data.isWarmup
+      ? Promise.resolve([] as PersonalRecordSet[])
+      : sql<PersonalRecordSet[]>`
+          SELECT wset.reps, wset.weight
+          FROM workout_sets wset
+          INNER JOIN workout_sessions ws ON ws.id = wset.session_id
+          WHERE ws.user_id = ${userId} AND wset.exercise_id = ${parsed.data.exerciseId} AND wset.is_warmup = false
+        `,
   ]);
   const currentSession = session[0];
   if (!currentSession) return reply.code(404).send({ error: 'Workout session not found.' });
@@ -885,7 +924,17 @@ app.post('/v1/sessions/:id/sets', async (request, reply) => {
       ${parsed.data.reps}, ${parsed.data.weight?.toString() ?? null}, ${parsed.data.isWarmup ?? false}, now()
     ) RETURNING id, set_order, created_at
   `;
-  return reply.code(201).send({ set: { id: set.id, exerciseId: parsed.data.exerciseId, setOrder: set.set_order, reps: parsed.data.reps, weight: parsed.data.weight ?? null, isWarmup: parsed.data.isWarmup ?? false, createdAt: set.created_at } });
+  const personalRecord = parsed.data.isWarmup
+    ? null
+    : detectPersonalRecord(
+        { reps: parsed.data.reps, weight: parsed.data.weight?.toString() ?? null },
+        previousSets,
+        exercise[0].name,
+      );
+  return reply.code(201).send({
+    set: { id: set.id, exerciseId: parsed.data.exerciseId, setOrder: set.set_order, reps: parsed.data.reps, weight: parsed.data.weight ?? null, isWarmup: parsed.data.isWarmup ?? false, createdAt: set.created_at },
+    personalRecord,
+  });
 });
 
 app.patch('/v1/sets/:id', async (request, reply) => {

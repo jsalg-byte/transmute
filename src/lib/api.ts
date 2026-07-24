@@ -339,7 +339,15 @@ export async function addExerciseToWorkoutSession(sessionId: string, payload: { 
 }
 
 export async function addWorkoutSet(sessionId: string, payload: { exerciseId: string; reps: number; weight?: number; isWarmup?: boolean }) {
-  return authenticatedRequest(`/v1/sessions/${sessionId}/sets`, { method: 'POST', body: JSON.stringify(payload) });
+  return authenticatedRequest<{
+    set: { id: string; exerciseId: string; setOrder: number; reps: number; weight: number | null; isWarmup: boolean; createdAt: string };
+    personalRecord: {
+      exerciseName: string;
+      kind: 'estimated_1rm' | 'reps';
+      current: { reps: number; weight: string | null };
+      previous: { reps: number; weight: string | null };
+    } | null;
+  }>(`/v1/sessions/${sessionId}/sets`, { method: 'POST', body: JSON.stringify(payload) });
 }
 
 export async function updateWorkoutSet(setId: string, payload: { exerciseId: string; reps: number; weight?: number; isWarmup?: boolean }) {

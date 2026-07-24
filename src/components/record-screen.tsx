@@ -75,6 +75,11 @@ function label(value: string | null | undefined) {
 function date(value: string) {
   return new Date(value).toLocaleDateString();
 }
+function durationFromMinutes(minutes: number) {
+  const hours = Math.floor(minutes / 60);
+  const remainder = Math.max(0, minutes % 60);
+  return `${hours}h ${remainder}m`;
+}
 function Card({ title, meta, imageUrl }: { title: string; meta?: string; imageUrl?: string | null }) {
   return (
     <View style={styles.card}>
@@ -1188,10 +1193,15 @@ function ProgressContent({
   refresh: () => Promise<void>;
 }) {
   const [note, setNote] = useState("");
+  const [capturedAt, setCapturedAt] = useState(() => new Date().toISOString().slice(0, 10));
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const choosePhoto = async () => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(capturedAt)) {
+      setNotice("Enter the photo date as YYYY-MM-DD.");
+      return;
+    }
     setSaving(true);
     setNotice(null);
     try {
@@ -1209,7 +1219,7 @@ function ProgressContent({
         fileName: photo.fileName ?? `progress-${Date.now()}.jpg`,
         mimeType: photo.mimeType ?? "image/jpeg",
         sizeBytes: photo.fileSize,
-        capturedAt: new Date().toISOString(),
+        capturedAt,
         note,
       });
       setNote("");
@@ -1253,6 +1263,13 @@ function ProgressContent({
       </Text>
       <View style={styles.formCard}>
         <Text style={styles.cardTitle}>Add a check-in</Text>
+        <TextInput
+          value={capturedAt}
+          onChangeText={setCapturedAt}
+          placeholder="Photo date (YYYY-MM-DD)"
+          placeholderTextColor="#655D57"
+          style={styles.input}
+        />
         <TextInput
           value={note}
           onChangeText={setNote}
@@ -1775,6 +1792,15 @@ function FastingContent({
   const [note, setNote] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!record.fasting.active) return;
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [record.fasting.active]);
+  const activeMinutes = record.fasting.active
+    ? Math.max(0, Math.floor((now - new Date(record.fasting.active.started_at).getTime()) / 60_000))
+    : 0;
   const toggle = async () => {
     setSaving(true);
     setNotice(null);
@@ -1802,7 +1828,7 @@ function FastingContent({
       <Text style={styles.title}>Fasting</Text>
       <Text style={styles.body}>
         {record.fasting.active
-          ? `Active since ${date(record.fasting.active.started_at)}.`
+          ? `${durationFromMinutes(activeMinutes)} elapsed · active since ${date(record.fasting.active.started_at)}.`
           : "No active fast."}
       </Text>
       <View style={styles.formCard}>
