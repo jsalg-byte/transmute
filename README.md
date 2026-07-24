@@ -1,56 +1,85 @@
-# Welcome to your Expo app 👋
+# Transmute
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Transmute is a universal fitness record: one Expo codebase for iOS, Android, and web, backed by a standalone API that connects to the deployed Coolify Postgres database.
 
-## Get started
+The project is deliberately independent of the legacy Next.js app. The Expo client never connects to Postgres, R2, or NextAuth directly.
 
-1. Install dependencies
+## Repository layout
 
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
+```text
+src/                 Expo Router client
+src/app/             Shared iOS, Android, and web routes
+api/                 Standalone Fastify API for Coolify
+api/migrations/      Additive production database migrations
+assets/transmute/    Licensed alchemical and brand SVG assets
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+## Local development
 
-### Other setup steps
+Install the Expo client dependencies and start the development server:
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+```sh
+npm install
+npm start
+```
 
-## Learn more
+For real sign-in and registration, create a local `.env.local` file with the public URL of the deployed Transmute API:
 
-To learn more about developing your project with Expo, look at the following resources:
+```sh
+EXPO_PUBLIC_API_BASE_URL=https://api.transmute.example
+```
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+This is a public client setting. Never add `DATABASE_URL`, R2 credentials, JWT secrets, or other server secrets to an Expo environment file.
 
-## Join the community
+## Platforms
 
-Join our community of developers creating universal apps.
+The client is shared across all supported platforms:
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+```sh
+npm run ios
+npm run android
+npm run web
+```
+
+The root routes include a three-stage pre-auth introduction, username/password registration and sign-in, a four-stage first-login orientation, and the signed-in workbench.
+
+## Web production build
+
+Expo web is a static site. Build it for deployment with:
+
+```sh
+npx expo export --platform web
+```
+
+Coolify should serve the generated static output. Do not run `expo start` in production; it is only a local development server.
+
+Set `EXPO_PUBLIC_API_BASE_URL` in the web build environment to the public HTTPS URL of the standalone API. The web build and native apps use the same API contract.
+
+## API and Coolify
+
+The API lives in [`api/`](./api). Deploy it as a **separate** Coolify application from the same Git repository:
+
+- Base directory: `/api`
+- Dockerfile: `Dockerfile`
+- `DATABASE_URL`: copy the existing production Coolify Postgres URL into this server-only variable
+- `JWT_ACCESS_SECRET`: a new random value of at least 32 characters; do not reuse NextAuth secrets
+- `AUTH_ISSUER=transmute-api`
+- `CORS_ORIGINS`: the final Transmute web URL, plus `http://localhost:8081` when local web access is needed
+
+Before the first API deploy, apply [`api/migrations/001_mobile_sessions.sql`](./api/migrations/001_mobile_sessions.sql). It only adds the `mobile_sessions` table for hashed mobile refresh tokens; it does not modify existing user data.
+
+The API returns short-lived access tokens and rotating refresh tokens. The Expo client stores them in Expo SecureStore; browser-cookie sessions from the old web app are not used.
+
+## Quality checks
+
+```sh
+npm run lint
+npx tsc --noEmit
+npm run api:typecheck
+npm run api:build
+npx expo export --platform web
+```
+
+## Asset notices
+
+Third-party SVG sources and their licenses are recorded in [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md).
