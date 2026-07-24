@@ -1339,6 +1339,33 @@ app.get('/v1/record', async (request, reply) => {
   const currentUser = user[0] as { id: string; username: string; name: string | null; email: string | null } | undefined;
   if (!currentUser) return reply.code(401).send({ error: 'Unauthorized' });
 
+  const friendActivity = await sql<{
+    id: string;
+    user_id: string;
+    username: string;
+    name: string | null;
+    started_at: Date;
+    status: string;
+    routine_name: string | null;
+    day_name: string | null;
+    set_count: number;
+  }[]>`
+    SELECT ws.id, u.id AS user_id, u.username, u.name, ws.started_at, ws.status,
+      r.name AS routine_name, rd.day_name, count(wset.id)::int AS set_count
+    FROM workout_sessions ws
+    INNER JOIN users u ON u.id = ws.user_id
+    INNER JOIN friend_requests fr ON fr.status = 'accepted' AND (
+      (fr.requester_id = ${userId} AND fr.addressee_id = ws.user_id) OR
+      (fr.addressee_id = ${userId} AND fr.requester_id = ws.user_id)
+    )
+    LEFT JOIN routines r ON r.id = ws.routine_id
+    LEFT JOIN routine_days rd ON rd.id = ws.routine_day_id
+    LEFT JOIN workout_sets wset ON wset.session_id = ws.id
+    GROUP BY ws.id, u.id, r.name, rd.day_name
+    ORDER BY ws.started_at DESC
+    LIMIT 50
+  `;
+
   const workoutPlans = Array.from(
     (routines as unknown as Array<{
       id: string;
@@ -1458,6 +1485,17 @@ app.get('/v1/record', async (request, reply) => {
     friends: {
       incoming: (incoming as unknown as Array<{ id: string; status: string; user_id: string; username: string; name: string | null }>).map(({ user_id, ...request }) => ({ ...request, userId: user_id })),
       outgoing: (outgoing as unknown as Array<{ id: string; status: string; user_id: string; username: string; name: string | null }>).map(({ user_id, ...request }) => ({ ...request, userId: user_id })),
+      activity: friendActivity.map((session) => ({
+        id: session.id,
+        userId: session.user_id,
+        username: session.username,
+        name: session.name,
+        startedAt: session.started_at,
+        status: session.status,
+        routineName: session.routine_name,
+        dayName: session.day_name,
+        setCount: session.set_count,
+      })),
     },
     settings: preferences[0] ?? { weight_unit: 'lbs', active_routine_id: null, theme_overrides: {} },
   });

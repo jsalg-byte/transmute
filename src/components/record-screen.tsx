@@ -1876,6 +1876,21 @@ function FriendsContent({
       ) : (
         <Card title="No friends yet" />
       )}
+      <Text style={[styles.eyebrow, styles.section]}>FRIENDS’ WORKOUT ACTIVITY</Text>
+      {record.friends.activity.length ? (
+        record.friends.activity.map((session) => (
+          <Card
+            key={session.id}
+            title={session.name ?? session.username}
+            meta={`@${session.username} · ${session.routineName ?? "Workout plan"} / ${session.dayName ?? "Day"} · ${label(session.status)} · ${session.setCount} sets · ${date(session.startedAt)}`}
+          />
+        ))
+      ) : (
+        <Card
+          title="No friend activity yet"
+          meta="Accepted friends share workout sessions only."
+        />
+      )}
       <Text style={[styles.eyebrow, styles.section]}>SENT REQUESTS</Text>
       {outgoing.length ? (
         outgoing.map((request) => (

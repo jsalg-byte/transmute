@@ -90,7 +90,21 @@ export type TransmuteRecord = {
     mime_type: string;
     imageUrl: string | null;
   }[];
-  friends: { incoming: { id: string; status: string; userId: string; username: string; name: string | null }[]; outgoing: { id: string; status: string; userId: string; username: string; name: string | null }[] };
+  friends: {
+    incoming: { id: string; status: string; userId: string; username: string; name: string | null }[];
+    outgoing: { id: string; status: string; userId: string; username: string; name: string | null }[];
+    activity: {
+      id: string;
+      userId: string;
+      username: string;
+      name: string | null;
+      startedAt: string;
+      status: string;
+      routineName: string | null;
+      dayName: string | null;
+      setCount: number;
+    }[];
+  };
   settings: { weight_unit: string; active_routine_id: string | null; theme_overrides: Record<string, unknown> };
 };
 
