@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -9,6 +9,8 @@ import { register } from '../lib/api';
 const ouroboros = require('../../assets/transmute/ouroboros.svg');
 
 export default function SignUpScreen() {
+  const displayNameInput = useRef<TextInput>(null);
+  const passwordInput = useRef<TextInput>(null);
   const [username, setUsername] = useState('');
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
@@ -53,9 +55,9 @@ export default function SignUpScreen() {
           <Text style={styles.description}>Set up your training space and start turning inputs into evidence.</Text>
 
           <View style={styles.form}>
-            <Field label="Username" placeholder="Choose a username" value={username} onChangeText={setUsername} autoComplete="username" />
-            <Field label="Display Name (optional)" placeholder="What should we call you?" value={name} onChangeText={setName} autoComplete="name" />
-            <Field label="Password" placeholder="At least 8 characters" value={password} onChangeText={setPassword} autoComplete="new-password" secureTextEntry />
+            <Field label="Username" placeholder="Choose a username" value={username} onChangeText={setUsername} autoComplete="username" onSubmitEditing={() => displayNameInput.current?.focus()} returnKeyType="next" />
+            <Field label="Display Name (optional)" placeholder="What should we call you?" value={name} onChangeText={setName} autoComplete="name" inputRef={displayNameInput} onSubmitEditing={() => passwordInput.current?.focus()} returnKeyType="next" />
+            <Field label="Password" placeholder="At least 8 characters" value={password} onChangeText={setPassword} autoComplete="new-password" inputRef={passwordInput} onSubmitEditing={attemptRegistration} returnKeyType="done" secureTextEntry />
             <Pressable accessibilityRole="button" disabled={loading} onPress={attemptRegistration} style={({ pressed }) => [styles.button, pressed && styles.buttonPressed, loading && styles.buttonDisabled]}>
               <Text style={styles.buttonText}>{loading ? 'Registering…' : 'Register'}</Text>
             </Pressable>
@@ -67,11 +69,11 @@ export default function SignUpScreen() {
   );
 }
 
-function Field({ label, placeholder, value, onChangeText, autoComplete, secureTextEntry = false }: { label: string; placeholder: string; value: string; onChangeText: (value: string) => void; autoComplete: 'username' | 'name' | 'new-password'; secureTextEntry?: boolean }) {
+function Field({ label, placeholder, value, onChangeText, autoComplete, inputRef, onSubmitEditing, returnKeyType, secureTextEntry = false }: { label: string; placeholder: string; value: string; onChangeText: (value: string) => void; autoComplete: 'username' | 'name' | 'new-password'; inputRef?: React.RefObject<TextInput | null>; onSubmitEditing: () => void; returnKeyType: 'next' | 'done'; secureTextEntry?: boolean }) {
   return (
     <View>
       <Text style={styles.label}>{label}</Text>
-      <TextInput autoCapitalize="none" autoComplete={autoComplete} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor="rgba(34, 35, 40, 0.55)" secureTextEntry={secureTextEntry} style={styles.input} value={value} />
+      <TextInput autoCapitalize="none" autoComplete={autoComplete} onChangeText={onChangeText} onSubmitEditing={onSubmitEditing} placeholder={placeholder} placeholderTextColor="rgba(34, 35, 40, 0.55)" ref={inputRef} returnKeyType={returnKeyType} secureTextEntry={secureTextEntry} style={styles.input} value={value} />
     </View>
   );
 }

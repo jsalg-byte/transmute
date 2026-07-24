@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -11,6 +11,7 @@ const ouroboros = require('../../assets/transmute/ouroboros.svg');
 
 export default function SignInScreen() {
   const isCheckingSession = useAuthRouteGuard();
+  const passwordInput = useRef<TextInput>(null);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
@@ -62,8 +63,10 @@ export default function SignInScreen() {
                 autoCapitalize="none"
                 autoComplete="username"
                 onChangeText={setUsername}
+                onSubmitEditing={() => passwordInput.current?.focus()}
                 placeholder="Your username"
                 placeholderTextColor="rgba(34, 35, 40, 0.55)"
+                returnKeyType="next"
                 style={styles.input}
                 value={username}
               />
@@ -73,8 +76,11 @@ export default function SignInScreen() {
               <TextInput
                 autoComplete="current-password"
                 onChangeText={setPassword}
+                onSubmitEditing={attemptSignIn}
                 placeholder="Your password"
                 placeholderTextColor="rgba(34, 35, 40, 0.55)"
+                ref={passwordInput}
+                returnKeyType="done"
                 secureTextEntry
                 style={styles.input}
                 value={password}
