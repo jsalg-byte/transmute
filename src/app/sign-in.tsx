@@ -5,10 +5,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AlchemySvg } from '../components/alchemy-svg';
 import { signIn } from '../lib/api';
+import { useAuthRouteGuard } from '../hooks/use-auth-route-guard';
 
 const ouroboros = require('../../assets/transmute/ouroboros.svg');
 
 export default function SignInScreen() {
+  const isCheckingSession = useAuthRouteGuard();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
@@ -31,6 +33,8 @@ export default function SignInScreen() {
       setLoading(false);
     }
   };
+
+  if (isCheckingSession) return <View style={styles.loadingScreen} />;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
@@ -88,6 +92,7 @@ export default function SignInScreen() {
 }
 
 const styles = StyleSheet.create({
+  loadingScreen: { backgroundColor: '#F4EFE7', flex: 1 },
   safeArea: { backgroundColor: '#F4EFE7', flex: 1 },
   container: { flex: 1, maxWidth: 680, overflow: 'hidden', paddingBottom: 20, paddingHorizontal: 24, paddingTop: 10, width: '100%', alignSelf: 'center' },
   backgroundMark: { opacity: 0.12, position: 'absolute', right: -210, top: -105, transform: [{ rotate: '11deg' }] },

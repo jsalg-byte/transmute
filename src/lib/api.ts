@@ -76,6 +76,38 @@ export async function readSession() {
   }
 }
 
+/**
+ * Restores a persisted sign-in for a cold start. Access tokens are short-lived;
+ * when one has expired, exchange the stored refresh token before routing into
+ * the authenticated record.
+ */
+export async function resumeSession() {
+  const session = await readSession();
+  if (!session) return null;
+
+  // The original response only contains a duration, so it cannot reliably be
+  // reconstructed after an app restart. Verify the access token first and
+  // refresh only if the server rejects it.
+  try {
+    await request<{ user: MobileUser }>('/v1/me', {
+      headers: { authorization: `Bearer ${session.accessToken}` },
+    });
+    return session;
+  } catch {
+    try {
+      const refreshed = await request<MobileSession>('/v1/auth/refresh', {
+        method: 'POST',
+        body: JSON.stringify({ refreshToken: session.refreshToken }),
+      });
+      await saveSession(refreshed);
+      return refreshed;
+    } catch {
+      await clearSession();
+      return null;
+    }
+  }
+}
+
 export async function clearSession() {
   await removeStoredSession(SESSION_STORAGE_KEY);
 }
