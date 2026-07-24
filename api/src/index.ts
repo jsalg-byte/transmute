@@ -116,6 +116,9 @@ const foodSchema = z.object({
   carbsG: z.number().nonnegative().max(500).optional(),
   fatG: z.number().nonnegative().max(500).optional(),
 });
+const barcodeParamsSchema = z.object({
+  code: z.string().trim().regex(/^\d+$/).min(8).max(14),
+});
 const mealSchema = z.object({
   foodId: z.string().uuid(),
   quantity: z.number().positive().max(100),
@@ -258,6 +261,57 @@ function parseStartedAt(startedAtDate: string | undefined) {
   const [yearRaw, monthRaw, dayRaw] = startedAtDate.split('-');
   const startedAt = new Date(Date.UTC(Number(yearRaw), Number(monthRaw) - 1, Number(dayRaw), 12, 0, 0));
   return Number.isNaN(startedAt.getTime()) ? new Date() : startedAt;
+}
+
+function numericValue(value: unknown, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+async function lookupOpenFoodFacts(code: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  try {
+    const response = await fetch(`https://world.openfoodfacts.org/api/v2/product/${code}.json`, {
+      headers: { 'user-agent': 'Transmute/1.0 barcode lookup' },
+      signal: controller.signal,
+    });
+    if (!response.ok) return { found: false as const, source: 'none' as const };
+    const payload = await response.json() as {
+      status?: number;
+      product?: {
+        product_name?: string;
+        serving_quantity?: number;
+        nutriments?: {
+          'energy-kcal_100g'?: number;
+          proteins_100g?: number;
+          carbohydrates_100g?: number;
+          fat_100g?: number;
+        };
+      };
+    };
+    if (payload.status !== 1 || !payload.product) return { found: false as const, source: 'none' as const };
+    return {
+      found: true as const,
+      source: 'openfoodfacts' as const,
+      food: {
+        id: null,
+        name: payload.product.product_name ?? `UPC ${code}`,
+        barcodeUpc: code,
+        // Open Food Facts values below are the _100g fields, so the paired
+        // serving value must also be 100g for meal calculations to remain true.
+        servingSizeG: 100,
+        caloriesKcal: numericValue(payload.product.nutriments?.['energy-kcal_100g']),
+        proteinG: numericValue(payload.product.nutriments?.proteins_100g),
+        carbsG: numericValue(payload.product.nutriments?.carbohydrates_100g),
+        fatG: numericValue(payload.product.nutriments?.fat_100g),
+      },
+    };
+  } catch {
+    return { found: false as const, source: 'none' as const };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function progressExtension(fileName: string) {
@@ -837,6 +891,43 @@ app.delete('/v1/sessions/:id', async (request, reply) => {
   return reply.code(204).send();
 });
 
+app.get('/v1/barcodes/:code', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = barcodeParamsSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: 'Enter an 8–14 digit barcode.' });
+  const [localFood] = await sql<{
+    id: string;
+    name: string;
+    barcode_upc: string | null;
+    serving_size_g: string | null;
+    calories_kcal: number;
+    protein_g: string;
+    carbs_g: string;
+    fat_g: string;
+  }[]>`
+    SELECT id, name, barcode_upc, serving_size_g, calories_kcal, protein_g, carbs_g, fat_g
+    FROM foods WHERE barcode_upc = ${params.data.code} LIMIT 1
+  `;
+  if (localFood) {
+    return reply.send({
+      found: true,
+      source: 'local',
+      food: {
+        id: localFood.id,
+        name: localFood.name,
+        barcodeUpc: localFood.barcode_upc,
+        servingSizeG: numericValue(localFood.serving_size_g, 100),
+        caloriesKcal: localFood.calories_kcal,
+        proteinG: numericValue(localFood.protein_g),
+        carbsG: numericValue(localFood.carbs_g),
+        fatG: numericValue(localFood.fat_g),
+      },
+    });
+  }
+  return reply.send(await lookupOpenFoodFacts(params.data.code));
+});
+
 app.post('/v1/foods', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
@@ -1157,10 +1248,11 @@ app.get('/v1/record', async (request, reply) => {
       GROUP BY ws.id, r.name, rd.day_name
       ORDER BY ws.started_at DESC LIMIT 80
     `,
-    sql`SELECT id, name, calories_kcal, protein_g, carbs_g, fat_g, serving_size_text FROM foods ORDER BY name ASC LIMIT 300`,
+    sql`SELECT id, name, barcode_upc, calories_kcal, protein_g, carbs_g, fat_g, serving_size_g, serving_size_text FROM foods ORDER BY name ASC LIMIT 300`,
     sql`
       SELECT ml.id, ml.meal_type, ml.quantity, ml.consumed_at, f.id AS food_id, f.name,
-        f.calories_kcal, f.protein_g, f.carbs_g, f.fat_g
+        round(f.calories_kcal * (ml.quantity / coalesce(nullif(f.serving_size_g, 0), 100)))::int AS calories_kcal,
+        f.protein_g, f.carbs_g, f.fat_g, f.serving_size_g
       FROM meal_logs ml INNER JOIN foods f ON f.id = ml.food_id
       WHERE ml.user_id = ${userId} ORDER BY ml.consumed_at DESC LIMIT 100
     `,

@@ -62,7 +62,26 @@ export type TransmuteRecord = {
   }[];
   exercises: { id: string; name: string; category: string; muscle_group: string | null }[];
   sessions: { id: string; status: string; started_at: string; ended_at: string | null; routine_name: string | null; day_name: string | null; set_count: number }[];
-  nutrition: { foods: { id: string; name: string; calories_kcal: number; protein_g: string; carbs_g: string; fat_g: string }[]; meals: { id: string; name: string; meal_type: string; quantity: string; consumed_at: string; calories_kcal: number }[] };
+  nutrition: {
+    foods: {
+      id: string;
+      name: string;
+      barcode_upc: string | null;
+      calories_kcal: number;
+      protein_g: string;
+      carbs_g: string;
+      fat_g: string;
+      serving_size_g: string | null;
+    }[];
+    meals: {
+      id: string;
+      name: string;
+      meal_type: string;
+      quantity: string;
+      consumed_at: string;
+      calories_kcal: number;
+    }[];
+  };
   fasting: { active: { id: string; started_at: string; note: string | null } | null; logs: { id: string; started_at: string; ended_at: string; duration_minutes: number; note: string | null }[] };
   progress: {
     id: string;
@@ -317,6 +336,25 @@ export async function deleteWorkoutSession(sessionId: string) {
 
 export async function createFood(payload: { name: string; caloriesKcal: number; proteinG?: number; carbsG?: number; fatG?: number; servingSizeG?: number; barcodeUpc?: string }) {
   return authenticatedRequest('/v1/foods', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export type BarcodeLookup = {
+  found: boolean;
+  source: 'local' | 'openfoodfacts' | 'none';
+  food?: {
+    id: string | null;
+    name: string;
+    barcodeUpc: string | null;
+    servingSizeG: number;
+    caloriesKcal: number;
+    proteinG: number;
+    carbsG: number;
+    fatG: number;
+  };
+};
+
+export async function lookupBarcode(code: string) {
+  return authenticatedRequest<BarcodeLookup>(`/v1/barcodes/${encodeURIComponent(code)}`);
 }
 
 export async function createMealLog(payload: { foodId: string; quantity: number; mealType: 'breakfast' | 'lunch' | 'dinner' | 'snack' }) {

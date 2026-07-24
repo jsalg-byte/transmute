@@ -30,6 +30,7 @@ import {
   deleteWorkoutSession,
   getAdminUsers,
   getRecord,
+  lookupBarcode,
   rejectFriendRequest,
   removeFriend,
   removeExerciseFromWorkoutPlanDay,
@@ -1308,6 +1309,8 @@ function NutritionContent({
   refresh: () => Promise<void>;
 }) {
   const [name, setName] = useState("");
+  const [barcode, setBarcode] = useState("");
+  const [servingSizeG, setServingSizeG] = useState("100");
   const [calories, setCalories] = useState("");
   const [protein, setProtein] = useState("");
   const [carbs, setCarbs] = useState("");
@@ -1334,6 +1337,42 @@ function NutritionContent({
       setSaving(false);
     }
   };
+  const searchBarcode = async () => {
+    const code = barcode.trim();
+    if (!/^\d{8,14}$/.test(code)) {
+      setNotice("Enter an 8–14 digit barcode.");
+      return;
+    }
+    setSaving(true);
+    setNotice(null);
+    try {
+      const result = await lookupBarcode(code);
+      if (!result.found || !result.food) {
+        setNotice("No food was found for that barcode. You can still add it manually.");
+        return;
+      }
+      const { food } = result;
+      setName(food.name);
+      setBarcode(food.barcodeUpc ?? code);
+      setServingSizeG(String(food.servingSizeG));
+      setCalories(String(food.caloriesKcal));
+      setProtein(String(food.proteinG));
+      setCarbs(String(food.carbsG));
+      setFat(String(food.fatG));
+      if (food.id) setFoodId(food.id);
+      setNotice(
+        result.source === "local"
+          ? "Food found in your library and selected for logging."
+          : "Barcode nutrition loaded. Review it, then save the food.",
+      );
+    } catch (reason) {
+      setNotice(
+        reason instanceof Error ? reason.message : "Unable to look up that barcode.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
     <>
       <Text style={styles.eyebrow}>THE FUEL</Text>
@@ -1347,6 +1386,30 @@ function NutritionContent({
           value={name}
           onChangeText={setName}
           placeholder="Food name"
+          placeholderTextColor="#655D57"
+          style={styles.input}
+          returnKeyType="next"
+        />
+        <View style={styles.barcodeRow}>
+          <TextInput
+            value={barcode}
+            onChangeText={setBarcode}
+            keyboardType="number-pad"
+            placeholder="Barcode (optional)"
+            placeholderTextColor="#655D57"
+            style={[styles.input, styles.barcodeInput]}
+            returnKeyType="done"
+            onSubmitEditing={() => void searchBarcode()}
+          />
+          <Pressable disabled={saving} onPress={() => void searchBarcode()}>
+            <Text style={styles.inlineAction}>Look up</Text>
+          </Pressable>
+        </View>
+        <TextInput
+          value={servingSizeG}
+          onChangeText={setServingSizeG}
+          keyboardType="decimal-pad"
+          placeholder="Nutrition reference grams (usually 100)"
           placeholderTextColor="#655D57"
           style={styles.input}
           returnKeyType="next"
@@ -1391,20 +1454,27 @@ function NutritionContent({
           onPress={() =>
             void run(async () => {
               const caloriesKcal = Number(calories);
+              const parsedServingSizeG = Number(servingSizeG);
               if (
                 name.trim().length < 2 ||
                 !Number.isInteger(caloriesKcal) ||
-                caloriesKcal < 0
+                caloriesKcal < 0 ||
+                !Number.isFinite(parsedServingSizeG) ||
+                parsedServingSizeG <= 0
               )
-                throw new Error("Enter a food name and whole calories.");
+                throw new Error("Enter a food name, whole calories, and reference grams.");
               await createFood({
                 name: name.trim(),
                 caloriesKcal,
                 proteinG: protein.trim() ? Number(protein) : undefined,
                 carbsG: carbs.trim() ? Number(carbs) : undefined,
                 fatG: fat.trim() ? Number(fat) : undefined,
+                servingSizeG: parsedServingSizeG,
+                barcodeUpc: barcode.trim() || undefined,
               });
               setName("");
+              setBarcode("");
+              setServingSizeG("100");
               setCalories("");
               setProtein("");
               setCarbs("");
@@ -1443,7 +1513,7 @@ function NutritionContent({
           value={quantity}
           onChangeText={setQuantity}
           keyboardType="decimal-pad"
-          placeholder="Servings"
+          placeholder="Grams eaten"
           placeholderTextColor="#655D57"
           style={styles.input}
         />
@@ -1990,6 +2060,8 @@ const styles = StyleSheet.create({
   },
   macroRow: { flexDirection: "row", gap: 10 },
   macroInput: { flex: 1 },
+  barcodeRow: { alignItems: "center", flexDirection: "row", gap: 14 },
+  barcodeInput: { flex: 1 },
   exercisePicker: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   exerciseOption: {
     borderColor: "#D4C9B9",
