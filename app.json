@@ -40,6 +40,12 @@
           "photosPermission": "Allow Transmute to select progress photos for your private training record.",
           "cameraPermission": "Allow Transmute to take progress photos for your private training record."
         }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Transmute to scan food barcodes."
+        }
       ]
     ],
     "experiments": {

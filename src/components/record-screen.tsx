@@ -1,4 +1,5 @@
 import { router } from "expo-router";
+import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 import { useEffect, useState } from "react";
 import {
@@ -1311,6 +1312,8 @@ function NutritionContent({
   const [name, setName] = useState("");
   const [barcode, setBarcode] = useState("");
   const [servingSizeG, setServingSizeG] = useState("100");
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [calories, setCalories] = useState("");
   const [protein, setProtein] = useState("");
   const [carbs, setCarbs] = useState("");
@@ -1337,8 +1340,8 @@ function NutritionContent({
       setSaving(false);
     }
   };
-  const searchBarcode = async () => {
-    const code = barcode.trim();
+  const searchBarcode = async (candidate = barcode) => {
+    const code = candidate.trim();
     if (!/^\d{8,14}$/.test(code)) {
       setNotice("Enter an 8–14 digit barcode.");
       return;
@@ -1373,6 +1376,16 @@ function NutritionContent({
       setSaving(false);
     }
   };
+  const scanBarcode = async () => {
+    if (!cameraPermission?.granted) {
+      const permission = await requestCameraPermission();
+      if (!permission.granted) {
+        setNotice("Camera permission is needed to scan a barcode.");
+        return;
+      }
+    }
+    setScannerOpen(true);
+  };
   return (
     <>
       <Text style={styles.eyebrow}>THE FUEL</Text>
@@ -1404,7 +1417,29 @@ function NutritionContent({
           <Pressable disabled={saving} onPress={() => void searchBarcode()}>
             <Text style={styles.inlineAction}>Look up</Text>
           </Pressable>
+          <Pressable disabled={saving} onPress={() => void scanBarcode()}>
+            <Text style={styles.inlineAction}>Scan</Text>
+          </Pressable>
         </View>
+        {scannerOpen ? (
+          <View style={styles.scanner}>
+            <CameraView
+              barcodeScannerSettings={{
+                barcodeTypes: ["ean13", "ean8", "upc_a", "upc_e", "code128"],
+              }}
+              onBarcodeScanned={({ data }) => {
+                if (!data || saving) return;
+                setBarcode(data);
+                setScannerOpen(false);
+                void searchBarcode(data);
+              }}
+              style={styles.scannerCamera}
+            />
+            <Pressable onPress={() => setScannerOpen(false)}>
+              <Text style={styles.inlineAction}>Close scanner</Text>
+            </Pressable>
+          </View>
+        ) : null}
         <TextInput
           value={servingSizeG}
           onChangeText={setServingSizeG}
@@ -2062,6 +2097,8 @@ const styles = StyleSheet.create({
   macroInput: { flex: 1 },
   barcodeRow: { alignItems: "center", flexDirection: "row", gap: 14 },
   barcodeInput: { flex: 1 },
+  scanner: { gap: 10 },
+  scannerCamera: { height: 280, width: "100%" },
   exercisePicker: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   exerciseOption: {
     borderColor: "#D4C9B9",
