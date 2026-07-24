@@ -220,6 +220,90 @@ app.get('/v1/me', async (request, reply) => {
   return reply.send({ user: publicUser(user) });
 });
 
+/**
+ * Read model for the migrated client.  These queries intentionally use the
+ * same tables and ownership rules as the Next app; the mobile client never
+ * connects to Postgres directly.
+ */
+app.get('/v1/record', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+
+  const [user, activeSession, routines, exercises, sessions, foods, meals, activeFast, fasts, progress, incoming, outgoing, preferences] = await Promise.all([
+    sql`SELECT id, username, name, email FROM users WHERE id = ${userId} LIMIT 1`,
+    sql`
+      SELECT ws.id, ws.status, ws.started_at, ws.ended_at, r.name AS routine_name, rd.day_name
+      FROM workout_sessions ws
+      LEFT JOIN routines r ON r.id = ws.routine_id
+      LEFT JOIN routine_days rd ON rd.id = ws.routine_day_id
+      WHERE ws.user_id = ${userId} AND ws.status = 'active'
+      ORDER BY ws.started_at DESC LIMIT 1
+    `,
+    sql`
+      SELECT r.id, r.name, r.description, r.is_preset, r.created_at,
+        rd.id AS day_id, rd.day_name, rd.sort_order,
+        count(rde.id)::int AS exercise_count
+      FROM routines r
+      LEFT JOIN routine_days rd ON rd.routine_id = r.id
+      LEFT JOIN routine_day_exercises rde ON rde.routine_day_id = rd.id
+      WHERE r.user_id = ${userId}
+      GROUP BY r.id, rd.id
+      ORDER BY r.updated_at DESC, rd.sort_order ASC
+    `,
+    sql`SELECT id, name, category, muscle_group FROM exercises ORDER BY name ASC LIMIT 300`,
+    sql`
+      SELECT ws.id, ws.status, ws.started_at, ws.ended_at, r.name AS routine_name, rd.day_name,
+        count(wset.id)::int AS set_count
+      FROM workout_sessions ws
+      LEFT JOIN routines r ON r.id = ws.routine_id
+      LEFT JOIN routine_days rd ON rd.id = ws.routine_day_id
+      LEFT JOIN workout_sets wset ON wset.session_id = ws.id
+      WHERE ws.user_id = ${userId}
+      GROUP BY ws.id, r.name, rd.day_name
+      ORDER BY ws.started_at DESC LIMIT 80
+    `,
+    sql`SELECT id, name, calories_kcal, protein_g, carbs_g, fat_g, serving_size_text FROM foods ORDER BY name ASC LIMIT 300`,
+    sql`
+      SELECT ml.id, ml.meal_type, ml.quantity, ml.consumed_at, f.id AS food_id, f.name,
+        f.calories_kcal, f.protein_g, f.carbs_g, f.fat_g
+      FROM meal_logs ml INNER JOIN foods f ON f.id = ml.food_id
+      WHERE ml.user_id = ${userId} ORDER BY ml.consumed_at DESC LIMIT 100
+    `,
+    sql`SELECT id, started_at, note FROM active_fasts WHERE user_id = ${userId} LIMIT 1`,
+    sql`SELECT id, started_at, ended_at, duration_minutes, note FROM fasting_logs WHERE user_id = ${userId} ORDER BY ended_at DESC LIMIT 100`,
+    sql`SELECT id, object_key, mime_type, size_bytes, note, captured_at FROM uploads WHERE user_id = ${userId} AND entity_type = 'progress_photo' ORDER BY captured_at DESC LIMIT 100`,
+    sql`
+      SELECT fr.id, fr.status, fr.created_at, u.id AS user_id, u.username, u.name
+      FROM friend_requests fr INNER JOIN users u ON u.id = fr.requester_id
+      WHERE fr.addressee_id = ${userId} ORDER BY fr.created_at DESC
+    `,
+    sql`
+      SELECT fr.id, fr.status, fr.created_at, u.id AS user_id, u.username, u.name
+      FROM friend_requests fr INNER JOIN users u ON u.id = fr.addressee_id
+      WHERE fr.requester_id = ${userId} ORDER BY fr.created_at DESC
+    `,
+    sql`SELECT weight_unit, active_routine_id, theme_overrides FROM user_preferences WHERE user_id = ${userId} LIMIT 1`,
+  ]);
+
+  const currentUser = user[0] as { id: string; username: string; name: string | null; email: string | null } | undefined;
+  if (!currentUser) return reply.code(401).send({ error: 'Unauthorized' });
+
+  const adminValues = new Set(['mzootfb@gmail.com', 'mzootfb']);
+  return reply.send({
+    user: publicUser(currentUser),
+    isAdmin: adminValues.has(currentUser.username.toLowerCase()) || adminValues.has(currentUser.email?.toLowerCase() ?? ''),
+    dashboard: { activeSession: activeSession[0] ?? null },
+    workoutPlans: routines,
+    exercises,
+    sessions,
+    nutrition: { foods, meals },
+    fasting: { active: activeFast[0] ?? null, logs: fasts },
+    progress,
+    friends: { incoming, outgoing },
+    settings: preferences[0] ?? { weight_unit: 'lbs', active_routine_id: null, theme_overrides: {} },
+  });
+});
+
 const close = async () => {
   await app.close();
   await sql.end({ timeout: 5 });

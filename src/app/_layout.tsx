@@ -11,6 +11,15 @@ export default function RootLayout() {
         <Stack.Screen name="sign-up" />
         <Stack.Screen name="first-login" />
         <Stack.Screen name="dashboard" />
+        <Stack.Screen name="workout-plans" />
+        <Stack.Screen name="exercises" />
+        <Stack.Screen name="sessions" />
+        <Stack.Screen name="nutrition" />
+        <Stack.Screen name="fasting" />
+        <Stack.Screen name="progress" />
+        <Stack.Screen name="friends" />
+        <Stack.Screen name="settings" />
+        <Stack.Screen name="admin" />
       </Stack>
     </>
   );

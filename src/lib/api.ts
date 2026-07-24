@@ -16,6 +16,20 @@ export type MobileSession = {
   user: MobileUser;
 };
 
+export type TransmuteRecord = {
+  user: MobileUser;
+  isAdmin: boolean;
+  dashboard: { activeSession: { id: string; routine_name: string | null; day_name: string | null; started_at: string } | null };
+  workoutPlans: { id: string; name: string; description: string | null; day_id: string | null; day_name: string | null; exercise_count: number }[];
+  exercises: { id: string; name: string; category: string; muscle_group: string | null }[];
+  sessions: { id: string; status: string; started_at: string; ended_at: string | null; routine_name: string | null; day_name: string | null; set_count: number }[];
+  nutrition: { foods: { id: string; name: string; calories_kcal: number; protein_g: string; carbs_g: string; fat_g: string }[]; meals: { id: string; name: string; meal_type: string; quantity: string; consumed_at: string; calories_kcal: number }[] };
+  fasting: { active: { id: string; started_at: string; note: string | null } | null; logs: { id: string; started_at: string; ended_at: string; duration_minutes: number; note: string | null }[] };
+  progress: { id: string; captured_at: string; note: string | null; mime_type: string }[];
+  friends: { incoming: { id: string; status: string; username: string; name: string | null }[]; outgoing: { id: string; status: string; username: string; name: string | null }[] };
+  settings: { weight_unit: string; active_routine_id: string | null; theme_overrides: Record<string, unknown> };
+};
+
 type ApiErrorPayload = { error?: string };
 
 function apiBaseUrl() {
@@ -92,6 +106,12 @@ export async function getCurrentUser() {
     headers: { authorization: `Bearer ${session.accessToken}` },
   });
   return result.user;
+}
+
+export async function getRecord() {
+  const session = await readSession();
+  if (!session) throw new Error('No mobile session is available.');
+  return request<TransmuteRecord>('/v1/record', { headers: { authorization: `Bearer ${session.accessToken}` } });
 }
 
 export async function signOut() {
