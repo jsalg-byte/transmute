@@ -67,6 +67,24 @@ const workoutSetSchema = z.object({
   weight: z.number().nonnegative().max(2000).optional(),
   isWarmup: z.boolean().optional(),
 });
+const foodSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  barcodeUpc: z.string().trim().regex(/^\d+$/).min(8).max(14).optional(),
+  caloriesKcal: z.number().int().nonnegative().max(2000),
+  servingSizeG: z.number().positive().max(5000).optional(),
+  proteinG: z.number().nonnegative().max(500).optional(),
+  carbsG: z.number().nonnegative().max(500).optional(),
+  fatG: z.number().nonnegative().max(500).optional(),
+});
+const mealSchema = z.object({
+  foodId: z.string().uuid(),
+  quantity: z.number().positive().max(100),
+  mealType: z.enum(['breakfast', 'lunch', 'dinner', 'snack']),
+});
+const fastSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('start'), note: z.string().trim().max(240).optional() }),
+  z.object({ action: z.literal('end'), note: z.string().trim().max(240).optional() }),
+]);
 
 type UserRow = {
   id: string;
@@ -569,6 +587,66 @@ app.delete('/v1/sessions/:id', async (request, reply) => {
   const [deleted] = await sql<{ id: string }[]>`DELETE FROM workout_sessions WHERE id = ${params.data.id} AND user_id = ${userId} RETURNING id`;
   if (!deleted) return reply.code(404).send({ error: 'Workout session not found.' });
   return reply.code(204).send();
+});
+
+app.post('/v1/foods', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = foodSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid food payload.' });
+  try {
+    const [food] = await sql<{ id: string; name: string; calories_kcal: number; protein_g: string; carbs_g: string; fat_g: string }[]>`
+      INSERT INTO foods (id, name, barcode_upc, calories_kcal, serving_size_g, protein_g, carbs_g, fat_g, created_by_user_id, created_at)
+      VALUES (${randomUUID()}, ${parsed.data.name}, ${parsed.data.barcodeUpc ?? null}, ${parsed.data.caloriesKcal}, ${parsed.data.servingSizeG?.toString() ?? null}, ${parsed.data.proteinG?.toString() ?? '0'}, ${parsed.data.carbsG?.toString() ?? '0'}, ${parsed.data.fatG?.toString() ?? '0'}, ${userId}, now())
+      RETURNING id, name, calories_kcal, protein_g, carbs_g, fat_g
+    `;
+    return reply.code(201).send({ food });
+  } catch (error) {
+    if (error instanceof postgres.PostgresError && error.code === '23505') return reply.code(409).send({ error: 'That barcode already belongs to a food.' });
+    throw error;
+  }
+});
+
+app.post('/v1/meals', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = mealSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid meal payload.' });
+  const [food] = await sql<{ id: string }[]>`SELECT id FROM foods WHERE id = ${parsed.data.foodId} LIMIT 1`;
+  if (!food) return reply.code(404).send({ error: 'Food not found.' });
+  const [meal] = await sql<{ id: string; consumed_at: Date }[]>`
+    INSERT INTO meal_logs (id, user_id, food_id, quantity, meal_type, consumed_at)
+    VALUES (${randomUUID()}, ${userId}, ${food.id}, ${parsed.data.quantity.toString()}, ${parsed.data.mealType}, now())
+    RETURNING id, consumed_at
+  `;
+  return reply.code(201).send({ meal: { id: meal.id, consumedAt: meal.consumed_at } });
+});
+
+app.post('/v1/fasting', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = fastSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid fasting payload.' });
+  if (parsed.data.action === 'start') {
+    const [active] = await sql<{ id: string; started_at: Date; note: string | null }[]>`
+      INSERT INTO active_fasts (id, user_id, started_at, note, created_at, updated_at)
+      VALUES (${randomUUID()}, ${userId}, now(), ${parsed.data.note ?? null}, now(), now())
+      ON CONFLICT (user_id) DO UPDATE SET started_at = now(), note = EXCLUDED.note, updated_at = now()
+      RETURNING id, started_at, note
+    `;
+    return reply.send({ active: { id: active.id, startedAt: active.started_at, note: active.note } });
+  }
+  const [active] = await sql<{ id: string; started_at: Date; note: string | null }[]>`SELECT id, started_at, note FROM active_fasts WHERE user_id = ${userId} LIMIT 1`;
+  if (!active) return reply.code(404).send({ error: 'No active fast to end.' });
+  const endedAt = new Date();
+  const durationMinutes = Math.round((endedAt.getTime() - active.started_at.getTime()) / 60000);
+  if (durationMinutes <= 0 || durationMinutes > 60 * 24 * 7) return reply.code(400).send({ error: 'Fast duration must be between 1 minute and 7 days.' });
+  const [fast] = await sql<{ id: string }[]>`
+    INSERT INTO fasting_logs (id, user_id, started_at, ended_at, duration_minutes, note, created_at)
+    VALUES (${randomUUID()}, ${userId}, ${active.started_at}, ${endedAt}, ${durationMinutes}, ${parsed.data.note ?? active.note}, now()) RETURNING id
+  `;
+  await sql`DELETE FROM active_fasts WHERE id = ${active.id}`;
+  return reply.send({ fast: { id: fast.id, durationMinutes } });
 });
 
 /**

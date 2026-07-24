@@ -220,3 +220,15 @@ export async function completeWorkoutSession(sessionId: string) {
 export async function deleteWorkoutSession(sessionId: string) {
   return authenticatedRequest(`/v1/sessions/${sessionId}`, { method: 'DELETE' });
 }
+
+export async function createFood(payload: { name: string; caloriesKcal: number; proteinG?: number; carbsG?: number; fatG?: number; servingSizeG?: number; barcodeUpc?: string }) {
+  return authenticatedRequest('/v1/foods', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function createMealLog(payload: { foodId: string; quantity: number; mealType: 'breakfast' | 'lunch' | 'dinner' | 'snack' }) {
+  return authenticatedRequest('/v1/meals', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function updateFasting(payload: { action: 'start' | 'end'; note?: string }) {
+  return authenticatedRequest('/v1/fasting', { method: 'POST', body: JSON.stringify(payload) });
+}
