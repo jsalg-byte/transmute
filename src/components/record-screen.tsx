@@ -1348,7 +1348,8 @@ function NutritionContent({
   const [carbs, setCarbs] = useState("");
   const [fat, setFat] = useState("");
   const [foodId, setFoodId] = useState("");
-  const [quantity, setQuantity] = useState("1");
+  const [quantity, setQuantity] = useState("100");
+  const [mealItems, setMealItems] = useState<{ foodId: string; grams: number }[]>([]);
   const [mealPhoto, setMealPhoto] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [mealType, setMealType] = useState<
     "breakfast" | "lunch" | "dinner" | "snack"
@@ -1461,6 +1462,20 @@ function NutritionContent({
         reason instanceof Error ? reason.message : "Unable to choose a meal photo.",
       );
     }
+  };
+  const addMealIngredient = () => {
+    const grams = Number(quantity);
+    if (!foodId || !Number.isFinite(grams) || grams <= 0) {
+      setNotice("Choose a food and enter valid grams before adding it.");
+      return;
+    }
+    if (mealItems.length >= 20) {
+      setNotice("A meal can contain up to 20 ingredients.");
+      return;
+    }
+    setMealItems((current) => [...current, { foodId, grams }]);
+    setQuantity("100");
+    setNotice(null);
   };
   return (
     <>
@@ -1631,6 +1646,25 @@ function NutritionContent({
           placeholderTextColor="#655D57"
           style={styles.input}
         />
+        <Pressable disabled={saving || !foodId} onPress={addMealIngredient}>
+          <Text style={styles.inlineAction}>Add ingredient</Text>
+        </Pressable>
+        {mealItems.length ? (
+          <View style={styles.mealIngredients}>
+            <Text style={styles.eyebrow}>THIS MEAL</Text>
+            {mealItems.map((item, index) => {
+              const food = record.nutrition.foods.find((candidate) => candidate.id === item.foodId);
+              return (
+                <View key={`${item.foodId}-${index}`} style={styles.mealIngredient}>
+                  <Text style={styles.cardMeta}>{food?.name ?? "Food"} · {item.grams}g</Text>
+                  <Pressable disabled={saving} onPress={() => setMealItems((current) => current.filter((_, currentIndex) => currentIndex !== index))}>
+                    <Text style={styles.destructiveAction}>Remove</Text>
+                  </Pressable>
+                </View>
+              );
+            })}
+          </View>
+        ) : null}
         <View style={styles.exercisePicker}>
           {(["breakfast", "lunch", "dinner", "snack"] as const).map((type) => (
             <Pressable
@@ -1672,21 +1706,16 @@ function NutritionContent({
           />
         ) : null}
         <Pressable
-          disabled={saving || !foodId}
+          disabled={saving || !mealItems.length}
           onPress={() =>
             void run(async () => {
-              const parsedQuantity = Number(quantity);
-              if (
-                !foodId ||
-                !Number.isFinite(parsedQuantity) ||
-                parsedQuantity <= 0
-              )
-                throw new Error("Choose a food and enter a valid quantity.");
-              const { meal } = await createMealLog({
-                foodId,
-                quantity: parsedQuantity,
+              if (!mealItems.length) throw new Error("Add at least one ingredient to the meal.");
+              const { meals } = await createMealLog({
                 mealType,
+                items: mealItems,
               });
+              const meal = meals[0];
+              if (!meal) throw new Error("The meal could not be created.");
               if (mealPhoto) {
                 try {
                   await uploadMealPhoto(meal.id, {
@@ -1702,13 +1731,14 @@ function NutritionContent({
                   );
                 }
               }
-              setQuantity("1");
+              setMealItems([]);
+              setQuantity("100");
               setMealPhoto(null);
             }, mealPhoto ? "Meal and photo logged." : "Meal logged.")
           }
           style={[
             styles.actionButton,
-            (saving || !foodId) && styles.buttonDisabled,
+            (saving || !mealItems.length) && styles.buttonDisabled,
           ]}
         >
           <Text style={styles.actionButtonText}>Log meal</Text>
@@ -2231,6 +2261,15 @@ const styles = StyleSheet.create({
   scanner: { gap: 10 },
   scannerCamera: { height: 280, width: "100%" },
   mealPhotoPreview: { backgroundColor: "#DED4C6", height: 180, width: "100%" },
+  mealIngredients: { gap: 8 },
+  mealIngredient: {
+    alignItems: "center",
+    borderBottomColor: "#D4C9B9",
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingBottom: 8,
+  },
   exercisePicker: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   exerciseOption: {
     borderColor: "#D4C9B9",

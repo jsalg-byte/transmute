@@ -124,9 +124,12 @@ const nutritionLabelOcrSchema = z.object({
   imageBase64: z.string().min(100).max(12_000_000),
 });
 const mealSchema = z.object({
-  foodId: z.string().uuid(),
-  quantity: z.number().positive().max(100),
   mealType: z.enum(['breakfast', 'lunch', 'dinner', 'snack']),
+  consumedAt: z.string().datetime().optional(),
+  items: z.array(z.object({
+    foodId: z.string().uuid(),
+    grams: z.number().positive().max(5000),
+  })).min(1).max(20),
 });
 const fastSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('start'), note: z.string().trim().max(240).optional() }),
@@ -1030,14 +1033,25 @@ app.post('/v1/meals', async (request, reply) => {
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
   const parsed = mealSchema.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: 'Invalid meal payload.' });
-  const [food] = await sql<{ id: string }[]>`SELECT id FROM foods WHERE id = ${parsed.data.foodId} LIMIT 1`;
-  if (!food) return reply.code(404).send({ error: 'Food not found.' });
-  const [meal] = await sql<{ id: string; consumed_at: Date }[]>`
-    INSERT INTO meal_logs (id, user_id, food_id, quantity, meal_type, consumed_at)
-    VALUES (${randomUUID()}, ${userId}, ${food.id}, ${parsed.data.quantity.toString()}, ${parsed.data.mealType}, now())
-    RETURNING id, consumed_at
+  const foodIds = [...new Set(parsed.data.items.map((item) => item.foodId))];
+  const foods = await sql<{ id: string }[]>`
+    SELECT id FROM foods WHERE id = ANY(${foodIds}::uuid[])
   `;
-  return reply.code(201).send({ meal: { id: meal.id, consumedAt: meal.consumed_at } });
+  if (foods.length !== foodIds.length) return reply.code(404).send({ error: 'One or more foods could not be found.' });
+  const consumedAt = parsed.data.consumedAt ? new Date(parsed.data.consumedAt) : new Date();
+  const meals = await sql.begin(async (transaction) => {
+    const created: Array<{ id: string; consumed_at: Date }> = [];
+    for (const item of parsed.data.items) {
+      const [meal] = await transaction<{ id: string; consumed_at: Date }[]>`
+        INSERT INTO meal_logs (id, user_id, food_id, quantity, meal_type, consumed_at)
+        VALUES (${randomUUID()}, ${userId}, ${item.foodId}, ${item.grams.toString()}, ${parsed.data.mealType}, ${consumedAt})
+        RETURNING id, consumed_at
+      `;
+      created.push(meal);
+    }
+    return created;
+  });
+  return reply.code(201).send({ meals: meals.map((meal) => ({ id: meal.id, consumedAt: meal.consumed_at })) });
 });
 
 app.post('/v1/meals/:id/photo/presign', async (request, reply) => {

@@ -401,8 +401,12 @@ export async function parseNutritionLabel(imageBase64: string) {
   });
 }
 
-export async function createMealLog(payload: { foodId: string; quantity: number; mealType: 'breakfast' | 'lunch' | 'dinner' | 'snack' }) {
-  return authenticatedRequest<{ meal: { id: string; consumedAt: string } }>('/v1/meals', { method: 'POST', body: JSON.stringify(payload) });
+export async function createMealLog(payload: {
+  mealType: 'breakfast' | 'lunch' | 'dinner' | 'snack';
+  consumedAt?: string;
+  items: { foodId: string; grams: number }[];
+}) {
+  return authenticatedRequest<{ meals: { id: string; consumedAt: string }[] }>('/v1/meals', { method: 'POST', body: JSON.stringify(payload) });
 }
 
 export async function uploadMealPhoto(mealId: string, payload: {
