@@ -7,6 +7,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import Fastify from 'fastify';
 import { jwtVerify, SignJWT } from 'jose';
 import postgres from 'postgres';
+import type { Worker } from 'tesseract.js';
 import { z } from 'zod';
 
 const envSchema = z.object({
@@ -118,6 +119,9 @@ const foodSchema = z.object({
 });
 const barcodeParamsSchema = z.object({
   code: z.string().trim().regex(/^\d+$/).min(8).max(14),
+});
+const nutritionLabelOcrSchema = z.object({
+  imageBase64: z.string().min(100).max(12_000_000),
 });
 const mealSchema = z.object({
   foodId: z.string().uuid(),
@@ -312,6 +316,44 @@ async function lookupOpenFoodFacts(code: string) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function nutritionNumber(text: string, patterns: RegExp[]) {
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match?.[1]) continue;
+    const value = Number(match[1]);
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function parseNutritionLabel(rawText: string, ocrConfidence: number) {
+  const text = rawText.replace(/\r/g, '\n').replace(/\u00A0/g, ' ').replace(/[|]/g, ' ').replace(/[ \t]+/g, ' ').trim();
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  const nutritionFactsIndex = lines.findIndex((line) => /nutrition\s+facts/i.test(line));
+  const name = nutritionFactsIndex > 0
+    ? lines.slice(0, nutritionFactsIndex).reverse().find((line) => /[a-z]/i.test(line) && !/serving|calories/i.test(line)) ?? null
+    : lines.find((line) => /[a-z]/i.test(line) && !/nutrition\s+facts/i.test(line)) ?? null;
+  const servingLine = text.match(/serving\s*size\s*[:\-]?\s*([^\n]+)/i)?.[1] ?? null;
+  const servingSizeG = servingLine ? nutritionNumber(servingLine, [/(\d+(?:\.\d+)?)\s*g\b/i]) : null;
+  const servingsPerContainer = nutritionNumber(text, [/servings?\s+per\s+container\s*[:\-]?\s*(\d+(?:\.\d+)?)/i, /about\s+(\d+(?:\.\d+)?)\s+servings?/i]);
+  const caloriesKcal = nutritionNumber(text, [/calories\s*[:\-]?\s*(\d{1,4})\b/i]);
+  const fatG = nutritionNumber(text, [/(?:total\s+)?fat[^\d\n]{0,18}(\d+(?:\.\d+)?)\s*(?:g|mg)?/i]);
+  const carbsG = nutritionNumber(text, [/(?:total\s+)?carbohydrate(?:s)?[^\d\n]{0,18}(\d+(?:\.\d+)?)\s*(?:g|mg)?/i]);
+  const proteinG = nutritionNumber(text, [/protein[^\d\n]{0,18}(\d+(?:\.\d+)?)\s*(?:g|mg)?/i]);
+  return {
+    name,
+    servingSizeText: servingLine?.trim() ?? null,
+    servingSizeG,
+    servingsPerContainer,
+    caloriesKcal,
+    fatG,
+    carbsG,
+    proteinG,
+    parseConfidence: Math.max(0, Math.min(1, Math.round(ocrConfidence * 100) / 100)),
+    rawText: text,
+  };
 }
 
 function progressExtension(fileName: string) {
@@ -926,6 +968,28 @@ app.get('/v1/barcodes/:code', async (request, reply) => {
     });
   }
   return reply.send(await lookupOpenFoodFacts(params.data.code));
+});
+
+app.post('/v1/nutrition-label/parse', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = nutritionLabelOcrSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Choose a readable nutrition-label image smaller than 9 MB.' });
+  const encoded = parsed.data.imageBase64.replace(/^data:[^;]+;base64,/, '');
+  let worker: Worker | null = null;
+  try {
+    const { createWorker } = await import('tesseract.js');
+    worker = await createWorker('eng');
+    const result = await worker.recognize(Buffer.from(encoded, 'base64'));
+    const rawText = result.data.text.trim();
+    if (!rawText) return reply.code(422).send({ error: 'No readable nutrition text was found in that image.' });
+    return reply.send({ ok: true, parsed: parseNutritionLabel(rawText, result.data.confidence / 100) });
+  } catch (error) {
+    request.log.error(error, 'Nutrition-label OCR failed');
+    return reply.code(422).send({ error: 'The nutrition label could not be read. Try a clearer, tightly cropped photo.' });
+  } finally {
+    await worker?.terminate().catch(() => undefined);
+  }
 });
 
 app.post('/v1/foods', async (request, reply) => {

@@ -353,8 +353,28 @@ export type BarcodeLookup = {
   };
 };
 
+export type ParsedNutritionLabel = {
+  name: string | null;
+  servingSizeText: string | null;
+  servingSizeG: number | null;
+  servingsPerContainer: number | null;
+  caloriesKcal: number | null;
+  fatG: number | null;
+  carbsG: number | null;
+  proteinG: number | null;
+  parseConfidence: number;
+  rawText: string;
+};
+
 export async function lookupBarcode(code: string) {
   return authenticatedRequest<BarcodeLookup>(`/v1/barcodes/${encodeURIComponent(code)}`);
+}
+
+export async function parseNutritionLabel(imageBase64: string) {
+  return authenticatedRequest<{ ok: true; parsed: ParsedNutritionLabel }>('/v1/nutrition-label/parse', {
+    method: 'POST',
+    body: JSON.stringify({ imageBase64 }),
+  });
 }
 
 export async function createMealLog(payload: { foodId: string; quantity: number; mealType: 'breakfast' | 'lunch' | 'dinner' | 'snack' }) {

@@ -36,6 +36,7 @@ import {
   removeFriend,
   removeExerciseFromWorkoutPlanDay,
   reorderExerciseInWorkoutPlanDay,
+  parseNutritionLabel,
   sendFriendRequest,
   setActiveWorkoutPlan,
   signOut,
@@ -1386,6 +1387,37 @@ function NutritionContent({
     }
     setScannerOpen(true);
   };
+  const readNutritionLabel = async () => {
+    setSaving(true);
+    setNotice(null);
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        base64: true,
+        quality: 0.7,
+        selectionLimit: 1,
+      });
+      if (result.canceled) return;
+      const image = result.assets[0];
+      if (!image?.base64) {
+        throw new Error("Choose a readable nutrition-label photo.");
+      }
+      const parsed = (await parseNutritionLabel(image.base64)).parsed;
+      if (parsed.name) setName(parsed.name);
+      if (parsed.servingSizeG) setServingSizeG(String(parsed.servingSizeG));
+      if (parsed.caloriesKcal !== null) setCalories(String(parsed.caloriesKcal));
+      if (parsed.proteinG !== null) setProtein(String(parsed.proteinG));
+      if (parsed.carbsG !== null) setCarbs(String(parsed.carbsG));
+      if (parsed.fatG !== null) setFat(String(parsed.fatG));
+      setNotice(`Label read at ${Math.round(parsed.parseConfidence * 100)}% confidence. Review the values before saving.`);
+    } catch (reason) {
+      setNotice(
+        reason instanceof Error ? reason.message : "Unable to read that nutrition label.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
     <>
       <Text style={styles.eyebrow}>THE FUEL</Text>
@@ -1440,6 +1472,9 @@ function NutritionContent({
             </Pressable>
           </View>
         ) : null}
+        <Pressable disabled={saving} onPress={() => void readNutritionLabel()}>
+          <Text style={styles.inlineAction}>Read a nutrition-label photo</Text>
+        </Pressable>
         <TextInput
           value={servingSizeG}
           onChangeText={setServingSizeG}
