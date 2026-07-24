@@ -85,6 +85,10 @@ const fastSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('start'), note: z.string().trim().max(240).optional() }),
   z.object({ action: z.literal('end'), note: z.string().trim().max(240).optional() }),
 ]);
+const friendUsernameSchema = z.object({
+  username: z.string().trim().min(3).max(64).regex(/^[^\s]+$/).transform((value) => value.toLowerCase()),
+});
+const weightUnitSchema = z.object({ weightUnit: z.enum(['kg', 'lbs']) });
 
 type UserRow = {
   id: string;
@@ -380,7 +384,7 @@ app.delete('/v1/plan-days/:id', async (request, reply) => {
     await transaction`DELETE FROM routine_days WHERE id = ${day.id}`;
     return { id: day.id } as const;
   });
-  if ('error' in result) return reply.code(result.status ?? 400).send({ error: result.error });
+  if ('error' in result) return reply.code(typeof result.status === 'number' ? result.status : 400).send({ error: result.error });
   return reply.code(204).send();
 });
 
@@ -649,6 +653,91 @@ app.post('/v1/fasting', async (request, reply) => {
   return reply.send({ fast: { id: fast.id, durationMinutes } });
 });
 
+app.post('/v1/friends', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = friendUsernameSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid friend username.' });
+  const result = await sql.begin(async (transaction) => {
+    const [target] = await transaction<{ id: string }[]>`SELECT id FROM users WHERE username = ${parsed.data.username} LIMIT 1`;
+    if (!target) return { error: 'User not found.', status: 404 } as const;
+    if (target.id === userId) return { error: 'You cannot add yourself.', status: 400 } as const;
+    const rows = await transaction<{ id: string; requester_id: string; addressee_id: string; status: string }[]>`
+      SELECT id, requester_id, addressee_id, status FROM friend_requests
+      WHERE (requester_id = ${userId} AND addressee_id = ${target.id}) OR (requester_id = ${target.id} AND addressee_id = ${userId})
+    `;
+    if (rows.some((row) => row.status === 'accepted')) return { status: 'accepted' } as const;
+    const incoming = rows.find((row) => row.requester_id === target.id && row.addressee_id === userId && row.status === 'pending');
+    if (incoming) {
+      await transaction`UPDATE friend_requests SET status = 'accepted', updated_at = now() WHERE id = ${incoming.id}`;
+      return { status: 'accepted' } as const;
+    }
+    if (rows.some((row) => row.requester_id === userId && row.addressee_id === target.id && row.status === 'pending')) return { error: 'Friend request already sent.', status: 409 } as const;
+    const rejected = rows.find((row) => row.requester_id === userId && row.addressee_id === target.id && row.status === 'rejected');
+    if (rejected) {
+      await transaction`UPDATE friend_requests SET status = 'pending', updated_at = now() WHERE id = ${rejected.id}`;
+      return { status: 'pending' } as const;
+    }
+    await transaction`INSERT INTO friend_requests (id, requester_id, addressee_id, status, created_at, updated_at) VALUES (${randomUUID()}, ${userId}, ${target.id}, 'pending', now(), now())`;
+    return { status: 'pending' } as const;
+  });
+  if ('error' in result) return reply.code(typeof result.status === 'number' ? result.status : 400).send({ error: result.error });
+  return reply.code(201).send({ status: result.status });
+});
+
+app.post('/v1/friends/:id/accept', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: 'Invalid friend request id.' });
+  const [updated] = await sql<{ id: string }[]>`
+    UPDATE friend_requests SET status = 'accepted', updated_at = now()
+    WHERE id = ${params.data.id} AND addressee_id = ${userId} AND status = 'pending' RETURNING id
+  `;
+  if (!updated) return reply.code(404).send({ error: 'Friend request not found.' });
+  return reply.send({ status: 'accepted' });
+});
+
+app.post('/v1/friends/:id/reject', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: 'Invalid friend request id.' });
+  const [updated] = await sql<{ id: string }[]>`
+    UPDATE friend_requests SET status = 'rejected', updated_at = now()
+    WHERE id = ${params.data.id} AND addressee_id = ${userId} AND status = 'pending' RETURNING id
+  `;
+  if (!updated) return reply.code(404).send({ error: 'Friend request not found.' });
+  return reply.send({ status: 'rejected' });
+});
+
+app.delete('/v1/friends/:id', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: 'Invalid friend id.' });
+  const [deleted] = await sql<{ id: string }[]>`
+    DELETE FROM friend_requests
+    WHERE status = 'accepted' AND ((requester_id = ${userId} AND addressee_id = ${params.data.id}) OR (requester_id = ${params.data.id} AND addressee_id = ${userId}))
+    RETURNING id
+  `;
+  if (!deleted) return reply.code(404).send({ error: 'Friendship not found.' });
+  return reply.code(204).send();
+});
+
+app.put('/v1/preferences/weight-unit', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = weightUnitSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid weight unit.' });
+  await sql`
+    INSERT INTO user_preferences (user_id, weight_unit, theme_overrides, updated_at)
+    VALUES (${userId}, ${parsed.data.weightUnit}, '{}'::jsonb, now())
+    ON CONFLICT (user_id) DO UPDATE SET weight_unit = EXCLUDED.weight_unit, updated_at = now()
+  `;
+  return reply.send({ weightUnit: parsed.data.weightUnit });
+});
+
 /**
  * Read model for the migrated client.  These queries intentionally use the
  * same tables and ownership rules as the Next app; the mobile client never
@@ -770,7 +859,10 @@ app.get('/v1/record', async (request, reply) => {
     nutrition: { foods, meals },
     fasting: { active: activeFast[0] ?? null, logs: fasts },
     progress,
-    friends: { incoming, outgoing },
+    friends: {
+      incoming: (incoming as unknown as Array<{ id: string; status: string; user_id: string; username: string; name: string | null }>).map(({ user_id, ...request }) => ({ ...request, userId: user_id })),
+      outgoing: (outgoing as unknown as Array<{ id: string; status: string; user_id: string; username: string; name: string | null }>).map(({ user_id, ...request }) => ({ ...request, userId: user_id })),
+    },
     settings: preferences[0] ?? { weight_unit: 'lbs', active_routine_id: null, theme_overrides: {} },
   });
 });

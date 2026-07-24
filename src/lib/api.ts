@@ -26,7 +26,7 @@ export type TransmuteRecord = {
   nutrition: { foods: { id: string; name: string; calories_kcal: number; protein_g: string; carbs_g: string; fat_g: string }[]; meals: { id: string; name: string; meal_type: string; quantity: string; consumed_at: string; calories_kcal: number }[] };
   fasting: { active: { id: string; started_at: string; note: string | null } | null; logs: { id: string; started_at: string; ended_at: string; duration_minutes: number; note: string | null }[] };
   progress: { id: string; captured_at: string; note: string | null; mime_type: string }[];
-  friends: { incoming: { id: string; status: string; username: string; name: string | null }[]; outgoing: { id: string; status: string; username: string; name: string | null }[] };
+  friends: { incoming: { id: string; status: string; userId: string; username: string; name: string | null }[]; outgoing: { id: string; status: string; userId: string; username: string; name: string | null }[] };
   settings: { weight_unit: string; active_routine_id: string | null; theme_overrides: Record<string, unknown> };
 };
 
@@ -231,4 +231,24 @@ export async function createMealLog(payload: { foodId: string; quantity: number;
 
 export async function updateFasting(payload: { action: 'start' | 'end'; note?: string }) {
   return authenticatedRequest('/v1/fasting', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function sendFriendRequest(username: string) {
+  return authenticatedRequest('/v1/friends', { method: 'POST', body: JSON.stringify({ username }) });
+}
+
+export async function acceptFriendRequest(requestId: string) {
+  return authenticatedRequest(`/v1/friends/${requestId}/accept`, { method: 'POST' });
+}
+
+export async function rejectFriendRequest(requestId: string) {
+  return authenticatedRequest(`/v1/friends/${requestId}/reject`, { method: 'POST' });
+}
+
+export async function removeFriend(userId: string) {
+  return authenticatedRequest(`/v1/friends/${userId}`, { method: 'DELETE' });
+}
+
+export async function updateWeightUnit(weightUnit: 'kg' | 'lbs') {
+  return authenticatedRequest('/v1/preferences/weight-unit', { method: 'PUT', body: JSON.stringify({ weightUnit }) });
 }
