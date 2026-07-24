@@ -20,7 +20,7 @@ export type TransmuteRecord = {
   user: MobileUser;
   isAdmin: boolean;
   dashboard: { activeSession: { id: string; routine_name: string | null; day_name: string | null; started_at: string } | null };
-  workoutPlans: { id: string; name: string; description: string | null; day_id: string | null; day_name: string | null; exercise_count: number }[];
+  workoutPlans: { id: string; name: string; description: string | null; isPreset: boolean; createdAt: string; days: { id: string; name: string; sortOrder: number; exerciseCount: number }[] }[];
   exercises: { id: string; name: string; category: string; muscle_group: string | null }[];
   sessions: { id: string; status: string; started_at: string; ended_at: string | null; routine_name: string | null; day_name: string | null; set_count: number }[];
   nutrition: { foods: { id: string; name: string; calories_kcal: number; protein_g: string; carbs_g: string; fat_g: string }[]; meals: { id: string; name: string; meal_type: string; quantity: string; consumed_at: string; calories_kcal: number }[] };

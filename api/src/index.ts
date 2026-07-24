@@ -289,11 +289,53 @@ app.get('/v1/record', async (request, reply) => {
   if (!currentUser) return reply.code(401).send({ error: 'Unauthorized' });
 
   const adminValues = new Set(['mzootfb@gmail.com', 'mzootfb']);
+  const workoutPlans = Array.from(
+    (routines as unknown as Array<{
+      id: string;
+      name: string;
+      description: string | null;
+      is_preset: boolean;
+      created_at: Date;
+      day_id: string | null;
+      day_name: string | null;
+      sort_order: number | null;
+      exercise_count: number;
+    }>).reduce((plans, row) => {
+      const existing = plans.get(row.id) ?? {
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        isPreset: row.is_preset,
+        createdAt: row.created_at,
+        days: [] as Array<{ id: string; name: string; sortOrder: number; exerciseCount: number }>,
+      };
+
+      if (row.day_id && row.day_name) {
+        existing.days.push({
+          id: row.day_id,
+          name: row.day_name,
+          sortOrder: row.sort_order ?? 0,
+          exerciseCount: row.exercise_count,
+        });
+      }
+
+      plans.set(row.id, existing);
+      return plans;
+    }, new Map<string, {
+      id: string;
+      name: string;
+      description: string | null;
+      isPreset: boolean;
+      createdAt: Date;
+      days: Array<{ id: string; name: string; sortOrder: number; exerciseCount: number }>;
+    }>()).values(),
+  );
+
   return reply.send({
     user: publicUser(currentUser),
     isAdmin: adminValues.has(currentUser.username.toLowerCase()) || adminValues.has(currentUser.email?.toLowerCase() ?? ''),
     dashboard: { activeSession: activeSession[0] ?? null },
-    workoutPlans: routines,
+    workoutPlans,
     exercises,
     sessions,
     nutrition: { foods, meals },
