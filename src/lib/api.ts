@@ -80,6 +80,7 @@ export type TransmuteRecord = {
       quantity: string;
       consumed_at: string;
       calories_kcal: number;
+      imageUrl: string | null;
     }[];
   };
   fasting: { active: { id: string; started_at: string; note: string | null } | null; logs: { id: string; started_at: string; ended_at: string; duration_minutes: number; note: string | null }[] };
@@ -392,7 +393,39 @@ export async function parseNutritionLabel(imageBase64: string) {
 }
 
 export async function createMealLog(payload: { foodId: string; quantity: number; mealType: 'breakfast' | 'lunch' | 'dinner' | 'snack' }) {
-  return authenticatedRequest('/v1/meals', { method: 'POST', body: JSON.stringify(payload) });
+  return authenticatedRequest<{ meal: { id: string; consumedAt: string } }>('/v1/meals', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function uploadMealPhoto(mealId: string, payload: {
+  uri: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes?: number | null;
+}) {
+  const source = await fetch(payload.uri);
+  if (!source.ok) throw new Error('Unable to read the selected meal photo.');
+  const image = await source.blob();
+  const mimeType = payload.mimeType || image.type || 'image/jpeg';
+  const sizeBytes = payload.sizeBytes ?? image.size;
+  if (!sizeBytes || sizeBytes > 20 * 1024 * 1024) {
+    throw new Error('Choose an image smaller than 20 MB.');
+  }
+
+  const { url, key } = await authenticatedRequest<{ url: string; key: string }>(`/v1/meals/${mealId}/photo/presign`, {
+    method: 'POST',
+    body: JSON.stringify({ fileName: payload.fileName, contentType: mimeType }),
+  });
+  const upload = await fetch(url, {
+    method: 'PUT',
+    headers: { 'content-type': mimeType },
+    body: image,
+  });
+  if (!upload.ok) throw new Error('The meal photo could not be uploaded.');
+
+  return authenticatedRequest<{ id: string }>(`/v1/meals/${mealId}/photo`, {
+    method: 'POST',
+    body: JSON.stringify({ objectKey: key, mimeType, sizeBytes }),
+  });
 }
 
 export async function updateFasting(payload: { action: 'start' | 'end'; note?: string }) {

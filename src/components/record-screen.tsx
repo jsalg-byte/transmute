@@ -43,6 +43,7 @@ import {
   startWorkoutSession,
   updateFasting,
   updateWeightUnit,
+  uploadMealPhoto,
   uploadProgressPhoto,
   updateAdminUser,
   updateWorkoutPlan,
@@ -74,9 +75,10 @@ function label(value: string | null | undefined) {
 function date(value: string) {
   return new Date(value).toLocaleDateString();
 }
-function Card({ title, meta }: { title: string; meta?: string }) {
+function Card({ title, meta, imageUrl }: { title: string; meta?: string; imageUrl?: string | null }) {
   return (
     <View style={styles.card}>
+      {imageUrl ? <Image accessibilityLabel={`${title} photo`} source={{ uri: imageUrl }} style={styles.cardImage} /> : null}
       <Text style={styles.cardTitle}>{title}</Text>
       {meta ? <Text style={styles.cardMeta}>{meta}</Text> : null}
     </View>
@@ -1321,6 +1323,7 @@ function NutritionContent({
   const [fat, setFat] = useState("");
   const [foodId, setFoodId] = useState("");
   const [quantity, setQuantity] = useState("1");
+  const [mealPhoto, setMealPhoto] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [mealType, setMealType] = useState<
     "breakfast" | "lunch" | "dinner" | "snack"
   >("snack");
@@ -1416,6 +1419,21 @@ function NutritionContent({
       );
     } finally {
       setSaving(false);
+    }
+  };
+  const chooseMealPhoto = async () => {
+    setNotice(null);
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        quality: 0.8,
+        selectionLimit: 1,
+      });
+      if (!result.canceled && result.assets[0]) setMealPhoto(result.assets[0]);
+    } catch (reason) {
+      setNotice(
+        reason instanceof Error ? reason.message : "Unable to choose a meal photo.",
+      );
     }
   };
   return (
@@ -1608,6 +1626,25 @@ function NutritionContent({
             </Pressable>
           ))}
         </View>
+        <View style={styles.inlineActions}>
+          <Pressable disabled={saving} onPress={() => void chooseMealPhoto()}>
+            <Text style={styles.inlineAction}>
+              {mealPhoto ? "Replace meal photo" : "Add meal photo"}
+            </Text>
+          </Pressable>
+          {mealPhoto ? (
+            <Pressable disabled={saving} onPress={() => setMealPhoto(null)}>
+              <Text style={styles.inlineAction}>Remove</Text>
+            </Pressable>
+          ) : null}
+        </View>
+        {mealPhoto ? (
+          <Image
+            accessibilityLabel="Selected meal photo"
+            source={{ uri: mealPhoto.uri }}
+            style={styles.mealPhotoPreview}
+          />
+        ) : null}
         <Pressable
           disabled={saving || !foodId}
           onPress={() =>
@@ -1619,13 +1656,29 @@ function NutritionContent({
                 parsedQuantity <= 0
               )
                 throw new Error("Choose a food and enter a valid quantity.");
-              await createMealLog({
+              const { meal } = await createMealLog({
                 foodId,
                 quantity: parsedQuantity,
                 mealType,
               });
+              if (mealPhoto) {
+                try {
+                  await uploadMealPhoto(meal.id, {
+                    uri: mealPhoto.uri,
+                    fileName: mealPhoto.fileName ?? `meal-${Date.now()}.jpg`,
+                    mimeType: mealPhoto.mimeType ?? "image/jpeg",
+                    sizeBytes: mealPhoto.fileSize,
+                  });
+                } catch (reason) {
+                  await refresh();
+                  throw new Error(
+                    `Meal logged, but photo failed: ${reason instanceof Error ? reason.message : "Unable to upload the meal photo."}`,
+                  );
+                }
+              }
               setQuantity("1");
-            }, "Meal logged.")
+              setMealPhoto(null);
+            }, mealPhoto ? "Meal and photo logged." : "Meal logged.")
           }
           style={[
             styles.actionButton,
@@ -1643,6 +1696,7 @@ function NutritionContent({
             key={meal.id}
             title={meal.name}
             meta={`${label(meal.meal_type)} · ${meal.calories_kcal} kcal · ${date(meal.consumed_at)}`}
+            imageUrl={meal.imageUrl}
           />
         ))
       ) : (
@@ -2058,6 +2112,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   progressImage: { backgroundColor: "#DED4C6", height: 260, width: "100%" },
+  cardImage: { backgroundColor: "#DED4C6", height: 140, marginBottom: 12, width: "100%" },
   progressImageUnavailable: {
     alignItems: "center",
     backgroundColor: "#DED4C6",
@@ -2149,6 +2204,7 @@ const styles = StyleSheet.create({
   barcodeInput: { flex: 1 },
   scanner: { gap: 10 },
   scannerCamera: { height: 280, width: "100%" },
+  mealPhotoPreview: { backgroundColor: "#DED4C6", height: 180, width: "100%" },
   exercisePicker: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   exerciseOption: {
     borderColor: "#D4C9B9",

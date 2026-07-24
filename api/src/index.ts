@@ -150,6 +150,11 @@ const progressCreateSchema = z.object({
     .or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
   note: z.string().max(400).optional(),
 });
+const mealPhotoCreateSchema = z.object({
+  objectKey: z.string().min(4).max(512),
+  mimeType: z.string().min(3).max(128),
+  sizeBytes: z.number().int().positive().max(20 * 1024 * 1024),
+});
 
 type UserRow = {
   id: string;
@@ -172,6 +177,12 @@ type ProgressPhotoRow = {
   size_bytes: number;
   note: string | null;
   captured_at: Date;
+};
+
+type MealPhotoRow = {
+  entity_id: string;
+  object_key: string;
+  mime_type: string;
 };
 
 type AdminUserRow = {
@@ -367,6 +378,10 @@ function parseCapturedAt(value: string) {
 
 function isOwnedProgressKey(userId: string, key: string) {
   return key.startsWith(`progress/${userId}/`);
+}
+
+function isOwnedMealPhotoKey(userId: string, mealId: string, key: string) {
+  return key.startsWith(`meals/${userId}/${mealId}/`);
 }
 
 async function readAdminUsers() {
@@ -1025,6 +1040,56 @@ app.post('/v1/meals', async (request, reply) => {
   return reply.code(201).send({ meal: { id: meal.id, consumedAt: meal.consumed_at } });
 });
 
+app.post('/v1/meals/:id/photo/presign', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = progressPresignSchema.safeParse(request.body);
+  if (!params.success || !parsed.success || !parsed.data.contentType.startsWith('image/')) {
+    return reply.code(400).send({ error: 'Only image uploads are allowed for meal photos.' });
+  }
+  const [meal] = await sql<{ id: string }[]>`
+    SELECT id FROM meal_logs WHERE id = ${params.data.id} AND user_id = ${userId} LIMIT 1
+  `;
+  if (!meal) return reply.code(404).send({ error: 'Meal not found.' });
+  const key = `meals/${userId}/${meal.id}/${Date.now()}-${randomUUID()}.${progressExtension(parsed.data.fileName)}`;
+  const url = await getSignedUrl(
+    storage,
+    new PutObjectCommand({ Bucket: env.S3_BUCKET, Key: key, ContentType: parsed.data.contentType }),
+    { expiresIn: 300 },
+  );
+  return reply.send({ url, key });
+});
+
+app.post('/v1/meals/:id/photo', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = mealPhotoCreateSchema.safeParse(request.body);
+  if (!params.success || !parsed.success || !parsed.data.mimeType.startsWith('image/') || !isOwnedMealPhotoKey(userId, params.data.id, parsed.data.objectKey)) {
+    return reply.code(400).send({ error: 'Invalid meal photo payload.' });
+  }
+  const [meal] = await sql<{ id: string }[]>`
+    SELECT id FROM meal_logs WHERE id = ${params.data.id} AND user_id = ${userId} LIMIT 1
+  `;
+  if (!meal) return reply.code(404).send({ error: 'Meal not found.' });
+
+  const replacedPhotos = await sql<{ object_key: string }[]>`
+    DELETE FROM uploads
+    WHERE user_id = ${userId} AND entity_type = 'meal_log_photo' AND entity_id = ${meal.id}
+    RETURNING object_key
+  `;
+  await Promise.all(
+    replacedPhotos.map((photo) => storage.send(new DeleteObjectCommand({ Bucket: env.S3_BUCKET, Key: photo.object_key })).catch(() => undefined)),
+  );
+  const [photo] = await sql<{ id: string }[]>`
+    INSERT INTO uploads (id, user_id, entity_type, entity_id, object_key, mime_type, size_bytes, captured_at, created_at)
+    VALUES (${randomUUID()}, ${userId}, 'meal_log_photo', ${meal.id}, ${parsed.data.objectKey}, ${parsed.data.mimeType}, ${parsed.data.sizeBytes}, now(), now())
+    RETURNING id
+  `;
+  return reply.code(201).send({ id: photo.id });
+});
+
 app.post('/v1/fasting', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
@@ -1339,6 +1404,29 @@ app.get('/v1/record', async (request, reply) => {
   const currentUser = user[0] as { id: string; username: string; name: string | null; email: string | null } | undefined;
   if (!currentUser) return reply.code(401).send({ error: 'Unauthorized' });
 
+  const mealPhotoRows = await sql<MealPhotoRow[]>`
+    SELECT DISTINCT ON (entity_id) entity_id, object_key, mime_type
+    FROM uploads
+    WHERE user_id = ${userId} AND entity_type = 'meal_log_photo'
+    ORDER BY entity_id, created_at ASC
+  `;
+  const mealPhotoByMealId = new Map(mealPhotoRows.map((photo) => [photo.entity_id, photo]));
+  const mealsWithPhotos = await Promise.all(
+    (meals as unknown as Array<Record<string, unknown> & { id: string }>).map(async (meal) => {
+      const photo = mealPhotoByMealId.get(meal.id);
+      return {
+        ...meal,
+        imageUrl: photo
+          ? await getSignedUrl(
+              storage,
+              new GetObjectCommand({ Bucket: env.S3_BUCKET, Key: photo.object_key }),
+              { expiresIn: 30 * 60 },
+            ).catch(() => null)
+          : null,
+      };
+    }),
+  );
+
   const friendActivity = await sql<{
     id: string;
     user_id: string;
@@ -1479,7 +1567,7 @@ app.get('/v1/record', async (request, reply) => {
     workoutPlans,
     exercises,
     sessions,
-    nutrition: { foods, meals },
+    nutrition: { foods, meals: mealsWithPhotos },
     fasting: { active: activeFast[0] ?? null, logs: fasts },
     progress: progressWithUrls,
     friends: {
