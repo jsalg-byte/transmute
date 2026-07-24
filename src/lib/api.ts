@@ -1,4 +1,4 @@
-import * as SecureStore from 'expo-secure-store';
+import { getStoredSession, removeStoredSession, setStoredSession } from './session-store';
 
 const SESSION_STORAGE_KEY = 'transmute.mobile-session.v1';
 
@@ -47,23 +47,23 @@ async function request<T>(path: string, init: RequestInit = {}) {
 }
 
 export async function saveSession(session: MobileSession) {
-  await SecureStore.setItemAsync(SESSION_STORAGE_KEY, JSON.stringify(session));
+  await setStoredSession(SESSION_STORAGE_KEY, JSON.stringify(session));
 }
 
 export async function readSession() {
-  const raw = await SecureStore.getItemAsync(SESSION_STORAGE_KEY);
+  const raw = await getStoredSession(SESSION_STORAGE_KEY);
   if (!raw) return null;
 
   try {
     return JSON.parse(raw) as MobileSession;
   } catch {
-    await SecureStore.deleteItemAsync(SESSION_STORAGE_KEY);
+    await removeStoredSession(SESSION_STORAGE_KEY);
     return null;
   }
 }
 
 export async function clearSession() {
-  await SecureStore.deleteItemAsync(SESSION_STORAGE_KEY);
+  await removeStoredSession(SESSION_STORAGE_KEY);
 }
 
 export async function register(payload: { username: string; name?: string; password: string }) {
