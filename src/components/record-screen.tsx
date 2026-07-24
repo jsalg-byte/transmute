@@ -18,12 +18,15 @@ import {
   acceptFriendRequest,
   addExerciseToWorkoutPlanDay,
   addWorkoutPlanDay,
+  createAdminUser,
   createExercise,
   createFood,
   createMealLog,
-  deleteProgressPhoto,
   createWorkoutPlan,
+  deleteAdminUser,
+  deleteProgressPhoto,
   deleteWorkoutSession,
+  getAdminUsers,
   getRecord,
   rejectFriendRequest,
   removeFriend,
@@ -34,6 +37,8 @@ import {
   updateFasting,
   updateWeightUnit,
   uploadProgressPhoto,
+  updateAdminUser,
+  type AdminUser,
   type TransmuteRecord,
 } from "../lib/api";
 
@@ -210,16 +215,7 @@ function AreaContent({
     return <FriendsContent record={r} refresh={refresh} />;
   if (area === "settings")
     return <SettingsContent record={r} refresh={refresh} />;
-  return (
-    <>
-      <Text style={styles.eyebrow}>THE ADMINISTRATION</Text>
-      <Text style={styles.title}>Admin</Text>
-      <Text style={styles.body}>
-        Administrative controls remain protected to the verified Transmute
-        administrator.
-      </Text>
-    </>
-  );
+  return <AdminContent />;
 }
 
 function WorkoutPlansContent({
@@ -713,6 +709,243 @@ function SessionsContent({
         />
       )}
     </>
+  );
+}
+
+function AdminContent() {
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [username, setUsername] = useState("");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [notice, setNotice] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const refresh = async () => {
+    const result = await getAdminUsers();
+    setUsers(result.users);
+  };
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const result = await getAdminUsers();
+        if (active) setUsers(result.users);
+      } catch (reason) {
+        if (active) {
+          setNotice(
+            reason instanceof Error ? reason.message : "Unable to load users.",
+          );
+        }
+      }
+    };
+    void load();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const run = async (operation: () => Promise<unknown>, success: string) => {
+    setSaving(true);
+    setNotice(null);
+    try {
+      await operation();
+      await refresh();
+      setNotice(success);
+    } catch (reason) {
+      setNotice(
+        reason instanceof Error ? reason.message : "Unable to save the user.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <Text style={styles.eyebrow}>THE STEWARDSHIP</Text>
+      <Text style={styles.title}>Admin</Text>
+      <Text style={styles.body}>
+        Manage accounts and review the access record from one protected place.
+      </Text>
+      <View style={styles.formCard}>
+        <Text style={styles.cardTitle}>Create user</Text>
+        <TextInput
+          value={username}
+          onChangeText={setUsername}
+          placeholder="Username"
+          placeholderTextColor="#655D57"
+          autoCapitalize="none"
+          style={styles.input}
+          returnKeyType="next"
+        />
+        <TextInput
+          value={name}
+          onChangeText={setName}
+          placeholder="Display name (optional)"
+          placeholderTextColor="#655D57"
+          style={styles.input}
+          returnKeyType="next"
+        />
+        <TextInput
+          value={email}
+          onChangeText={setEmail}
+          placeholder="Email (optional)"
+          placeholderTextColor="#655D57"
+          autoCapitalize="none"
+          keyboardType="email-address"
+          style={styles.input}
+          returnKeyType="next"
+        />
+        <TextInput
+          value={password}
+          onChangeText={setPassword}
+          placeholder="Password (8 characters minimum)"
+          placeholderTextColor="#655D57"
+          secureTextEntry
+          style={styles.input}
+          returnKeyType="done"
+          onSubmitEditing={() =>
+            void run(async () => {
+              await createAdminUser({
+                username: username.trim(),
+                name: name.trim() || undefined,
+                email: email.trim() || undefined,
+                password,
+              });
+              setUsername("");
+              setName("");
+              setEmail("");
+              setPassword("");
+            }, "User created.")
+          }
+        />
+        <Pressable
+          disabled={saving}
+          onPress={() =>
+            void run(async () => {
+              await createAdminUser({
+                username: username.trim(),
+                name: name.trim() || undefined,
+                email: email.trim() || undefined,
+                password,
+              });
+              setUsername("");
+              setName("");
+              setEmail("");
+              setPassword("");
+            }, "User created.")
+          }
+          style={[styles.actionButton, saving && styles.buttonDisabled]}
+        >
+          <Text style={styles.actionButtonText}>Create user</Text>
+        </Pressable>
+      </View>
+      {notice ? <Text style={styles.notice}>{notice}</Text> : null}
+      <Text style={[styles.eyebrow, styles.section]}>ALL USERS · {users.length}</Text>
+      {users.map((user) => (
+        <AdminUserCard
+          key={user.id}
+          saving={saving}
+          user={user}
+          onDelete={() => void run(() => deleteAdminUser(user.id), "User removed.")}
+          onSave={(payload) =>
+            void run(() => updateAdminUser(user.id, payload), "User updated.")
+          }
+        />
+      ))}
+    </>
+  );
+}
+
+function AdminUserCard({
+  user,
+  saving,
+  onSave,
+  onDelete,
+}: {
+  user: AdminUser;
+  saving: boolean;
+  onSave: (payload: {
+    username: string;
+    name?: string;
+    email?: string;
+    password?: string;
+  }) => void;
+  onDelete: () => void;
+}) {
+  const [username, setUsername] = useState(user.username);
+  const [name, setName] = useState(user.name ?? "");
+  const [email, setEmail] = useState(user.email ?? "");
+  const [password, setPassword] = useState("");
+  return (
+    <View style={styles.adminUserCard}>
+      <Text style={styles.cardTitle}>{user.username}</Text>
+      <Text style={styles.cardMeta}>
+        Created {date(user.createdAt)} · Updated {date(user.updatedAt)}
+      </Text>
+      <TextInput
+        value={username}
+        onChangeText={setUsername}
+        placeholder="Username"
+        placeholderTextColor="#655D57"
+        autoCapitalize="none"
+        style={styles.input}
+      />
+      <TextInput
+        value={name}
+        onChangeText={setName}
+        placeholder="Display name"
+        placeholderTextColor="#655D57"
+        style={styles.input}
+      />
+      <TextInput
+        value={email}
+        onChangeText={setEmail}
+        placeholder="Email"
+        placeholderTextColor="#655D57"
+        autoCapitalize="none"
+        keyboardType="email-address"
+        style={styles.input}
+      />
+      <TextInput
+        value={password}
+        onChangeText={setPassword}
+        placeholder="New password (leave blank to keep)"
+        placeholderTextColor="#655D57"
+        secureTextEntry
+        style={styles.input}
+      />
+      <View style={styles.adminActions}>
+        <Pressable
+          disabled={saving}
+          onPress={() =>
+            onSave({
+              username: username.trim(),
+              name: name.trim() || undefined,
+              email: email.trim() || undefined,
+              password: password || undefined,
+            })
+          }
+        >
+          <Text style={styles.inlineAction}>Save user</Text>
+        </Pressable>
+        <Pressable disabled={saving} onPress={onDelete}>
+          <Text style={styles.destructiveAction}>Remove user</Text>
+        </Pressable>
+      </View>
+      <Text style={[styles.eyebrow, styles.accessLabel]}>ACCESS RECORD</Text>
+      {user.ipAddresses.length ? (
+        user.ipAddresses.map((address) => (
+          <Text key={address.id} style={styles.cardMeta}>
+            {address.ipAddress} · {address.hitCount} visits · last {date(address.lastSeenAt)}
+          </Text>
+        ))
+      ) : (
+        <Text style={styles.cardMeta}>No recorded access addresses.</Text>
+      )}
+    </View>
   );
 }
 
@@ -1468,6 +1701,27 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     padding: 16,
   },
+  adminUserCard: {
+    backgroundColor: "#FBF7F0",
+    borderColor: "#D4C9B9",
+    borderWidth: 1,
+    gap: 12,
+    marginTop: 12,
+    padding: 16,
+  },
+  adminActions: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 20,
+    justifyContent: "space-between",
+  },
+  destructiveAction: {
+    color: "#A95B5B",
+    fontSize: 13,
+    fontWeight: "800",
+    textDecorationLine: "underline",
+  },
+  accessLabel: { marginTop: 4 },
   formCard: {
     backgroundColor: "#FBF7F0",
     borderColor: "#D4C9B9",

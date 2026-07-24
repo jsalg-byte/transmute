@@ -16,6 +16,22 @@ export type MobileSession = {
   user: MobileUser;
 };
 
+export type AdminUser = {
+  id: string;
+  username: string;
+  name: string | null;
+  email: string | null;
+  createdAt: string;
+  updatedAt: string;
+  ipAddresses: {
+    id: string;
+    ipAddress: string;
+    firstSeenAt: string;
+    lastSeenAt: string;
+    hitCount: number;
+  }[];
+};
+
 export type TransmuteRecord = {
   user: MobileUser;
   isAdmin: boolean;
@@ -269,6 +285,28 @@ export async function removeFriend(userId: string) {
 
 export async function updateWeightUnit(weightUnit: 'kg' | 'lbs') {
   return authenticatedRequest('/v1/preferences/weight-unit', { method: 'PUT', body: JSON.stringify({ weightUnit }) });
+}
+
+export async function getAdminUsers() {
+  return authenticatedRequest<{ users: AdminUser[] }>('/v1/admin/users');
+}
+
+export async function createAdminUser(payload: { username: string; name?: string; email?: string; password: string }) {
+  return authenticatedRequest<{ user: AdminUser }>('/v1/admin/users', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateAdminUser(userId: string, payload: { username: string; name?: string; email?: string; password?: string }) {
+  return authenticatedRequest<{ user: AdminUser }>(`/v1/admin/users/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteAdminUser(userId: string) {
+  return authenticatedRequest(`/v1/admin/users/${userId}`, { method: 'DELETE' });
 }
 
 export async function uploadProgressPhoto(payload: {

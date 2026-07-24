@@ -21,6 +21,7 @@ const envSchema = z.object({
   S3_ACCESS_KEY_ID: z.string().min(1),
   S3_SECRET_ACCESS_KEY: z.string().min(1),
   S3_FORCE_PATH_STYLE: z.string().optional(),
+  ADMIN_IDENTIFIERS: z.string().optional(),
 });
 
 const env = envSchema.parse(process.env);
@@ -46,6 +47,20 @@ const registrationSchema = z.object({
   username: usernameSchema,
   name: z.string().trim().min(2).max(80).optional(),
   password: z.string().min(8).max(128),
+});
+
+const adminCreateUserSchema = z.object({
+  username: usernameSchema,
+  name: z.string().trim().min(2).max(80).optional(),
+  email: z.string().trim().email().max(120).optional(),
+  password: z.string().min(8).max(128),
+});
+
+const adminUpdateUserSchema = z.object({
+  username: usernameSchema,
+  name: z.string().trim().min(2).max(80).optional(),
+  email: z.string().trim().email().max(120).optional(),
+  password: z.string().min(8).max(128).optional(),
 });
 
 const loginSchema = z.object({
@@ -146,6 +161,30 @@ type ProgressPhotoRow = {
   captured_at: Date;
 };
 
+type AdminUserRow = {
+  id: string;
+  username: string;
+  name: string | null;
+  email: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+type UserIpRow = {
+  id: string;
+  user_id: string;
+  ip_address: string;
+  first_seen_at: Date;
+  last_seen_at: Date;
+  hit_count: number;
+};
+
+const adminIdentifiers = new Set(
+  ['mzootfb@gmail.com', 'mzootfb', ...(env.ADMIN_IDENTIFIERS ?? '').split(',')]
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean),
+);
+
 function refreshTokenHash(token: string) {
   return createHash('sha256').update(token).digest('hex');
 }
@@ -194,6 +233,19 @@ async function requireUserId(authorization: string | undefined) {
   }
 }
 
+function isAdminIdentity(user: Pick<UserRow, 'username' | 'name'> & { email?: string | null }) {
+  return adminIdentifiers.has(user.username.toLowerCase()) || (user.email ? adminIdentifiers.has(user.email.toLowerCase()) : false);
+}
+
+async function requireAdminUser(authorization: string | undefined) {
+  const userId = await requireUserId(authorization);
+  if (!userId) return null;
+  const [user] = await sql<UserRow[]>`
+    SELECT id, username, name, password_hash, email FROM users WHERE id = ${userId} LIMIT 1
+  `;
+  return user && isAdminIdentity(user) ? user : null;
+}
+
 function parseStartedAt(startedAtDate: string | undefined) {
   if (!startedAtDate) return new Date();
 
@@ -213,6 +265,40 @@ function parseCapturedAt(value: string) {
 
 function isOwnedProgressKey(userId: string, key: string) {
   return key.startsWith(`progress/${userId}/`);
+}
+
+async function readAdminUsers() {
+  const [users, addresses] = await Promise.all([
+    sql<AdminUserRow[]>`
+      SELECT id, username, name, email, created_at, updated_at
+      FROM users
+      ORDER BY username ASC
+    `,
+    sql<UserIpRow[]>`
+      SELECT id, user_id, ip_address, first_seen_at, last_seen_at, hit_count
+      FROM user_ip_addresses
+      ORDER BY last_seen_at DESC
+    `,
+  ]);
+  const addressesByUser = new Map<string, UserIpRow[]>();
+  for (const address of addresses) {
+    addressesByUser.set(address.user_id, [...(addressesByUser.get(address.user_id) ?? []), address]);
+  }
+  return users.map((user) => ({
+    id: user.id,
+    username: user.username,
+    name: user.name,
+    email: user.email,
+    createdAt: user.created_at,
+    updatedAt: user.updated_at,
+    ipAddresses: (addressesByUser.get(user.id) ?? []).map((address) => ({
+      id: address.id,
+      ipAddress: address.ip_address,
+      firstSeenAt: address.first_seen_at,
+      lastSeenAt: address.last_seen_at,
+      hitCount: address.hit_count,
+    })),
+  }));
 }
 
 await app.register(cors, {
@@ -806,6 +892,71 @@ app.put('/v1/preferences/weight-unit', async (request, reply) => {
   return reply.send({ weightUnit: parsed.data.weightUnit });
 });
 
+app.get('/v1/admin/users', async (request, reply) => {
+  const admin = await requireAdminUser(request.headers.authorization);
+  if (!admin) return reply.code(403).send({ error: 'Administrator access is required.' });
+  return reply.send({ users: await readAdminUsers() });
+});
+
+app.post('/v1/admin/users', async (request, reply) => {
+  const admin = await requireAdminUser(request.headers.authorization);
+  if (!admin) return reply.code(403).send({ error: 'Administrator access is required.' });
+  const parsed = adminCreateUserSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid user payload.' });
+  try {
+    const [user] = await sql<AdminUserRow[]>`
+      INSERT INTO users (id, username, name, email, password_hash, created_at, updated_at)
+      VALUES (${randomUUID()}, ${parsed.data.username}, ${parsed.data.name ?? parsed.data.username}, ${parsed.data.email ?? null}, ${await hash(parsed.data.password, 12)}, now(), now())
+      RETURNING id, username, name, email, created_at, updated_at
+    `;
+    return reply.code(201).send({ user });
+  } catch (error) {
+    if (error instanceof postgres.PostgresError && error.code === '23505') {
+      return reply.code(409).send({ error: 'That username or email already exists.' });
+    }
+    throw error;
+  }
+});
+
+app.patch('/v1/admin/users/:id', async (request, reply) => {
+  const admin = await requireAdminUser(request.headers.authorization);
+  if (!admin) return reply.code(403).send({ error: 'Administrator access is required.' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = adminUpdateUserSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid user update payload.' });
+  try {
+    const passwordHash = parsed.data.password ? await hash(parsed.data.password, 12) : null;
+    const [user] = await sql<AdminUserRow[]>`
+      UPDATE users
+      SET username = ${parsed.data.username},
+          name = ${parsed.data.name ?? parsed.data.username},
+          email = ${parsed.data.email ?? null},
+          password_hash = coalesce(${passwordHash}, password_hash),
+          updated_at = now()
+      WHERE id = ${params.data.id}
+      RETURNING id, username, name, email, created_at, updated_at
+    `;
+    if (!user) return reply.code(404).send({ error: 'User not found.' });
+    return reply.send({ user });
+  } catch (error) {
+    if (error instanceof postgres.PostgresError && error.code === '23505') {
+      return reply.code(409).send({ error: 'That username or email already exists.' });
+    }
+    throw error;
+  }
+});
+
+app.delete('/v1/admin/users/:id', async (request, reply) => {
+  const admin = await requireAdminUser(request.headers.authorization);
+  if (!admin) return reply.code(403).send({ error: 'Administrator access is required.' });
+  const params = idParamsSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: 'Invalid user id.' });
+  if (params.data.id === admin.id) return reply.code(400).send({ error: 'You cannot delete your own administrator account.' });
+  const [deleted] = await sql<{ id: string }[]>`DELETE FROM users WHERE id = ${params.data.id} RETURNING id`;
+  if (!deleted) return reply.code(404).send({ error: 'User not found.' });
+  return reply.code(204).send();
+});
+
 app.post('/v1/progress/presign', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
@@ -919,7 +1070,6 @@ app.get('/v1/record', async (request, reply) => {
   const currentUser = user[0] as { id: string; username: string; name: string | null; email: string | null } | undefined;
   if (!currentUser) return reply.code(401).send({ error: 'Unauthorized' });
 
-  const adminValues = new Set(['mzootfb@gmail.com', 'mzootfb']);
   const workoutPlans = Array.from(
     (routines as unknown as Array<{
       id: string;
@@ -978,7 +1128,7 @@ app.get('/v1/record', async (request, reply) => {
 
   return reply.send({
     user: publicUser(currentUser),
-    isAdmin: adminValues.has(currentUser.username.toLowerCase()) || adminValues.has(currentUser.email?.toLowerCase() ?? ''),
+    isAdmin: isAdminIdentity(currentUser),
     dashboard: { activeSession: activeSession[0] ?? null },
     workoutPlans,
     exercises,
