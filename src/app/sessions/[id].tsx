@@ -1,6 +1,6 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { addExerciseToWorkoutSession, addWorkoutSet, completeWorkoutSession, deleteWorkoutSet, getWorkoutSession, updateWorkoutSet, type WorkoutSessionDetail } from '../../lib/api';
@@ -144,6 +144,26 @@ export default function SessionDetailScreen() {
       setError(reason instanceof Error ? reason.message : 'Unable to complete the session.');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const shareWorkout = async () => {
+    if (!detail) return;
+    const title = `${detail.session.routineName ?? 'Workout plan'} · ${detail.session.dayName ?? 'Session'}`;
+    const movementSummary = detail.exercises
+      .map((exercise) => {
+        const sets = setsByExercise.get(exercise.id) ?? [];
+        if (!sets.length) return null;
+        return `${exercise.name}: ${sets.map((set) => `${set.reps} reps${set.weight !== null ? ` @ ${set.weight}` : ''}`).join(', ')}`;
+      })
+      .filter((value): value is string => Boolean(value));
+    try {
+      await Share.share({
+        title,
+        message: `Transmute workout record\n${title}\n${detail.sets.length} ${detail.sets.length === 1 ? 'set' : 'sets'} logged${movementSummary.length ? `\n\n${movementSummary.join('\n')}` : ''}`,
+      });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to share this workout.');
     }
   };
 
@@ -293,7 +313,11 @@ export default function SessionDetailScreen() {
               <Pressable disabled={saving} onPress={() => void complete()} style={[styles.button, styles.completeButton, saving && styles.buttonDisabled]}>
                 <Text style={styles.buttonText}>Complete session</Text>
               </Pressable>
-            ) : null}
+            ) : (
+              <Pressable accessibilityRole="button" onPress={() => void shareWorkout()} style={[styles.outlineButton, styles.completeButton]}>
+                <Text style={styles.outlineButtonText}>Share workout</Text>
+              </Pressable>
+            )}
           </>
         ) : null}
       </ScrollView>
@@ -302,5 +326,5 @@ export default function SessionDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { backgroundColor: '#F4EFE7', flex: 1 }, wrap: { alignSelf: 'center', maxWidth: 760, padding: 24, paddingBottom: 56, width: '100%' }, back: { color: '#642D2A', fontSize: 14, fontWeight: '800', textDecorationLine: 'underline' }, loading: { gap: 10, marginTop: 80 }, eyebrow: { color: '#642D2A', fontFamily: 'Courier', fontSize: 12, letterSpacing: 1.5, marginTop: 28 }, title: { color: '#101015', fontSize: 38, fontWeight: '900', letterSpacing: -2, lineHeight: 42, marginTop: 12 }, body: { color: '#2C2C31', fontSize: 17, lineHeight: 27, marginTop: 14 }, error: { color: '#642D2A', fontSize: 14, fontWeight: '700', lineHeight: 21, marginTop: 22 }, formCard: { backgroundColor: '#FBF7F0', borderColor: '#D4C9B9', borderWidth: 1, gap: 12, marginTop: 26, padding: 16 }, card: { backgroundColor: '#FBF7F0', borderColor: '#D4C9B9', borderWidth: 1, marginTop: 12, padding: 16 }, cardTitle: { color: '#101015', fontSize: 18, fontWeight: '800' }, exercisePicker: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, exerciseOption: { borderColor: '#D4C9B9', borderWidth: 1, paddingHorizontal: 10, paddingVertical: 8 }, exerciseOptionActive: { backgroundColor: '#101015', borderColor: '#101015' }, exerciseOptionText: { color: '#101015', fontSize: 13, fontWeight: '700' }, exerciseOptionTextActive: { color: '#F4EFE7' }, input: { borderBottomColor: '#667798', borderBottomWidth: 1, color: '#101015', fontSize: 16, paddingBottom: 9, paddingTop: 8 }, warmup: { alignSelf: 'flex-start' }, meta: { color: '#655D57', fontSize: 14, lineHeight: 21 }, button: { alignItems: 'center', backgroundColor: '#101015', justifyContent: 'center', minHeight: 50, paddingHorizontal: 16 }, completeButton: { marginTop: 22 }, buttonText: { color: '#F4EFE7', fontSize: 15, fontWeight: '800' }, buttonDisabled: { opacity: 0.55 }, sectionLabel: { color: '#642D2A', fontFamily: 'Courier', fontSize: 12, fontWeight: '700', letterSpacing: 1.5, marginTop: 30 }, setRow: { borderTopColor: '#D4C9B9', borderTopWidth: 1, marginTop: 10, paddingTop: 10 }, editSetForm: { gap: 10, width: '100%' }, editActions: { alignItems: 'center', flexDirection: 'row', gap: 14, justifyContent: 'flex-end', marginTop: 8 }, addMovement: { color: '#642D2A', fontSize: 13, fontWeight: '800', textDecorationColor: '#A95B5B', textDecorationLine: 'underline' }, remove: { color: '#642D2A', fontSize: 13, fontWeight: '800', textDecorationLine: 'underline' },
+  safeArea: { backgroundColor: '#F4EFE7', flex: 1 }, wrap: { alignSelf: 'center', maxWidth: 760, padding: 24, paddingBottom: 56, width: '100%' }, back: { color: '#642D2A', fontSize: 14, fontWeight: '800', textDecorationLine: 'underline' }, loading: { gap: 10, marginTop: 80 }, eyebrow: { color: '#642D2A', fontFamily: 'Courier', fontSize: 12, letterSpacing: 1.5, marginTop: 28 }, title: { color: '#101015', fontSize: 38, fontWeight: '900', letterSpacing: -2, lineHeight: 42, marginTop: 12 }, body: { color: '#2C2C31', fontSize: 17, lineHeight: 27, marginTop: 14 }, error: { color: '#642D2A', fontSize: 14, fontWeight: '700', lineHeight: 21, marginTop: 22 }, formCard: { backgroundColor: '#FBF7F0', borderColor: '#D4C9B9', borderWidth: 1, gap: 12, marginTop: 26, padding: 16 }, card: { backgroundColor: '#FBF7F0', borderColor: '#D4C9B9', borderWidth: 1, marginTop: 12, padding: 16 }, cardTitle: { color: '#101015', fontSize: 18, fontWeight: '800' }, exercisePicker: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, exerciseOption: { borderColor: '#D4C9B9', borderWidth: 1, paddingHorizontal: 10, paddingVertical: 8 }, exerciseOptionActive: { backgroundColor: '#101015', borderColor: '#101015' }, exerciseOptionText: { color: '#101015', fontSize: 13, fontWeight: '700' }, exerciseOptionTextActive: { color: '#F4EFE7' }, input: { borderBottomColor: '#667798', borderBottomWidth: 1, color: '#101015', fontSize: 16, paddingBottom: 9, paddingTop: 8 }, warmup: { alignSelf: 'flex-start' }, meta: { color: '#655D57', fontSize: 14, lineHeight: 21 }, button: { alignItems: 'center', backgroundColor: '#101015', justifyContent: 'center', minHeight: 50, paddingHorizontal: 16 }, outlineButton: { alignItems: 'center', borderColor: '#101015', borderWidth: 1, justifyContent: 'center', minHeight: 50, paddingHorizontal: 16 }, completeButton: { marginTop: 22 }, buttonText: { color: '#F4EFE7', fontSize: 15, fontWeight: '800' }, outlineButtonText: { color: '#101015', fontSize: 15, fontWeight: '800' }, buttonDisabled: { opacity: 0.55 }, sectionLabel: { color: '#642D2A', fontFamily: 'Courier', fontSize: 12, fontWeight: '700', letterSpacing: 1.5, marginTop: 30 }, setRow: { borderTopColor: '#D4C9B9', borderTopWidth: 1, marginTop: 10, paddingTop: 10 }, editSetForm: { gap: 10, width: '100%' }, editActions: { alignItems: 'center', flexDirection: 'row', gap: 14, justifyContent: 'flex-end', marginTop: 8 }, addMovement: { color: '#642D2A', fontSize: 13, fontWeight: '800', textDecorationColor: '#A95B5B', textDecorationLine: 'underline' }, remove: { color: '#642D2A', fontSize: 13, fontWeight: '800', textDecorationLine: 'underline' },
 });

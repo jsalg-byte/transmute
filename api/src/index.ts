@@ -1546,6 +1546,10 @@ app.get('/v1/record', async (request, reply) => {
     });
   }
 
+  const activeRoutineId = (preferences[0] as { active_routine_id?: string | null } | undefined)?.active_routine_id ?? null;
+  const activePlan = activeRoutineId ? plansById.get(activeRoutineId) : null;
+  const nextPlannedDay = activePlan?.days.slice().sort((left, right) => left.sortOrder - right.sortOrder)[0] ?? null;
+
   const progressWithUrls = await Promise.all(
     (progress as ProgressPhotoRow[]).map(async (photo) => ({
       id: photo.id,
@@ -1563,7 +1567,18 @@ app.get('/v1/record', async (request, reply) => {
   return reply.send({
     user: publicUser(currentUser),
     isAdmin: isAdminIdentity(currentUser),
-    dashboard: { activeSession: activeSession[0] ?? null },
+    dashboard: {
+      activeSession: activeSession[0] ?? null,
+      nextSession: nextPlannedDay
+        ? {
+            routineId: activePlan?.id ?? null,
+            routineName: activePlan?.name ?? null,
+            dayId: nextPlannedDay.id,
+            dayName: nextPlannedDay.name,
+            exerciseCount: nextPlannedDay.exerciseCount,
+          }
+        : null,
+    },
     workoutPlans,
     exercises,
     sessions,

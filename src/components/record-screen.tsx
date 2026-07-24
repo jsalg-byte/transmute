@@ -191,8 +191,34 @@ function AreaContent({
         <Text style={styles.body}>
           {r.dashboard.activeSession
             ? `Active: ${r.dashboard.activeSession.routine_name ?? "workout"} — ${r.dashboard.activeSession.day_name ?? "today"}.`
-            : "Your training record is ready for the next input."}
+            : r.dashboard.nextSession
+              ? `Up next: ${r.dashboard.nextSession.dayName} in ${r.dashboard.nextSession.routineName ?? "your active workout plan"}.`
+              : "Your training record is ready for the next input."}
         </Text>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() =>
+            router.push(
+              r.dashboard.activeSession
+                ? `/sessions/${r.dashboard.activeSession.id}`
+                : "/sessions",
+            )
+          }
+          style={styles.dashboardAction}
+        >
+          <Text style={styles.actionButtonText}>
+            {r.dashboard.activeSession
+              ? "Continue session"
+              : r.dashboard.nextSession
+                ? `Begin ${r.dashboard.nextSession.dayName}`
+                : "Set up a workout plan"}
+          </Text>
+        </Pressable>
+        {r.dashboard.nextSession && !r.dashboard.activeSession ? (
+          <Text style={styles.dashboardMeta}>
+            {r.dashboard.nextSession.exerciseCount} {r.dashboard.nextSession.exerciseCount === 1 ? "movement" : "movements"} ready to log.
+          </Text>
+        ) : null}
         <View style={styles.grid}>
           <Card title={`${r.workoutPlans.length} plans`} meta="Workout plans" />
           <Card
@@ -2222,6 +2248,16 @@ const styles = StyleSheet.create({
     minHeight: 46,
     paddingHorizontal: 16,
   },
+  dashboardAction: {
+    alignItems: "center",
+    alignSelf: "flex-start",
+    backgroundColor: "#101015",
+    justifyContent: "center",
+    marginTop: 24,
+    minHeight: 52,
+    paddingHorizontal: 18,
+  },
+  dashboardMeta: { color: "#655D57", fontSize: 13, marginTop: 10 },
   actionButtonText: { color: "#F4EFE7", fontSize: 14, fontWeight: "800" },
   dayAction: { borderColor: "#D4C9B9", borderTopWidth: 1, paddingVertical: 12 },
   dayActionText: { color: "#101015", fontSize: 16, fontWeight: "800" },

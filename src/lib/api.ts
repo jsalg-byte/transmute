@@ -35,7 +35,16 @@ export type AdminUser = {
 export type TransmuteRecord = {
   user: MobileUser;
   isAdmin: boolean;
-  dashboard: { activeSession: { id: string; routine_name: string | null; day_name: string | null; started_at: string } | null };
+  dashboard: {
+    activeSession: { id: string; routine_name: string | null; day_name: string | null; started_at: string } | null;
+    nextSession: {
+      routineId: string | null;
+      routineName: string | null;
+      dayId: string;
+      dayName: string;
+      exerciseCount: number;
+    } | null;
+  };
   workoutPlans: {
     id: string;
     name: string;
