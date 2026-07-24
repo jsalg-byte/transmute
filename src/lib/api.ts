@@ -281,11 +281,18 @@ export async function startWorkoutSession(payload: { routineDayId: string; start
 export type WorkoutSessionDetail = {
   session: { id: string; status: string; startedAt: string; endedAt: string | null; routineName: string | null; dayName: string | null };
   exercises: { id: string; name: string; category: string; muscleGroup: string | null; targetReps: number | null; targetWeight: string | null }[];
+  libraryExercises: { id: string; name: string; category: string; muscleGroup: string | null }[];
   sets: { id: string; exerciseId: string; setOrder: number; reps: number; weight: string | number | null; isWarmup: boolean; createdAt: string }[];
 };
 
 export async function getWorkoutSession(sessionId: string) {
   return authenticatedRequest<WorkoutSessionDetail>(`/v1/sessions/${sessionId}`);
+}
+
+export async function addExerciseToWorkoutSession(sessionId: string, payload: { exerciseId: string; targetReps?: number; targetWeight?: number }) {
+  return authenticatedRequest(`/v1/sessions/${sessionId}/exercises`, {
+    method: 'POST', body: JSON.stringify(payload),
+  });
 }
 
 export async function addWorkoutSet(sessionId: string, payload: { exerciseId: string; reps: number; weight?: number; isWarmup?: boolean }) {

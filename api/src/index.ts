@@ -102,6 +102,11 @@ const workoutSetSchema = z.object({
   weight: z.number().nonnegative().max(2000).optional(),
   isWarmup: z.boolean().optional(),
 });
+const sessionExerciseSchema = z.object({
+  exerciseId: z.string().uuid(),
+  targetReps: z.number().int().positive().max(50).optional(),
+  targetWeight: z.number().nonnegative().max(2000).optional(),
+});
 const foodSchema = z.object({
   name: z.string().trim().min(2).max(120),
   barcodeUpc: z.string().trim().regex(/^\d+$/).min(8).max(14).optional(),
@@ -670,7 +675,7 @@ app.get('/v1/sessions/:id', async (request, reply) => {
   `;
   if (!session) return reply.code(404).send({ error: 'Workout session not found.' });
 
-  const [plannedExercises, addedExercises, sets] = await Promise.all([
+  const [plannedExercises, addedExercises, sets, libraryExercises] = await Promise.all([
     session.routine_day_id
       ? sql<{ id: string; name: string; category: string; muscle_group: string | null; target_reps: number | null; target_weight: string | null }[]>`
           SELECT e.id, e.name, e.category, e.muscle_group, rde.target_reps, rde.target_weight
@@ -687,13 +692,60 @@ app.get('/v1/sessions/:id', async (request, reply) => {
       SELECT id, exercise_id, set_order, reps, weight, is_warmup, created_at
       FROM workout_sets WHERE session_id = ${session.id} ORDER BY set_order ASC, created_at ASC
     `,
+    sql<{ id: string; name: string; category: string; muscle_group: string | null }[]>`
+      SELECT id, name, category, muscle_group FROM exercises ORDER BY name ASC LIMIT 300
+    `,
   ]);
 
   const plannedIds = new Set(plannedExercises.map((exercise) => exercise.id));
   return reply.send({
     session: { id: session.id, status: session.status, startedAt: session.started_at, endedAt: session.ended_at, routineName: session.routine_name, dayName: session.day_name },
     exercises: [...plannedExercises, ...addedExercises.filter((exercise) => !plannedIds.has(exercise.id))].map((exercise) => ({ id: exercise.id, name: exercise.name, category: exercise.category, muscleGroup: exercise.muscle_group, targetReps: exercise.target_reps, targetWeight: exercise.target_weight })),
+    libraryExercises: libraryExercises.map((exercise) => ({ id: exercise.id, name: exercise.name, category: exercise.category, muscleGroup: exercise.muscle_group })),
     sets: sets.map((set) => ({ id: set.id, exerciseId: set.exercise_id, setOrder: set.set_order, reps: set.reps, weight: set.weight, isWarmup: set.is_warmup, createdAt: set.created_at })),
+  });
+});
+
+app.post('/v1/sessions/:id/exercises', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = sessionExerciseSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid session exercise payload.' });
+  const [session, exercise] = await Promise.all([
+    sql<{ id: string; routine_day_id: string | null; status: string }[]>`
+      SELECT id, routine_day_id, status FROM workout_sessions
+      WHERE id = ${params.data.id} AND user_id = ${userId} LIMIT 1
+    `,
+    sql<{ id: string; name: string; category: string; muscle_group: string | null }[]>`
+      SELECT id, name, category, muscle_group FROM exercises WHERE id = ${parsed.data.exerciseId} LIMIT 1
+    `,
+  ]);
+  const currentSession = session[0];
+  if (!currentSession) return reply.code(404).send({ error: 'Workout session not found.' });
+  if (currentSession.status !== 'active') return reply.code(409).send({ error: 'Only active sessions can be changed.' });
+  const selectedExercise = exercise[0];
+  if (!selectedExercise) return reply.code(404).send({ error: 'Exercise not found.' });
+  const [entry] = await sql<{ id: string }[]>`
+    INSERT INTO session_exercises (id, session_id, exercise_id, sort_order, target_reps, target_weight, created_at)
+    VALUES (
+      ${randomUUID()}, ${currentSession.id}, ${selectedExercise.id},
+      (SELECT coalesce(max(sort_order), -1) + 1 FROM session_exercises WHERE session_id = ${currentSession.id}),
+      ${parsed.data.targetReps ?? null}, ${parsed.data.targetWeight?.toString() ?? null}, now()
+    )
+    ON CONFLICT (session_id, exercise_id) DO UPDATE SET
+      target_reps = coalesce(EXCLUDED.target_reps, session_exercises.target_reps),
+      target_weight = coalesce(EXCLUDED.target_weight, session_exercises.target_weight)
+    RETURNING id
+  `;
+  return reply.code(201).send({
+    entry: {
+      id: entry.id,
+      exerciseId: selectedExercise.id,
+      name: selectedExercise.name,
+      category: selectedExercise.category,
+      muscleGroup: selectedExercise.muscle_group,
+    },
   });
 });
 
