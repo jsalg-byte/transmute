@@ -60,6 +60,15 @@ async function request<T>(path: string, init: RequestInit = {}) {
   return payload as T;
 }
 
+async function authenticatedRequest<T>(path: string, init: RequestInit = {}) {
+  const session = await resumeSession();
+  if (!session) throw new Error('Your session has expired. Sign in again.');
+  return request<T>(path, {
+    ...init,
+    headers: { authorization: `Bearer ${session.accessToken}`, ...init.headers },
+  });
+}
+
 export async function saveSession(session: MobileSession) {
   await setStoredSession(SESSION_STORAGE_KEY, JSON.stringify(session));
 }
@@ -156,4 +165,58 @@ export async function signOut() {
   }
 
   await clearSession();
+}
+
+export async function createWorkoutPlan(payload: { name: string; description?: string }) {
+  return authenticatedRequest<{ plan: TransmuteRecord['workoutPlans'][number] }>('/v1/plans', {
+    method: 'POST', body: JSON.stringify(payload),
+  });
+}
+
+export async function addWorkoutPlanDay(planId: string, payload: { dayName: string }) {
+  return authenticatedRequest<{ day: TransmuteRecord['workoutPlans'][number]['days'][number] }>(`/v1/plans/${planId}/days`, {
+    method: 'POST', body: JSON.stringify(payload),
+  });
+}
+
+export async function setActiveWorkoutPlan(routineId: string) {
+  return authenticatedRequest<{ activeRoutineId: string }>('/v1/preferences/active-plan', {
+    method: 'PUT', body: JSON.stringify({ routineId }),
+  });
+}
+
+export async function startWorkoutSession(payload: { routineDayId: string; startedAtDate?: string }) {
+  return authenticatedRequest<{ session: { id: string; startedAt: string } }>('/v1/sessions', {
+    method: 'POST', body: JSON.stringify(payload),
+  });
+}
+
+export type WorkoutSessionDetail = {
+  session: { id: string; status: string; startedAt: string; endedAt: string | null; routineName: string | null; dayName: string | null };
+  exercises: { id: string; name: string; category: string; muscleGroup: string | null; targetReps: number | null; targetWeight: string | null }[];
+  sets: { id: string; exerciseId: string; setOrder: number; reps: number; weight: string | number | null; isWarmup: boolean; createdAt: string }[];
+};
+
+export async function getWorkoutSession(sessionId: string) {
+  return authenticatedRequest<WorkoutSessionDetail>(`/v1/sessions/${sessionId}`);
+}
+
+export async function addWorkoutSet(sessionId: string, payload: { exerciseId: string; reps: number; weight?: number; isWarmup?: boolean }) {
+  return authenticatedRequest(`/v1/sessions/${sessionId}/sets`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function updateWorkoutSet(setId: string, payload: { exerciseId: string; reps: number; weight?: number; isWarmup?: boolean }) {
+  return authenticatedRequest(`/v1/sets/${setId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+}
+
+export async function deleteWorkoutSet(setId: string) {
+  return authenticatedRequest(`/v1/sets/${setId}`, { method: 'DELETE' });
+}
+
+export async function completeWorkoutSession(sessionId: string) {
+  return authenticatedRequest(`/v1/sessions/${sessionId}/complete`, { method: 'POST' });
+}
+
+export async function deleteWorkoutSession(sessionId: string) {
+  return authenticatedRequest(`/v1/sessions/${sessionId}`, { method: 'DELETE' });
 }
