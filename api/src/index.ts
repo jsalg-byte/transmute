@@ -56,6 +56,11 @@ const planDayExerciseSchema = z.object({
   targetReps: z.number().int().positive().max(50).optional(),
   targetWeight: z.number().nonnegative().max(2000).optional(),
 });
+const exerciseSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  category: z.enum(['strength', 'cardio', 'mobility']).default('strength'),
+  muscleGroup: z.string().trim().max(80).optional(),
+});
 const activePlanSchema = z.object({ routineId: z.string().uuid() });
 const startSessionSchema = z.object({
   routineDayId: z.string().uuid(),
@@ -298,6 +303,19 @@ app.post('/v1/plans', async (request, reply) => {
   return reply.code(201).send({
     plan: { id: plan.id, name: plan.name, description: plan.description, createdAt: plan.created_at, days: [{ id: plan.day.id, name: plan.day.day_name, sortOrder: plan.day.sort_order, exerciseCount: 0 }] },
   });
+});
+
+app.post('/v1/exercises', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = exerciseSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid exercise payload.' });
+  const [exercise] = await sql<{ id: string; name: string; category: string; muscle_group: string | null }[]>`
+    INSERT INTO exercises (id, name, category, muscle_group, created_by_user_id, created_at)
+    VALUES (${randomUUID()}, ${parsed.data.name}, ${parsed.data.category}, ${parsed.data.muscleGroup ?? null}, ${userId}, now())
+    RETURNING id, name, category, muscle_group
+  `;
+  return reply.code(201).send({ exercise: { id: exercise.id, name: exercise.name, category: exercise.category, muscleGroup: exercise.muscle_group } });
 });
 
 app.patch('/v1/plans/:id', async (request, reply) => {

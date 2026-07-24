@@ -179,6 +179,18 @@ export async function addWorkoutPlanDay(planId: string, payload: { dayName: stri
   });
 }
 
+export async function createExercise(payload: { name: string; category?: 'strength' | 'cardio' | 'mobility'; muscleGroup?: string }) {
+  return authenticatedRequest<{ exercise: { id: string; name: string; category: string; muscleGroup: string | null } }>('/v1/exercises', {
+    method: 'POST', body: JSON.stringify(payload),
+  });
+}
+
+export async function addExerciseToWorkoutPlanDay(dayId: string, payload: { exerciseId: string; targetSets?: number; targetReps?: number; targetWeight?: number }) {
+  return authenticatedRequest(`/v1/plan-days/${dayId}/exercises`, {
+    method: 'POST', body: JSON.stringify(payload),
+  });
+}
+
 export async function setActiveWorkoutPlan(routineId: string) {
   return authenticatedRequest<{ activeRoutineId: string }>('/v1/preferences/active-plan', {
     method: 'PUT', body: JSON.stringify({ routineId }),
