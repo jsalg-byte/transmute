@@ -42,6 +42,7 @@ import {
   signOut,
   startWorkoutSession,
   updateFasting,
+  updateProgressPhoto,
   updateWeightUnit,
   uploadMealPhoto,
   uploadProgressPhoto,
@@ -1196,6 +1197,8 @@ function ProgressContent({
   const [capturedAt, setCapturedAt] = useState(() => new Date().toISOString().slice(0, 10));
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [editingPhotoId, setEditingPhotoId] = useState<string | null>(null);
+  const [editingPhotoDate, setEditingPhotoDate] = useState("");
 
   const choosePhoto = async () => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(capturedAt)) {
@@ -1248,6 +1251,30 @@ function ProgressContent({
         reason instanceof Error
           ? reason.message
           : "Unable to remove the progress photo.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const savePhotoDate = async (id: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(editingPhotoDate)) {
+      setNotice("Enter the photo date as YYYY-MM-DD.");
+      return;
+    }
+    setSaving(true);
+    setNotice(null);
+    try {
+      await updateProgressPhoto(id, { capturedAt: editingPhotoDate });
+      await refresh();
+      setEditingPhotoId(null);
+      setEditingPhotoDate("");
+      setNotice("Progress photo date updated.");
+    } catch (reason) {
+      setNotice(
+        reason instanceof Error
+          ? reason.message
+          : "Unable to update the progress photo date.",
       );
     } finally {
       setSaving(false);
@@ -1313,13 +1340,54 @@ function ProgressContent({
                   {photo.note ?? "Progress photo"}
                 </Text>
               </View>
-              <Pressable
-                accessibilityRole="button"
-                disabled={saving}
-                onPress={() => void remove(photo.id)}
-              >
-                <Text style={styles.inlineAction}>Remove</Text>
-              </Pressable>
+              {editingPhotoId === photo.id ? (
+                <View style={styles.progressEdit}>
+                  <TextInput
+                    value={editingPhotoDate}
+                    onChangeText={setEditingPhotoDate}
+                    placeholder="YYYY-MM-DD"
+                    placeholderTextColor="#655D57"
+                    style={styles.progressDateInput}
+                    returnKeyType="done"
+                    onSubmitEditing={() => void savePhotoDate(photo.id)}
+                  />
+                  <View style={styles.progressActions}>
+                    <Pressable accessibilityRole="button" disabled={saving} onPress={() => void savePhotoDate(photo.id)}>
+                      <Text style={styles.inlineAction}>Save</Text>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={saving}
+                      onPress={() => {
+                        setEditingPhotoId(null);
+                        setEditingPhotoDate("");
+                      }}
+                    >
+                      <Text style={styles.inlineAction}>Cancel</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              ) : (
+                <View style={styles.progressActions}>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={saving}
+                    onPress={() => {
+                      setEditingPhotoId(photo.id);
+                      setEditingPhotoDate(photo.captured_at.slice(0, 10));
+                    }}
+                  >
+                    <Text style={styles.inlineAction}>Edit date</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={saving}
+                    onPress={() => void remove(photo.id)}
+                  >
+                    <Text style={styles.inlineAction}>Remove</Text>
+                  </Pressable>
+                </View>
+              )}
             </View>
           </View>
         ))
@@ -2207,6 +2275,17 @@ const styles = StyleSheet.create({
     gap: 14,
     justifyContent: "space-between",
     padding: 16,
+  },
+  progressActions: { alignItems: "flex-end", gap: 8 },
+  progressEdit: { alignItems: "flex-end", gap: 8, width: 132 },
+  progressDateInput: {
+    borderBottomColor: "#6A7CA0",
+    borderBottomWidth: 1,
+    color: "#101015",
+    fontSize: 13,
+    paddingBottom: 5,
+    textAlign: "right",
+    width: "100%",
   },
   adminUserCard: {
     backgroundColor: "#FBF7F0",

@@ -538,3 +538,10 @@ export async function uploadProgressPhoto(payload: {
 export async function deleteProgressPhoto(progressId: string) {
   return authenticatedRequest(`/v1/progress/${progressId}`, { method: 'DELETE' });
 }
+
+export async function updateProgressPhoto(progressId: string, payload: { capturedAt: string }) {
+  return authenticatedRequest<{ progress: { id: string; capturedAt: string } }>(`/v1/progress/${progressId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}

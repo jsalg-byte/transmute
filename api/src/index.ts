@@ -153,6 +153,9 @@ const progressCreateSchema = z.object({
     .or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
   note: z.string().max(400).optional(),
 });
+const progressUpdateSchema = z.object({
+  capturedAt: z.string().datetime().or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+});
 const mealPhotoCreateSchema = z.object({
   objectKey: z.string().min(4).max(512),
   mimeType: z.string().min(3).max(128),
@@ -1373,6 +1376,22 @@ app.delete('/v1/progress/:id', async (request, reply) => {
   await sql`DELETE FROM uploads WHERE id = ${progress.id}`;
   await storage.send(new DeleteObjectCommand({ Bucket: env.S3_BUCKET, Key: progress.object_key })).catch(() => undefined);
   return reply.code(204).send();
+});
+
+app.patch('/v1/progress/:id', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = progressUpdateSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid progress photo update.' });
+  const [progress] = await sql<{ id: string; captured_at: Date }[]>`
+    UPDATE uploads
+    SET captured_at = ${parseCapturedAt(parsed.data.capturedAt)}
+    WHERE id = ${params.data.id} AND user_id = ${userId} AND entity_type = 'progress_photo'
+    RETURNING id, captured_at
+  `;
+  if (!progress) return reply.code(404).send({ error: 'Progress photo not found.' });
+  return reply.send({ progress: { id: progress.id, capturedAt: progress.captured_at } });
 });
 
 /**
