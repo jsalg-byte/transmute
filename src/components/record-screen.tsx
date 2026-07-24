@@ -1,7 +1,9 @@
 import { router } from "expo-router";
-import { useEffect, useState, type ReactNode } from "react";
+import * as ImagePicker from "expo-image-picker";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,6 +21,7 @@ import {
   createExercise,
   createFood,
   createMealLog,
+  deleteProgressPhoto,
   createWorkoutPlan,
   deleteWorkoutSession,
   getRecord,
@@ -30,6 +33,7 @@ import {
   startWorkoutSession,
   updateFasting,
   updateWeightUnit,
+  uploadProgressPhoto,
   type TransmuteRecord,
 } from "../lib/api";
 
@@ -201,16 +205,7 @@ function AreaContent({
   if (area === "fasting")
     return <FastingContent record={r} refresh={refresh} />;
   if (area === "progress")
-    return (
-      <List
-        title="Progress"
-        intro="Keep the evidence that proves the exchange."
-        items={r.progress}
-        render={(x) => (
-          <Card title={date(x.captured_at)} meta={x.note ?? "Progress photo"} />
-        )}
-      />
-    );
+    return <ProgressContent record={r} refresh={refresh} />;
   if (area === "friends")
     return <FriendsContent record={r} refresh={refresh} />;
   if (area === "settings")
@@ -715,6 +710,142 @@ function SessionsContent({
         <Card
           title="No sessions yet"
           meta="Start a day from your active workout plan."
+        />
+      )}
+    </>
+  );
+}
+
+function ProgressContent({
+  record,
+  refresh,
+}: {
+  record: TransmuteRecord;
+  refresh: () => Promise<void>;
+}) {
+  const [note, setNote] = useState("");
+  const [notice, setNotice] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const choosePhoto = async () => {
+    setSaving(true);
+    setNotice(null);
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        quality: 0.9,
+        selectionLimit: 1,
+      });
+      if (result.canceled) return;
+
+      const photo = result.assets[0];
+      if (!photo) throw new Error("Choose one progress photo to upload.");
+      await uploadProgressPhoto({
+        uri: photo.uri,
+        fileName: photo.fileName ?? `progress-${Date.now()}.jpg`,
+        mimeType: photo.mimeType ?? "image/jpeg",
+        sizeBytes: photo.fileSize,
+        capturedAt: new Date().toISOString(),
+        note,
+      });
+      setNote("");
+      await refresh();
+      setNotice("Progress photo recorded.");
+    } catch (reason) {
+      setNotice(
+        reason instanceof Error
+          ? reason.message
+          : "Unable to upload the progress photo.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async (id: string) => {
+    setSaving(true);
+    setNotice(null);
+    try {
+      await deleteProgressPhoto(id);
+      await refresh();
+      setNotice("Progress photo removed.");
+    } catch (reason) {
+      setNotice(
+        reason instanceof Error
+          ? reason.message
+          : "Unable to remove the progress photo.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <Text style={styles.eyebrow}>THE EVIDENCE</Text>
+      <Text style={styles.title}>Progress</Text>
+      <Text style={styles.body}>
+        Keep a visual record of the work and the changes it creates.
+      </Text>
+      <View style={styles.formCard}>
+        <Text style={styles.cardTitle}>Add a check-in</Text>
+        <TextInput
+          value={note}
+          onChangeText={setNote}
+          placeholder="Note (optional)"
+          placeholderTextColor="#655D57"
+          style={styles.input}
+          returnKeyType="done"
+          onSubmitEditing={() => void choosePhoto()}
+        />
+        <Pressable
+          accessibilityRole="button"
+          disabled={saving}
+          onPress={() => void choosePhoto()}
+          style={[styles.actionButton, saving && styles.buttonDisabled]}
+        >
+          <Text style={styles.actionButtonText}>
+            {saving ? "Recording…" : "Choose progress photo"}
+          </Text>
+        </Pressable>
+      </View>
+      {notice ? <Text style={styles.notice}>{notice}</Text> : null}
+      <Text style={[styles.eyebrow, styles.section]}>YOUR CHECK-INS</Text>
+      {record.progress.length ? (
+        record.progress.map((photo) => (
+          <View key={photo.id} style={styles.progressCard}>
+            {photo.imageUrl ? (
+              <Image
+                accessibilityLabel={`Progress photo from ${date(photo.captured_at)}`}
+                source={{ uri: photo.imageUrl }}
+                style={styles.progressImage}
+              />
+            ) : (
+              <View style={styles.progressImageUnavailable}>
+                <Text style={styles.cardMeta}>Photo preview unavailable.</Text>
+              </View>
+            )}
+            <View style={styles.progressDetails}>
+              <View>
+                <Text style={styles.cardTitle}>{date(photo.captured_at)}</Text>
+                <Text style={styles.cardMeta}>
+                  {photo.note ?? "Progress photo"}
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                disabled={saving}
+                onPress={() => void remove(photo.id)}
+              >
+                <Text style={styles.inlineAction}>Remove</Text>
+              </Pressable>
+            </View>
+          </View>
+        ))
+      ) : (
+        <Card
+          title="No progress photos yet"
+          meta="Add your first check-in to begin a visual record."
         />
       )}
     </>
@@ -1241,34 +1372,6 @@ function SettingsContent({
   );
 }
 
-function List<T extends { id: string }>({
-  title,
-  intro,
-  items,
-  render,
-}: {
-  title: string;
-  intro: string;
-  items: T[];
-  render: (item: T) => ReactNode;
-}) {
-  return (
-    <>
-      <Text style={styles.eyebrow}>THE RECORD</Text>
-      <Text style={styles.title}>{title}</Text>
-      <Text style={styles.body}>{intro}</Text>
-      {items.length ? (
-        items.map((item) => <View key={item.id}>{render(item)}</View>)
-      ) : (
-        <Card
-          title="Nothing recorded yet"
-          meta="Your first entry will appear here."
-        />
-      )}
-    </>
-  );
-}
-
 const styles = StyleSheet.create({
   safeArea: { backgroundColor: "#F4EFE7", flex: 1 },
   wrap: {
@@ -1343,6 +1446,27 @@ const styles = StyleSheet.create({
     padding: 16,
     backgroundColor: "#FBF7F0",
     minWidth: 220,
+  },
+  progressCard: {
+    backgroundColor: "#FBF7F0",
+    borderColor: "#D4C9B9",
+    borderWidth: 1,
+    marginTop: 12,
+    overflow: "hidden",
+  },
+  progressImage: { backgroundColor: "#DED4C6", height: 260, width: "100%" },
+  progressImageUnavailable: {
+    alignItems: "center",
+    backgroundColor: "#DED4C6",
+    height: 160,
+    justifyContent: "center",
+  },
+  progressDetails: {
+    alignItems: "flex-start",
+    flexDirection: "row",
+    gap: 14,
+    justifyContent: "space-between",
+    padding: 16,
   },
   formCard: {
     backgroundColor: "#FBF7F0",

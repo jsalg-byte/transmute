@@ -25,7 +25,13 @@ export type TransmuteRecord = {
   sessions: { id: string; status: string; started_at: string; ended_at: string | null; routine_name: string | null; day_name: string | null; set_count: number }[];
   nutrition: { foods: { id: string; name: string; calories_kcal: number; protein_g: string; carbs_g: string; fat_g: string }[]; meals: { id: string; name: string; meal_type: string; quantity: string; consumed_at: string; calories_kcal: number }[] };
   fasting: { active: { id: string; started_at: string; note: string | null } | null; logs: { id: string; started_at: string; ended_at: string; duration_minutes: number; note: string | null }[] };
-  progress: { id: string; captured_at: string; note: string | null; mime_type: string }[];
+  progress: {
+    id: string;
+    captured_at: string;
+    note: string | null;
+    mime_type: string;
+    imageUrl: string | null;
+  }[];
   friends: { incoming: { id: string; status: string; userId: string; username: string; name: string | null }[]; outgoing: { id: string; status: string; userId: string; username: string; name: string | null }[] };
   settings: { weight_unit: string; active_routine_id: string | null; theme_overrides: Record<string, unknown> };
 };
@@ -263,4 +269,48 @@ export async function removeFriend(userId: string) {
 
 export async function updateWeightUnit(weightUnit: 'kg' | 'lbs') {
   return authenticatedRequest('/v1/preferences/weight-unit', { method: 'PUT', body: JSON.stringify({ weightUnit }) });
+}
+
+export async function uploadProgressPhoto(payload: {
+  uri: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes?: number | null;
+  capturedAt: string;
+  note?: string;
+}) {
+  const source = await fetch(payload.uri);
+  if (!source.ok) throw new Error('Unable to read the selected progress photo.');
+  const image = await source.blob();
+  const mimeType = payload.mimeType || image.type || 'image/jpeg';
+  const sizeBytes = payload.sizeBytes ?? image.size;
+  if (!sizeBytes || sizeBytes > 20 * 1024 * 1024) {
+    throw new Error('Choose an image smaller than 20 MB.');
+  }
+
+  const { url, key } = await authenticatedRequest<{ url: string; key: string }>('/v1/progress/presign', {
+    method: 'POST',
+    body: JSON.stringify({ fileName: payload.fileName, contentType: mimeType }),
+  });
+  const upload = await fetch(url, {
+    method: 'PUT',
+    headers: { 'content-type': mimeType },
+    body: image,
+  });
+  if (!upload.ok) throw new Error('The progress photo could not be uploaded.');
+
+  return authenticatedRequest<{ id: string }>('/v1/progress', {
+    method: 'POST',
+    body: JSON.stringify({
+      objectKey: key,
+      mimeType,
+      sizeBytes,
+      capturedAt: payload.capturedAt,
+      note: payload.note?.trim() || undefined,
+    }),
+  });
+}
+
+export async function deleteProgressPhoto(progressId: string) {
+  return authenticatedRequest(`/v1/progress/${progressId}`, { method: 'DELETE' });
 }

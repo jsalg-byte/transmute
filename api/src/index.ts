@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import cors from '@fastify/cors';
 import { compare, hash } from 'bcryptjs';
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import Fastify from 'fastify';
 import { jwtVerify, SignJWT } from 'jose';
 import postgres from 'postgres';
@@ -13,12 +15,24 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   AUTH_ISSUER: z.string().min(1).default('transmute-api'),
   CORS_ORIGINS: z.string().default('http://localhost:8081'),
+  S3_ENDPOINT: z.string().min(1),
+  S3_REGION: z.string().min(1),
+  S3_BUCKET: z.string().min(1),
+  S3_ACCESS_KEY_ID: z.string().min(1),
+  S3_SECRET_ACCESS_KEY: z.string().min(1),
+  S3_FORCE_PATH_STYLE: z.string().optional(),
 });
 
 const env = envSchema.parse(process.env);
 const jwtSecret = new TextEncoder().encode(env.JWT_ACCESS_SECRET);
 const sql = postgres(env.DATABASE_URL, { max: 10, idle_timeout: 20, connect_timeout: 10 });
 const app = Fastify({ logger: true });
+const storage = new S3Client({
+  endpoint: env.S3_ENDPOINT,
+  region: env.S3_REGION,
+  credentials: { accessKeyId: env.S3_ACCESS_KEY_ID, secretAccessKey: env.S3_SECRET_ACCESS_KEY },
+  forcePathStyle: env.S3_FORCE_PATH_STYLE === 'true',
+});
 
 const usernameSchema = z
   .string()
@@ -94,6 +108,20 @@ const friendUsernameSchema = z.object({
   username: z.string().trim().min(3).max(64).regex(/^[^\s]+$/).transform((value) => value.toLowerCase()),
 });
 const weightUnitSchema = z.object({ weightUnit: z.enum(['kg', 'lbs']) });
+const progressPresignSchema = z.object({
+  fileName: z.string().min(1).max(255),
+  contentType: z.string().min(3).max(128),
+});
+const progressCreateSchema = z.object({
+  objectKey: z.string().min(4).max(512),
+  mimeType: z.string().min(3).max(128),
+  sizeBytes: z.number().int().positive().max(20 * 1024 * 1024),
+  capturedAt: z
+    .string()
+    .datetime()
+    .or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+  note: z.string().max(400).optional(),
+});
 
 type UserRow = {
   id: string;
@@ -107,6 +135,15 @@ type SessionRow = {
   user_id: string;
   expires_at: Date;
   revoked_at: Date | null;
+};
+
+type ProgressPhotoRow = {
+  id: string;
+  object_key: string;
+  mime_type: string;
+  size_bytes: number;
+  note: string | null;
+  captured_at: Date;
 };
 
 function refreshTokenHash(token: string) {
@@ -163,6 +200,19 @@ function parseStartedAt(startedAtDate: string | undefined) {
   const [yearRaw, monthRaw, dayRaw] = startedAtDate.split('-');
   const startedAt = new Date(Date.UTC(Number(yearRaw), Number(monthRaw) - 1, Number(dayRaw), 12, 0, 0));
   return Number.isNaN(startedAt.getTime()) ? new Date() : startedAt;
+}
+
+function progressExtension(fileName: string) {
+  const extension = fileName.split('.').at(-1)?.toLowerCase();
+  return extension && /^[a-z0-9]{1,10}$/.test(extension) ? extension : 'jpg';
+}
+
+function parseCapturedAt(value: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T12:00:00.000Z`) : new Date(value);
+}
+
+function isOwnedProgressKey(userId: string, key: string) {
+  return key.startsWith(`progress/${userId}/`);
 }
 
 await app.register(cors, {
@@ -756,6 +806,51 @@ app.put('/v1/preferences/weight-unit', async (request, reply) => {
   return reply.send({ weightUnit: parsed.data.weightUnit });
 });
 
+app.post('/v1/progress/presign', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = progressPresignSchema.safeParse(request.body);
+  if (!parsed.success || !parsed.data.contentType.startsWith('image/')) {
+    return reply.code(400).send({ error: 'Only image uploads are allowed for progress photos.' });
+  }
+  const key = `progress/${userId}/${Date.now()}-${randomUUID()}.${progressExtension(parsed.data.fileName)}`;
+  const url = await getSignedUrl(storage, new PutObjectCommand({ Bucket: env.S3_BUCKET, Key: key, ContentType: parsed.data.contentType }), { expiresIn: 300 });
+  return reply.send({ url, key });
+});
+
+app.post('/v1/progress', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = progressCreateSchema.safeParse(request.body);
+  if (
+    !parsed.success ||
+    !parsed.data.mimeType.startsWith('image/') ||
+    !isOwnedProgressKey(userId, parsed.data.objectKey)
+  ) {
+    return reply.code(400).send({ error: 'Invalid progress photo payload.' });
+  }
+  const [progress] = await sql<{ id: string }[]>`
+    INSERT INTO uploads (id, user_id, entity_type, entity_id, object_key, mime_type, size_bytes, note, captured_at, created_at)
+    VALUES (${randomUUID()}, ${userId}, 'progress_photo', ${userId}, ${parsed.data.objectKey}, ${parsed.data.mimeType}, ${parsed.data.sizeBytes}, ${parsed.data.note ?? null}, ${parseCapturedAt(parsed.data.capturedAt)}, now())
+    RETURNING id
+  `;
+  return reply.code(201).send({ id: progress.id });
+});
+
+app.delete('/v1/progress/:id', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: 'Invalid progress photo id.' });
+  const [progress] = await sql<{ id: string; object_key: string }[]>`
+    SELECT id, object_key FROM uploads WHERE id = ${params.data.id} AND user_id = ${userId} AND entity_type = 'progress_photo' LIMIT 1
+  `;
+  if (!progress) return reply.code(404).send({ error: 'Progress photo not found.' });
+  await sql`DELETE FROM uploads WHERE id = ${progress.id}`;
+  await storage.send(new DeleteObjectCommand({ Bucket: env.S3_BUCKET, Key: progress.object_key })).catch(() => undefined);
+  return reply.code(204).send();
+});
+
 /**
  * Read model for the migrated client.  These queries intentionally use the
  * same tables and ownership rules as the Next app; the mobile client never
@@ -807,7 +902,7 @@ app.get('/v1/record', async (request, reply) => {
     `,
     sql`SELECT id, started_at, note FROM active_fasts WHERE user_id = ${userId} LIMIT 1`,
     sql`SELECT id, started_at, ended_at, duration_minutes, note FROM fasting_logs WHERE user_id = ${userId} ORDER BY ended_at DESC LIMIT 100`,
-    sql`SELECT id, object_key, mime_type, size_bytes, note, captured_at FROM uploads WHERE user_id = ${userId} AND entity_type = 'progress_photo' ORDER BY captured_at DESC LIMIT 100`,
+    sql<ProgressPhotoRow[]>`SELECT id, object_key, mime_type, size_bytes, note, captured_at FROM uploads WHERE user_id = ${userId} AND entity_type = 'progress_photo' ORDER BY captured_at DESC LIMIT 100`,
     sql`
       SELECT fr.id, fr.status, fr.created_at, u.id AS user_id, u.username, u.name
       FROM friend_requests fr INNER JOIN users u ON u.id = fr.requester_id
@@ -867,6 +962,20 @@ app.get('/v1/record', async (request, reply) => {
     }>()).values(),
   );
 
+  const progressWithUrls = await Promise.all(
+    (progress as ProgressPhotoRow[]).map(async (photo) => ({
+      id: photo.id,
+      captured_at: photo.captured_at,
+      mime_type: photo.mime_type,
+      note: photo.note,
+      imageUrl: await getSignedUrl(
+        storage,
+        new GetObjectCommand({ Bucket: env.S3_BUCKET, Key: photo.object_key }),
+        { expiresIn: 30 * 60 },
+      ).catch(() => null),
+    })),
+  );
+
   return reply.send({
     user: publicUser(currentUser),
     isAdmin: adminValues.has(currentUser.username.toLowerCase()) || adminValues.has(currentUser.email?.toLowerCase() ?? ''),
@@ -876,7 +985,7 @@ app.get('/v1/record', async (request, reply) => {
     sessions,
     nutrition: { foods, meals },
     fasting: { active: activeFast[0] ?? null, logs: fasts },
-    progress,
+    progress: progressWithUrls,
     friends: {
       incoming: (incoming as unknown as Array<{ id: string; status: string; user_id: string; username: string; name: string | null }>).map(({ user_id, ...request }) => ({ ...request, userId: user_id })),
       outgoing: (outgoing as unknown as Array<{ id: string; status: string; user_id: string; username: string; name: string | null }>).map(({ user_id, ...request }) => ({ ...request, userId: user_id })),
