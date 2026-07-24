@@ -1281,6 +1281,21 @@ function ProgressContent({
           meta="Add your first check-in to begin a visual record."
         />
       )}
+      <Text style={[styles.eyebrow, styles.section]}>TRAINING HISTORY</Text>
+      {record.sessions.length ? (
+        record.sessions.map((session) => (
+          <Card
+            key={session.id}
+            title={`${session.routine_name ?? "Workout plan"} · ${session.day_name ?? "Day"}`}
+            meta={`${label(session.status)} · ${session.set_count} sets · ${date(session.started_at)}`}
+          />
+        ))
+      ) : (
+        <Card
+          title="No sessions yet"
+          meta="Completed work will appear here alongside your check-ins."
+        />
+      )}
     </>
   );
 }
