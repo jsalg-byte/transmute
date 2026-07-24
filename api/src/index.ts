@@ -85,6 +85,7 @@ const planDayExerciseSchema = z.object({
   targetReps: z.number().int().positive().max(50).optional(),
   targetWeight: z.number().nonnegative().max(2000).optional(),
 });
+const reorderSchema = z.object({ direction: z.enum(['up', 'down']) });
 const exerciseSchema = z.object({
   name: z.string().trim().min(2).max(120),
   category: z.enum(['strength', 'cardio', 'mobility']).default('strength'),
@@ -583,6 +584,43 @@ app.delete('/v1/plan-day-exercises/:id', async (request, reply) => {
   return reply.code(204).send();
 });
 
+app.post('/v1/plan-day-exercises/:id/reorder', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = reorderSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid exercise reorder payload.' });
+
+  const result = await sql.begin(async (transaction) => {
+    const [entry] = await transaction<{ id: string; routine_day_id: string }[]>`
+      SELECT rde.id, rde.routine_day_id
+      FROM routine_day_exercises rde
+      INNER JOIN routine_days rd ON rd.id = rde.routine_day_id
+      INNER JOIN routines r ON r.id = rd.routine_id
+      WHERE rde.id = ${params.data.id} AND r.user_id = ${userId}
+      LIMIT 1
+    `;
+    if (!entry) return null;
+    const entries = await transaction<{ id: string }[]>`
+      SELECT id FROM routine_day_exercises
+      WHERE routine_day_id = ${entry.routine_day_id}
+      ORDER BY sort_order ASC, id ASC
+    `;
+    const fromIndex = entries.findIndex((item) => item.id === entry.id);
+    const toIndex = parsed.data.direction === 'up' ? fromIndex - 1 : fromIndex + 1;
+    if (fromIndex < 0 || toIndex < 0 || toIndex >= entries.length) return entry;
+    const reordered = [...entries];
+    const [moved] = reordered.splice(fromIndex, 1);
+    reordered.splice(toIndex, 0, moved);
+    for (const [index, item] of reordered.entries()) {
+      await transaction`UPDATE routine_day_exercises SET sort_order = ${index} WHERE id = ${item.id}`;
+    }
+    return entry;
+  });
+  if (!result) return reply.code(404).send({ error: 'Workout day exercise not found.' });
+  return reply.send({ id: result.id });
+});
+
 app.put('/v1/preferences/active-plan', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
@@ -1011,7 +1049,7 @@ app.get('/v1/record', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
 
-  const [user, activeSession, routines, exercises, sessions, foods, meals, activeFast, fasts, progress, incoming, outgoing, preferences] = await Promise.all([
+  const [user, activeSession, routines, planExercises, exercises, sessions, foods, meals, activeFast, fasts, progress, incoming, outgoing, preferences] = await Promise.all([
     sql`SELECT id, username, name, email FROM users WHERE id = ${userId} LIMIT 1`,
     sql`
       SELECT ws.id, ws.status, ws.started_at, ws.ended_at, r.name AS routine_name, rd.day_name
@@ -1031,6 +1069,29 @@ app.get('/v1/record', async (request, reply) => {
       WHERE r.user_id = ${userId}
       GROUP BY r.id, rd.id
       ORDER BY r.updated_at DESC, rd.sort_order ASC
+    `,
+    sql<{
+      plan_id: string;
+      day_id: string;
+      id: string;
+      exercise_id: string;
+      name: string;
+      category: string;
+      muscle_group: string | null;
+      sort_order: number;
+      target_sets: number | null;
+      target_reps: number | null;
+      target_weight: string | null;
+    }[]>`
+      SELECT rd.routine_id AS plan_id, rd.id AS day_id, rde.id, rde.exercise_id,
+        e.name, e.category, e.muscle_group, rde.sort_order,
+        rde.target_sets, rde.target_reps, rde.target_weight
+      FROM routine_day_exercises rde
+      INNER JOIN routine_days rd ON rd.id = rde.routine_day_id
+      INNER JOIN routines r ON r.id = rd.routine_id
+      INNER JOIN exercises e ON e.id = rde.exercise_id
+      WHERE r.user_id = ${userId}
+      ORDER BY rd.sort_order ASC, rde.sort_order ASC
     `,
     sql`SELECT id, name, category, muscle_group FROM exercises ORDER BY name ASC LIMIT 300`,
     sql`
@@ -1088,7 +1149,23 @@ app.get('/v1/record', async (request, reply) => {
         description: row.description,
         isPreset: row.is_preset,
         createdAt: row.created_at,
-        days: [] as Array<{ id: string; name: string; sortOrder: number; exerciseCount: number }>,
+        days: [] as Array<{
+          id: string;
+          name: string;
+          sortOrder: number;
+          exerciseCount: number;
+          exercises: Array<{
+            id: string;
+            exerciseId: string;
+            name: string;
+            category: string;
+            muscleGroup: string | null;
+            sortOrder: number;
+            targetSets: number | null;
+            targetReps: number | null;
+            targetWeight: string | null;
+          }>;
+        }>,
       };
 
       if (row.day_id && row.day_name) {
@@ -1097,6 +1174,7 @@ app.get('/v1/record', async (request, reply) => {
           name: row.day_name,
           sortOrder: row.sort_order ?? 0,
           exerciseCount: row.exercise_count,
+          exercises: [],
         });
       }
 
@@ -1108,9 +1186,42 @@ app.get('/v1/record', async (request, reply) => {
       description: string | null;
       isPreset: boolean;
       createdAt: Date;
-      days: Array<{ id: string; name: string; sortOrder: number; exerciseCount: number }>;
+      days: Array<{
+        id: string;
+        name: string;
+        sortOrder: number;
+        exerciseCount: number;
+        exercises: Array<{
+          id: string;
+          exerciseId: string;
+          name: string;
+          category: string;
+          muscleGroup: string | null;
+          sortOrder: number;
+          targetSets: number | null;
+          targetReps: number | null;
+          targetWeight: string | null;
+        }>;
+      }>;
     }>()).values(),
   );
+
+  const plansById = new Map(workoutPlans.map((plan) => [plan.id, plan]));
+  for (const exercise of planExercises) {
+    const day = plansById.get(exercise.plan_id)?.days.find((candidate) => candidate.id === exercise.day_id);
+    if (!day) continue;
+    day.exercises.push({
+      id: exercise.id,
+      exerciseId: exercise.exercise_id,
+      name: exercise.name,
+      category: exercise.category,
+      muscleGroup: exercise.muscle_group,
+      sortOrder: exercise.sort_order,
+      targetSets: exercise.target_sets,
+      targetReps: exercise.target_reps,
+      targetWeight: exercise.target_weight,
+    });
+  }
 
   const progressWithUrls = await Promise.all(
     (progress as ProgressPhotoRow[]).map(async (photo) => ({

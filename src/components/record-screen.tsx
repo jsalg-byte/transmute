@@ -23,6 +23,8 @@ import {
   createFood,
   createMealLog,
   createWorkoutPlan,
+  deleteWorkoutPlan,
+  deleteWorkoutPlanDay,
   deleteAdminUser,
   deleteProgressPhoto,
   deleteWorkoutSession,
@@ -30,6 +32,8 @@ import {
   getRecord,
   rejectFriendRequest,
   removeFriend,
+  removeExerciseFromWorkoutPlanDay,
+  reorderExerciseInWorkoutPlanDay,
   sendFriendRequest,
   setActiveWorkoutPlan,
   signOut,
@@ -38,6 +42,8 @@ import {
   updateWeightUnit,
   uploadProgressPhoto,
   updateAdminUser,
+  updateWorkoutPlan,
+  updateWorkoutPlanDay,
   type AdminUser,
   type TransmuteRecord,
 } from "../lib/api";
@@ -228,7 +234,12 @@ function WorkoutPlansContent({
   const [planName, setPlanName] = useState("");
   const [description, setDescription] = useState("");
   const [dayNames, setDayNames] = useState<Record<string, string>>({});
+  const [renamedPlanNames, setRenamedPlanNames] = useState<Record<string, string>>({});
+  const [renamedDayNames, setRenamedDayNames] = useState<Record<string, string>>({});
   const [exerciseIds, setExerciseIds] = useState<Record<string, string>>({});
+  const [exerciseTargets, setExerciseTargets] = useState<
+    Record<string, { sets: string; reps: string; weight: string }>
+  >({});
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const activePlanId = record.settings.active_routine_id;
@@ -324,25 +335,54 @@ function WorkoutPlansContent({
             ]}
           >
             <View style={styles.planHeading}>
-              <View>
-                <Text style={styles.cardTitle}>{plan.name}</Text>
+              <View style={styles.planTitleArea}>
+                <TextInput
+                  value={renamedPlanNames[plan.id] ?? plan.name}
+                  onChangeText={(value) =>
+                    setRenamedPlanNames((current) => ({
+                      ...current,
+                      [plan.id]: value,
+                    }))
+                  }
+                  style={[styles.input, styles.planNameInput]}
+                  returnKeyType="done"
+                  onSubmitEditing={() =>
+                    void run(() => {
+                      const name = (renamedPlanNames[plan.id] ?? plan.name).trim();
+                      if (name.length < 2) {
+                        throw new Error("Enter a workout plan name with at least 2 characters.");
+                      }
+                      return updateWorkoutPlan(plan.id, { name });
+                    }, "Workout plan renamed.")
+                  }
+                />
                 {plan.description ? (
                   <Text style={styles.cardMeta}>{plan.description}</Text>
                 ) : null}
               </View>
-              <Pressable
-                disabled={saving || activePlanId === plan.id}
-                onPress={() =>
-                  void run(
-                    () => setActiveWorkoutPlan(plan.id),
-                    "Active workout plan updated.",
-                  )
-                }
-              >
-                <Text style={styles.inlineAction}>
-                  {activePlanId === plan.id ? "Active" : "Set active"}
-                </Text>
-              </Pressable>
+              <View style={styles.planActions}>
+                <Pressable
+                  disabled={saving || activePlanId === plan.id}
+                  onPress={() =>
+                    void run(
+                      () => setActiveWorkoutPlan(plan.id),
+                      "Active workout plan updated.",
+                    )
+                  }
+                >
+                  <Text style={styles.inlineAction}>
+                    {activePlanId === plan.id ? "Active" : "Set active"}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  disabled={saving}
+                  onPress={() =>
+                    void run(() => deleteWorkoutPlan(plan.id), "Workout plan removed.")
+                  }
+                >
+                  <Text style={styles.destructiveAction}>Remove plan</Text>
+                </Pressable>
+              </View>
             </View>
             {plan.days.length ? (
               plan.days
@@ -350,11 +390,83 @@ function WorkoutPlansContent({
                 .map((day) => (
                   <View key={day.id} style={styles.dayBlock}>
                     <View style={styles.dayRow}>
-                      <Text style={styles.dayName}>{day.name}</Text>
+                      <TextInput
+                        value={renamedDayNames[day.id] ?? day.name}
+                        onChangeText={(value) =>
+                          setRenamedDayNames((current) => ({
+                            ...current,
+                            [day.id]: value,
+                          }))
+                        }
+                        style={[styles.input, styles.dayNameInput]}
+                        returnKeyType="done"
+                        onSubmitEditing={() =>
+                          void run(() => {
+                            const dayName = (renamedDayNames[day.id] ?? day.name).trim();
+                            if (dayName.length < 2) {
+                              throw new Error("Enter a day name with at least 2 characters.");
+                            }
+                            return updateWorkoutPlanDay(day.id, { dayName });
+                          }, "Workout day renamed.")
+                        }
+                      />
                       <Text style={styles.dayMeta}>
                         {day.exerciseCount} exercises
                       </Text>
                     </View>
+                    {day.exercises.length ? (
+                      <View style={styles.attachedExercises}>
+                        {day.exercises
+                          .sort((a, b) => a.sortOrder - b.sortOrder)
+                          .map((entry) => (
+                            <View key={entry.id} style={styles.attachedExercise}>
+                              <View style={styles.attachedExerciseText}>
+                                <Text style={styles.cardMeta}>{entry.name}</Text>
+                                <Text style={styles.dayMeta}>
+                                  {entry.targetSets ?? 3} sets
+                                  {entry.targetReps ? ` · ${entry.targetReps} reps` : ""}
+                                  {entry.targetWeight ? ` · ${entry.targetWeight}` : ""}
+                                </Text>
+                              </View>
+                              <View style={styles.attachedExerciseActions}>
+                                <Pressable
+                                  disabled={saving || entry.sortOrder === 0}
+                                  onPress={() =>
+                                    void run(
+                                      () => reorderExerciseInWorkoutPlanDay(entry.id, "up"),
+                                      `${entry.name} moved.`,
+                                    )
+                                  }
+                                >
+                                  <Text style={styles.inlineAction}>Up</Text>
+                                </Pressable>
+                                <Pressable
+                                  disabled={saving || entry.sortOrder === day.exercises.length - 1}
+                                  onPress={() =>
+                                    void run(
+                                      () => reorderExerciseInWorkoutPlanDay(entry.id, "down"),
+                                      `${entry.name} moved.`,
+                                    )
+                                  }
+                                >
+                                  <Text style={styles.inlineAction}>Down</Text>
+                                </Pressable>
+                                <Pressable
+                                  disabled={saving}
+                                  onPress={() =>
+                                    void run(
+                                      () => removeExerciseFromWorkoutPlanDay(entry.id),
+                                      `${entry.name} removed.`,
+                                    )
+                                  }
+                                >
+                                  <Text style={styles.destructiveAction}>Remove</Text>
+                                </Pressable>
+                              </View>
+                            </View>
+                          ))}
+                      </View>
+                    ) : null}
                     {record.exercises.length ? (
                       <>
                         <View style={styles.exercisePicker}>
@@ -385,6 +497,59 @@ function WorkoutPlansContent({
                             </Pressable>
                           ))}
                         </View>
+                        <View style={styles.macroRow}>
+                          <TextInput
+                            value={exerciseTargets[day.id]?.sets ?? "3"}
+                            onChangeText={(value) =>
+                              setExerciseTargets((current) => ({
+                                ...current,
+                                [day.id]: {
+                                  sets: value,
+                                  reps: current[day.id]?.reps ?? "",
+                                  weight: current[day.id]?.weight ?? "",
+                                },
+                              }))
+                            }
+                            keyboardType="number-pad"
+                            placeholder="Sets"
+                            placeholderTextColor="#655D57"
+                            style={[styles.input, styles.macroInput]}
+                          />
+                          <TextInput
+                            value={exerciseTargets[day.id]?.reps ?? ""}
+                            onChangeText={(value) =>
+                              setExerciseTargets((current) => ({
+                                ...current,
+                                [day.id]: {
+                                  sets: current[day.id]?.sets ?? "3",
+                                  reps: value,
+                                  weight: current[day.id]?.weight ?? "",
+                                },
+                              }))
+                            }
+                            keyboardType="number-pad"
+                            placeholder="Reps"
+                            placeholderTextColor="#655D57"
+                            style={[styles.input, styles.macroInput]}
+                          />
+                          <TextInput
+                            value={exerciseTargets[day.id]?.weight ?? ""}
+                            onChangeText={(value) =>
+                              setExerciseTargets((current) => ({
+                                ...current,
+                                [day.id]: {
+                                  sets: current[day.id]?.sets ?? "3",
+                                  reps: current[day.id]?.reps ?? "",
+                                  weight: value,
+                                },
+                              }))
+                            }
+                            keyboardType="decimal-pad"
+                            placeholder="Weight"
+                            placeholderTextColor="#655D57"
+                            style={[styles.input, styles.macroInput]}
+                          />
+                        </View>
                         <Pressable
                           disabled={saving || !exerciseIds[day.id]}
                           onPress={() =>
@@ -392,12 +557,36 @@ function WorkoutPlansContent({
                               const exerciseId = exerciseIds[day.id];
                               if (!exerciseId)
                                 throw new Error("Choose an exercise first.");
+                              const targets = exerciseTargets[day.id];
+                              const targetSets = Number(targets?.sets ?? "3");
+                              const targetReps = targets?.reps.trim()
+                                ? Number(targets.reps)
+                                : undefined;
+                              const targetWeight = targets?.weight.trim()
+                                ? Number(targets.weight)
+                                : undefined;
+                              if (!Number.isInteger(targetSets) || targetSets < 1) {
+                                throw new Error("Enter at least one target set.");
+                              }
+                              if (targetReps !== undefined && (!Number.isInteger(targetReps) || targetReps < 1)) {
+                                throw new Error("Target reps must be a whole number.");
+                              }
+                              if (targetWeight !== undefined && (!Number.isFinite(targetWeight) || targetWeight < 0)) {
+                                throw new Error("Target weight must be zero or greater.");
+                              }
                               await addExerciseToWorkoutPlanDay(day.id, {
                                 exerciseId,
+                                targetSets,
+                                targetReps,
+                                targetWeight,
                               });
                               setExerciseIds((current) => ({
                                 ...current,
                                 [day.id]: "",
+                              }));
+                              setExerciseTargets((current) => ({
+                                ...current,
+                                [day.id]: { sets: "3", reps: "", weight: "" },
                               }));
                             }, `${day.name} updated.`)
                           }
@@ -418,6 +607,17 @@ function WorkoutPlansContent({
                         it.
                       </Text>
                     )}
+                    <Pressable
+                      disabled={saving}
+                      onPress={() =>
+                        void run(
+                          () => deleteWorkoutPlanDay(day.id),
+                          "Workout day removed.",
+                        )
+                      }
+                    >
+                      <Text style={styles.destructiveAction}>Remove day</Text>
+                    </Pressable>
                   </View>
                 ))
             ) : (
@@ -1745,12 +1945,26 @@ const styles = StyleSheet.create({
     gap: 14,
     justifyContent: "space-between",
   },
+  planTitleArea: { flex: 1 },
+  planNameInput: { fontSize: 18, fontWeight: "800", paddingTop: 0 },
+  planActions: { alignItems: "flex-end", gap: 8 },
   dayBlock: {
     borderTopColor: "#D4C9B9",
     borderTopWidth: 1,
     marginTop: 14,
     paddingTop: 12,
   },
+  attachedExercises: { gap: 8, marginTop: 12 },
+  attachedExercise: {
+    alignItems: "center",
+    backgroundColor: "#F4EFE7",
+    flexDirection: "row",
+    gap: 12,
+    justifyContent: "space-between",
+    padding: 10,
+  },
+  attachedExerciseText: { flex: 1 },
+  attachedExerciseActions: { alignItems: "flex-end", gap: 6 },
   input: {
     borderBottomColor: "#667798",
     borderBottomWidth: 1,
@@ -1814,6 +2028,7 @@ const styles = StyleSheet.create({
     marginTop: 14,
     paddingTop: 12,
   },
+  dayNameInput: { flex: 1, fontSize: 16, fontWeight: "700", marginRight: 12, paddingTop: 0 },
   dayName: { color: "#101015", fontSize: 16, fontWeight: "700" },
   dayMeta: { color: "#655D57", fontSize: 14 },
   cardTitle: { color: "#101015", fontSize: 18, fontWeight: "800" },

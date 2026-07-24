@@ -36,7 +36,30 @@ export type TransmuteRecord = {
   user: MobileUser;
   isAdmin: boolean;
   dashboard: { activeSession: { id: string; routine_name: string | null; day_name: string | null; started_at: string } | null };
-  workoutPlans: { id: string; name: string; description: string | null; isPreset: boolean; createdAt: string; days: { id: string; name: string; sortOrder: number; exerciseCount: number }[] }[];
+  workoutPlans: {
+    id: string;
+    name: string;
+    description: string | null;
+    isPreset: boolean;
+    createdAt: string;
+    days: {
+      id: string;
+      name: string;
+      sortOrder: number;
+      exerciseCount: number;
+      exercises: {
+        id: string;
+        exerciseId: string;
+        name: string;
+        category: string;
+        muscleGroup: string | null;
+        sortOrder: number;
+        targetSets: number | null;
+        targetReps: number | null;
+        targetWeight: string | null;
+      }[];
+    }[];
+  }[];
   exercises: { id: string; name: string; category: string; muscle_group: string | null }[];
   sessions: { id: string; status: string; started_at: string; ended_at: string | null; routine_name: string | null; day_name: string | null; set_count: number }[];
   nutrition: { foods: { id: string; name: string; calories_kcal: number; protein_g: string; carbs_g: string; fat_g: string }[]; meals: { id: string; name: string; meal_type: string; quantity: string; consumed_at: string; calories_kcal: number }[] };
@@ -195,10 +218,30 @@ export async function createWorkoutPlan(payload: { name: string; description?: s
   });
 }
 
+export async function updateWorkoutPlan(planId: string, payload: { name: string }) {
+  return authenticatedRequest(`/v1/plans/${planId}`, {
+    method: 'PATCH', body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteWorkoutPlan(planId: string) {
+  return authenticatedRequest(`/v1/plans/${planId}`, { method: 'DELETE' });
+}
+
 export async function addWorkoutPlanDay(planId: string, payload: { dayName: string }) {
   return authenticatedRequest<{ day: TransmuteRecord['workoutPlans'][number]['days'][number] }>(`/v1/plans/${planId}/days`, {
     method: 'POST', body: JSON.stringify(payload),
   });
+}
+
+export async function updateWorkoutPlanDay(dayId: string, payload: { dayName: string }) {
+  return authenticatedRequest(`/v1/plan-days/${dayId}`, {
+    method: 'PATCH', body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteWorkoutPlanDay(dayId: string) {
+  return authenticatedRequest(`/v1/plan-days/${dayId}`, { method: 'DELETE' });
 }
 
 export async function createExercise(payload: { name: string; category?: 'strength' | 'cardio' | 'mobility'; muscleGroup?: string }) {
@@ -210,6 +253,16 @@ export async function createExercise(payload: { name: string; category?: 'streng
 export async function addExerciseToWorkoutPlanDay(dayId: string, payload: { exerciseId: string; targetSets?: number; targetReps?: number; targetWeight?: number }) {
   return authenticatedRequest(`/v1/plan-days/${dayId}/exercises`, {
     method: 'POST', body: JSON.stringify(payload),
+  });
+}
+
+export async function removeExerciseFromWorkoutPlanDay(entryId: string) {
+  return authenticatedRequest(`/v1/plan-day-exercises/${entryId}`, { method: 'DELETE' });
+}
+
+export async function reorderExerciseInWorkoutPlanDay(entryId: string, direction: 'up' | 'down') {
+  return authenticatedRequest(`/v1/plan-day-exercises/${entryId}/reorder`, {
+    method: 'POST', body: JSON.stringify({ direction }),
   });
 }
 
