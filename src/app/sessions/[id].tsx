@@ -142,6 +142,29 @@ export default function SessionDetailScreen() {
     const durationMinutes = Math.max(1, Math.round(durationMs / 60_000));
     return { durationMinutes, repsLogged, workingSetCount: workingSets.length };
   }, [detail]);
+  const workoutJsonExport = useMemo(() => {
+    if (!detail || detail.session.status !== 'completed') return null;
+    return JSON.stringify({
+      exportedAt: new Date().toISOString(),
+      workout: {
+        routine: detail.session.routineName ?? 'Workout plan',
+        day: detail.session.dayName ?? 'Session',
+        startedAt: detail.session.startedAt,
+        endedAt: detail.session.endedAt,
+        exercises: detail.exercises.map((exercise) => ({
+          name: exercise.name,
+          category: exercise.category,
+          muscleGroup: exercise.muscleGroup,
+          sets: (setsByExercise.get(exercise.id) ?? []).map((set) => ({
+            order: set.setOrder,
+            reps: set.reps,
+            weight: set.weight,
+            isWarmup: set.isWarmup,
+          })),
+        })),
+      },
+    }, null, 2);
+  }, [detail, setsByExercise]);
 
   const logSet = async () => {
     const parsedReps = Number(reps);
@@ -274,6 +297,18 @@ export default function SessionDetailScreen() {
       });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to share this workout.');
+    }
+  };
+
+  const shareWorkoutJson = async () => {
+    if (!workoutJsonExport) return;
+    try {
+      await Share.share({
+        title: 'Transmute workout JSON',
+        message: workoutJsonExport,
+      });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to share the workout JSON.');
     }
   };
 
@@ -466,9 +501,14 @@ export default function SessionDetailScreen() {
                 <Text style={styles.buttonText}>Complete session</Text>
               </Pressable>
             ) : (
-              <Pressable accessibilityRole="button" onPress={() => void shareWorkout()} style={[styles.outlineButton, styles.completeButton]}>
-                <Text style={styles.outlineButtonText}>Share workout</Text>
-              </Pressable>
+              <View style={styles.completedActions}>
+                <Pressable accessibilityRole="button" onPress={() => void shareWorkout()} style={styles.outlineButton}>
+                  <Text style={styles.outlineButtonText}>Share workout</Text>
+                </Pressable>
+                <Pressable accessibilityRole="button" onPress={() => void shareWorkoutJson()} style={styles.outlineButton}>
+                  <Text style={styles.outlineButtonText}>Share workout JSON</Text>
+                </Pressable>
+              </View>
             )}
           </>
         ) : null}
@@ -478,5 +518,5 @@ export default function SessionDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { backgroundColor: '#F4EFE7', flex: 1 }, wrap: { alignSelf: 'center', maxWidth: 760, padding: 24, paddingBottom: 56, width: '100%' }, back: { color: '#642D2A', fontSize: 14, fontWeight: '800', textDecorationLine: 'underline' }, loading: { gap: 10, marginTop: 80 }, eyebrow: { color: '#642D2A', fontFamily: 'Courier', fontSize: 12, letterSpacing: 1.5, marginTop: 28 }, title: { color: '#101015', fontSize: 38, fontWeight: '900', letterSpacing: -2, lineHeight: 42, marginTop: 12 }, body: { color: '#2C2C31', fontSize: 17, lineHeight: 27, marginTop: 14 }, error: { color: '#642D2A', fontSize: 14, fontWeight: '700', lineHeight: 21, marginTop: 22 }, formCard: { backgroundColor: '#FBF7F0', borderColor: '#D4C9B9', borderWidth: 1, gap: 12, marginTop: 26, padding: 16 }, personalRecord: { backgroundColor: '#E8D194', borderColor: '#642D2A', borderWidth: 1, gap: 4, marginTop: 20, padding: 14 }, personalRecordLabel: { color: '#642D2A', fontFamily: 'Courier', fontSize: 12, fontWeight: '800', letterSpacing: 1.2 }, personalRecordTitle: { color: '#101015', fontSize: 19, fontWeight: '900' }, personalRecordCopy: { color: '#2C2C31', fontSize: 14, lineHeight: 21 }, completedEvidence: { backgroundColor: '#E8D194', borderColor: '#A95B5B', borderWidth: 1, gap: 4, marginTop: 20, padding: 16 }, completedEvidenceLabel: { color: '#642D2A', fontFamily: 'Courier', fontSize: 12, fontWeight: '800', letterSpacing: 1.2 }, completedEvidenceTitle: { color: '#101015', fontSize: 20, fontWeight: '900' }, completedEvidenceCopy: { color: '#2C2C31', fontSize: 14, lineHeight: 21 }, card: { backgroundColor: '#FBF7F0', borderColor: '#D4C9B9', borderWidth: 1, marginTop: 12, padding: 16 }, cardTitle: { color: '#101015', fontSize: 18, fontWeight: '800' }, exercisePicker: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, exerciseOption: { borderColor: '#D4C9B9', borderWidth: 1, paddingHorizontal: 10, paddingVertical: 8 }, exerciseOptionActive: { backgroundColor: '#101015', borderColor: '#101015' }, exerciseOptionText: { color: '#101015', fontSize: 13, fontWeight: '700' }, exerciseOptionTextActive: { color: '#F4EFE7' }, input: { borderBottomColor: '#667798', borderBottomWidth: 1, color: '#101015', fontSize: 16, paddingBottom: 9, paddingTop: 8 }, warmup: { alignSelf: 'flex-start' }, meta: { color: '#655D57', fontSize: 14, lineHeight: 21 }, button: { alignItems: 'center', backgroundColor: '#101015', justifyContent: 'center', minHeight: 50, paddingHorizontal: 16 }, outlineButton: { alignItems: 'center', borderColor: '#101015', borderWidth: 1, justifyContent: 'center', minHeight: 50, paddingHorizontal: 16 }, completeButton: { marginTop: 22 }, buttonText: { color: '#F4EFE7', fontSize: 15, fontWeight: '800' }, outlineButtonText: { color: '#101015', fontSize: 15, fontWeight: '800' }, buttonDisabled: { opacity: 0.55 }, restTimer: { borderTopColor: '#D4C9B9', borderTopWidth: 1, gap: 8, marginTop: 8, paddingTop: 14 }, restTimerLabel: { color: '#642D2A', fontFamily: 'Courier', fontSize: 11, fontWeight: '800', letterSpacing: 1.2 }, restTimerClock: { color: '#101015', fontSize: 28, fontVariant: ['tabular-nums'], fontWeight: '900', marginTop: 2 }, restTimerActions: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 14 }, sectionLabel: { color: '#642D2A', fontFamily: 'Courier', fontSize: 12, fontWeight: '700', letterSpacing: 1.5, marginTop: 30 }, setRow: { borderTopColor: '#D4C9B9', borderTopWidth: 1, marginTop: 10, paddingTop: 10 }, editSetForm: { gap: 10, width: '100%' }, editActions: { alignItems: 'center', flexDirection: 'row', gap: 14, justifyContent: 'flex-end', marginTop: 8 }, addMovement: { color: '#642D2A', fontSize: 13, fontWeight: '800', textDecorationColor: '#A95B5B', textDecorationLine: 'underline' }, remove: { color: '#642D2A', fontSize: 13, fontWeight: '800', textDecorationLine: 'underline' },
+  safeArea: { backgroundColor: '#F4EFE7', flex: 1 }, wrap: { alignSelf: 'center', maxWidth: 760, padding: 24, paddingBottom: 56, width: '100%' }, back: { color: '#642D2A', fontSize: 14, fontWeight: '800', textDecorationLine: 'underline' }, loading: { gap: 10, marginTop: 80 }, eyebrow: { color: '#642D2A', fontFamily: 'Courier', fontSize: 12, letterSpacing: 1.5, marginTop: 28 }, title: { color: '#101015', fontSize: 38, fontWeight: '900', letterSpacing: -2, lineHeight: 42, marginTop: 12 }, body: { color: '#2C2C31', fontSize: 17, lineHeight: 27, marginTop: 14 }, error: { color: '#642D2A', fontSize: 14, fontWeight: '700', lineHeight: 21, marginTop: 22 }, formCard: { backgroundColor: '#FBF7F0', borderColor: '#D4C9B9', borderWidth: 1, gap: 12, marginTop: 26, padding: 16 }, personalRecord: { backgroundColor: '#E8D194', borderColor: '#642D2A', borderWidth: 1, gap: 4, marginTop: 20, padding: 14 }, personalRecordLabel: { color: '#642D2A', fontFamily: 'Courier', fontSize: 12, fontWeight: '800', letterSpacing: 1.2 }, personalRecordTitle: { color: '#101015', fontSize: 19, fontWeight: '900' }, personalRecordCopy: { color: '#2C2C31', fontSize: 14, lineHeight: 21 }, completedEvidence: { backgroundColor: '#E8D194', borderColor: '#A95B5B', borderWidth: 1, gap: 4, marginTop: 20, padding: 16 }, completedEvidenceLabel: { color: '#642D2A', fontFamily: 'Courier', fontSize: 12, fontWeight: '800', letterSpacing: 1.2 }, completedEvidenceTitle: { color: '#101015', fontSize: 20, fontWeight: '900' }, completedEvidenceCopy: { color: '#2C2C31', fontSize: 14, lineHeight: 21 }, card: { backgroundColor: '#FBF7F0', borderColor: '#D4C9B9', borderWidth: 1, marginTop: 12, padding: 16 }, cardTitle: { color: '#101015', fontSize: 18, fontWeight: '800' }, exercisePicker: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, exerciseOption: { borderColor: '#D4C9B9', borderWidth: 1, paddingHorizontal: 10, paddingVertical: 8 }, exerciseOptionActive: { backgroundColor: '#101015', borderColor: '#101015' }, exerciseOptionText: { color: '#101015', fontSize: 13, fontWeight: '700' }, exerciseOptionTextActive: { color: '#F4EFE7' }, input: { borderBottomColor: '#667798', borderBottomWidth: 1, color: '#101015', fontSize: 16, paddingBottom: 9, paddingTop: 8 }, warmup: { alignSelf: 'flex-start' }, meta: { color: '#655D57', fontSize: 14, lineHeight: 21 }, button: { alignItems: 'center', backgroundColor: '#101015', justifyContent: 'center', minHeight: 50, paddingHorizontal: 16 }, outlineButton: { alignItems: 'center', borderColor: '#101015', borderWidth: 1, justifyContent: 'center', minHeight: 50, paddingHorizontal: 16 }, completeButton: { marginTop: 22 }, completedActions: { gap: 10, marginTop: 22 }, buttonText: { color: '#F4EFE7', fontSize: 15, fontWeight: '800' }, outlineButtonText: { color: '#101015', fontSize: 15, fontWeight: '800' }, buttonDisabled: { opacity: 0.55 }, restTimer: { borderTopColor: '#D4C9B9', borderTopWidth: 1, gap: 8, marginTop: 8, paddingTop: 14 }, restTimerLabel: { color: '#642D2A', fontFamily: 'Courier', fontSize: 11, fontWeight: '800', letterSpacing: 1.2 }, restTimerClock: { color: '#101015', fontSize: 28, fontVariant: ['tabular-nums'], fontWeight: '900', marginTop: 2 }, restTimerActions: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 14 }, sectionLabel: { color: '#642D2A', fontFamily: 'Courier', fontSize: 12, fontWeight: '700', letterSpacing: 1.5, marginTop: 30 }, setRow: { borderTopColor: '#D4C9B9', borderTopWidth: 1, marginTop: 10, paddingTop: 10 }, editSetForm: { gap: 10, width: '100%' }, editActions: { alignItems: 'center', flexDirection: 'row', gap: 14, justifyContent: 'flex-end', marginTop: 8 }, addMovement: { color: '#642D2A', fontSize: 13, fontWeight: '800', textDecorationColor: '#A95B5B', textDecorationLine: 'underline' }, remove: { color: '#642D2A', fontSize: 13, fontWeight: '800', textDecorationLine: 'underline' },
 });
