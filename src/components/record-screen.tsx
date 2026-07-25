@@ -2204,11 +2204,18 @@ function FriendsContent({
       <Text style={[styles.eyebrow, styles.section]}>FRIENDS’ WORKOUT ACTIVITY</Text>
       {record.friends.activity.length ? (
         record.friends.activity.map((session) => (
-          <Card
+          <Pressable
             key={session.id}
-            title={session.name ?? session.username}
-            meta={`@${session.username} · ${session.routineName ?? "Workout plan"} / ${session.dayName ?? "Day"} · ${label(session.status)} · ${session.setCount} sets · ${date(session.startedAt)}`}
-          />
+            accessibilityRole="link"
+            onPress={() => router.push(`/shared-sessions/${session.id}`)}
+            style={styles.card}
+          >
+            <Text style={styles.cardTitle}>{session.name ?? session.username}</Text>
+            <Text style={styles.cardMeta}>
+              @{session.username} · {session.routineName ?? "Workout plan"} / {session.dayName ?? "Day"} · {label(session.status)} · {session.setCount} sets · {date(session.startedAt)}
+            </Text>
+            <Text style={styles.inlineAction}>Open workout record</Text>
+          </Pressable>
         ))
       ) : (
         <Card

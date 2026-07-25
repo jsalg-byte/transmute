@@ -15,6 +15,7 @@ export default function RootLayout() {
         <Stack.Screen name="exercises" />
         <Stack.Screen name="sessions" />
         <Stack.Screen name="sessions/[id]" />
+        <Stack.Screen name="shared-sessions/[id]" />
         <Stack.Screen name="nutrition" />
         <Stack.Screen name="fasting" />
         <Stack.Screen name="progress" />

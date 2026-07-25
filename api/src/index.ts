@@ -885,6 +885,78 @@ app.get('/v1/sessions/:id', async (request, reply) => {
   });
 });
 
+app.get('/v1/sessions/:id/share', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: 'Invalid session id.' });
+
+  const [session] = await sql<{
+    id: string;
+    owner_user_id: string;
+    owner_username: string;
+    owner_name: string | null;
+    status: string;
+    started_at: Date;
+    ended_at: Date | null;
+    routine_name: string | null;
+    day_name: string | null;
+  }[]>`
+    SELECT ws.id, ws.user_id AS owner_user_id, u.username AS owner_username, u.name AS owner_name,
+      ws.status, ws.started_at, ws.ended_at, r.name AS routine_name, rd.day_name
+    FROM workout_sessions ws
+    INNER JOIN users u ON u.id = ws.user_id
+    LEFT JOIN routines r ON r.id = ws.routine_id
+    LEFT JOIN routine_days rd ON rd.id = ws.routine_day_id
+    WHERE ws.id = ${params.data.id} LIMIT 1
+  `;
+  if (!session) return reply.code(404).send({ error: 'Workout session not found.' });
+
+  if (session.owner_user_id !== userId) {
+    const [friendship] = await sql<{ id: string }[]>`
+      SELECT id FROM friend_requests
+      WHERE status = 'accepted' AND (
+        (requester_id = ${userId} AND addressee_id = ${session.owner_user_id}) OR
+        (addressee_id = ${userId} AND requester_id = ${session.owner_user_id})
+      )
+      LIMIT 1
+    `;
+    if (!friendship) return reply.code(404).send({ error: 'Workout session not found.' });
+  }
+
+  const [sets, preferences] = await Promise.all([
+    sql<{ id: string; set_order: number; reps: number; weight: string | null; is_warmup: boolean; exercise_name: string }[]>`
+      SELECT wset.id, wset.set_order, wset.reps, wset.weight, wset.is_warmup, e.name AS exercise_name
+      FROM workout_sets wset
+      INNER JOIN exercises e ON e.id = wset.exercise_id
+      WHERE wset.session_id = ${session.id}
+      ORDER BY wset.set_order ASC, wset.created_at ASC
+    `,
+    sql<{ weight_unit: string }[]>`SELECT weight_unit FROM user_preferences WHERE user_id = ${session.owner_user_id} LIMIT 1`,
+  ]);
+
+  return reply.send({
+    owner: { id: session.owner_user_id, username: session.owner_username, name: session.owner_name },
+    session: {
+      id: session.id,
+      status: session.status,
+      startedAt: session.started_at,
+      endedAt: session.ended_at,
+      routineName: session.routine_name,
+      dayName: session.day_name,
+      weightUnit: preferences[0]?.weight_unit === 'kg' ? 'kg' : 'lbs',
+    },
+    sets: sets.map((set) => ({
+      id: set.id,
+      order: set.set_order,
+      reps: set.reps,
+      weight: set.weight,
+      isWarmup: set.is_warmup,
+      exerciseName: set.exercise_name,
+    })),
+  });
+});
+
 app.post('/v1/sessions/:id/exercises', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });

@@ -341,8 +341,18 @@ export type WorkoutSessionDetail = {
   sets: { id: string; exerciseId: string; setOrder: number; reps: number; weight: string | number | null; isWarmup: boolean; createdAt: string }[];
 };
 
+export type SharedWorkoutSession = {
+  owner: { id: string; username: string; name: string | null };
+  session: { id: string; status: string; startedAt: string; endedAt: string | null; routineName: string | null; dayName: string | null; weightUnit: 'kg' | 'lbs' };
+  sets: { id: string; order: number; reps: number; weight: string | number | null; isWarmup: boolean; exerciseName: string }[];
+};
+
 export async function getWorkoutSession(sessionId: string) {
   return authenticatedRequest<WorkoutSessionDetail>(`/v1/sessions/${sessionId}`);
+}
+
+export async function getSharedWorkoutSession(sessionId: string) {
+  return authenticatedRequest<SharedWorkoutSession>(`/v1/sessions/${sessionId}/share`);
 }
 
 export async function addExerciseToWorkoutSession(sessionId: string, payload: { exerciseId: string; targetReps?: number; targetWeight?: number }) {
