@@ -78,6 +78,10 @@ function label(value: string | null | undefined) {
 function date(value: string) {
   return new Date(value).toLocaleDateString();
 }
+function dayKey(value: string) {
+  const source = new Date(value);
+  return `${source.getFullYear()}-${String(source.getMonth() + 1).padStart(2, "0")}-${String(source.getDate()).padStart(2, "0")}`;
+}
 function durationFromMinutes(minutes: number) {
   const hours = Math.floor(minutes / 60);
   const remainder = Math.max(0, minutes % 60);
@@ -1532,6 +1536,11 @@ function NutritionContent({
   >("snack");
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [selectedMealDay, setSelectedMealDay] = useState<string | null>(null);
+  const mealDays = Array.from(new Set(record.nutrition.meals.map((meal) => dayKey(meal.consumed_at))));
+  const visibleMeals = selectedMealDay
+    ? record.nutrition.meals.filter((meal) => dayKey(meal.consumed_at) === selectedMealDay)
+    : record.nutrition.meals;
   const run = async (operation: () => Promise<unknown>, success: string) => {
     setSaving(true);
     setNotice(null);
@@ -1921,9 +1930,30 @@ function NutritionContent({
         </Pressable>
       </View>
       {notice ? <Text style={styles.notice}>{notice}</Text> : null}
-      <Text style={[styles.eyebrow, styles.section]}>RECENT MEALS</Text>
-      {record.nutrition.meals.length ? (
-        record.nutrition.meals.map((meal) => (
+      <Text style={[styles.eyebrow, styles.section]}>MEAL HISTORY</Text>
+      {mealDays.length ? (
+        <View style={styles.mealDayFilters}>
+          <Pressable
+            onPress={() => setSelectedMealDay(null)}
+            style={[styles.exerciseOption, selectedMealDay === null && styles.exerciseOptionActive]}
+          >
+            <Text style={[styles.exerciseOptionText, selectedMealDay === null && styles.exerciseOptionTextActive]}>All days</Text>
+          </Pressable>
+          {mealDays.map((day) => (
+            <Pressable
+              key={day}
+              onPress={() => setSelectedMealDay(day)}
+              style={[styles.exerciseOption, selectedMealDay === day && styles.exerciseOptionActive]}
+            >
+              <Text style={[styles.exerciseOptionText, selectedMealDay === day && styles.exerciseOptionTextActive]}>
+                {new Date(`${day}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+      {visibleMeals.length ? (
+        visibleMeals.map((meal) => (
           <Card
             key={meal.id}
             title={meal.name}
@@ -2388,6 +2418,7 @@ const styles = StyleSheet.create({
   },
   demoForm: { gap: 10, marginTop: 6 },
   demoActions: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: 16, marginTop: 6 },
+  mealDayFilters: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 },
   adminUserCard: {
     backgroundColor: "#FBF7F0",
     borderColor: "#D4C9B9",
