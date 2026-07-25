@@ -335,7 +335,7 @@ export async function startWorkoutSession(payload: { routineDayId: string; start
 }
 
 export type WorkoutSessionDetail = {
-  session: { id: string; status: string; startedAt: string; endedAt: string | null; routineName: string | null; dayName: string | null };
+  session: { id: string; status: string; startedAt: string; endedAt: string | null; routineName: string | null; dayName: string | null; weightUnit: 'kg' | 'lbs' };
   exercises: { id: string; name: string; category: string; muscleGroup: string | null; targetReps: number | null; targetWeight: string | null }[];
   libraryExercises: { id: string; name: string; category: string; muscleGroup: string | null }[];
   sets: { id: string; exerciseId: string; setOrder: number; reps: number; weight: string | number | null; isWarmup: boolean; createdAt: string }[];

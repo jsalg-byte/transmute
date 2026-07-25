@@ -845,7 +845,7 @@ app.get('/v1/sessions/:id', async (request, reply) => {
   `;
   if (!session) return reply.code(404).send({ error: 'Workout session not found.' });
 
-  const [plannedExercises, addedExercises, sets, libraryExercises] = await Promise.all([
+  const [plannedExercises, addedExercises, sets, libraryExercises, preferences] = await Promise.all([
     session.routine_day_id
       ? sql<{ id: string; name: string; category: string; muscle_group: string | null; target_reps: number | null; target_weight: string | null }[]>`
           SELECT e.id, e.name, e.category, e.muscle_group, rde.target_reps, rde.target_weight
@@ -865,11 +865,20 @@ app.get('/v1/sessions/:id', async (request, reply) => {
     sql<{ id: string; name: string; category: string; muscle_group: string | null }[]>`
       SELECT id, name, category, muscle_group FROM exercises ORDER BY name ASC LIMIT 300
     `,
+    sql<{ weight_unit: string }[]>`SELECT weight_unit FROM user_preferences WHERE user_id = ${userId} LIMIT 1`,
   ]);
 
   const plannedIds = new Set(plannedExercises.map((exercise) => exercise.id));
   return reply.send({
-    session: { id: session.id, status: session.status, startedAt: session.started_at, endedAt: session.ended_at, routineName: session.routine_name, dayName: session.day_name },
+    session: {
+      id: session.id,
+      status: session.status,
+      startedAt: session.started_at,
+      endedAt: session.ended_at,
+      routineName: session.routine_name,
+      dayName: session.day_name,
+      weightUnit: preferences[0]?.weight_unit === 'kg' ? 'kg' : 'lbs',
+    },
     exercises: [...plannedExercises, ...addedExercises.filter((exercise) => !plannedIds.has(exercise.id))].map((exercise) => ({ id: exercise.id, name: exercise.name, category: exercise.category, muscleGroup: exercise.muscle_group, targetReps: exercise.target_reps, targetWeight: exercise.target_weight })),
     libraryExercises: libraryExercises.map((exercise) => ({ id: exercise.id, name: exercise.name, category: exercise.category, muscleGroup: exercise.muscle_group })),
     sets: sets.map((set) => ({ id: set.id, exerciseId: set.exercise_id, setOrder: set.set_order, reps: set.reps, weight: set.weight, isWarmup: set.is_warmup, createdAt: set.created_at })),

@@ -165,6 +165,7 @@ export default function SessionDetailScreen() {
       },
     }, null, 2);
   }, [detail, setsByExercise]);
+  const weightUnit = detail?.session.weightUnit ?? 'lbs';
 
   const logSet = async () => {
     const parsedReps = Number(reps);
@@ -345,7 +346,7 @@ export default function SessionDetailScreen() {
                   {completedEvidence.workingSetCount} {completedEvidence.workingSetCount === 1 ? 'working set' : 'working sets'} · {completedEvidence.repsLogged} reps
                 </Text>
                 <Text style={styles.completedEvidenceCopy}>
-                  {completedEvidence.durationMinutes} {completedEvidence.durationMinutes === 1 ? 'minute' : 'minutes'} of recorded effort. Keep the evidence and build on it.
+              {completedEvidence.durationMinutes} {completedEvidence.durationMinutes === 1 ? 'minute' : 'minutes'} of recorded effort. Weight entries use {weightUnit}. Keep the evidence and build on it.
                 </Text>
               </View>
             ) : null}
@@ -389,7 +390,7 @@ export default function SessionDetailScreen() {
                       value={weight}
                       onChangeText={setWeight}
                       keyboardType="decimal-pad"
-                      placeholder={selectedExercise?.targetWeight ? `Weight (target ${selectedExercise.targetWeight})` : 'Weight (optional)'}
+                      placeholder={selectedExercise?.targetWeight ? `Weight in ${weightUnit} (target ${selectedExercise.targetWeight})` : `Weight in ${weightUnit} (optional)`}
                       placeholderTextColor="#655D57"
                       style={styles.input}
                       onSubmitEditing={() => void logSet()}
@@ -469,7 +470,7 @@ export default function SessionDetailScreen() {
                             ))}
                           </View>
                           <TextInput value={editReps} onChangeText={setEditReps} keyboardType="number-pad" placeholder="Reps" placeholderTextColor="#655D57" style={styles.input} />
-                          <TextInput value={editWeight} onChangeText={setEditWeight} keyboardType="decimal-pad" placeholder="Weight (optional)" placeholderTextColor="#655D57" style={styles.input} />
+                          <TextInput value={editWeight} onChangeText={setEditWeight} keyboardType="decimal-pad" placeholder={`Weight in ${weightUnit} (optional)`} placeholderTextColor="#655D57" style={styles.input} />
                           <Pressable onPress={() => setEditWarmup((current) => !current)}>
                             <Text style={styles.meta}>{editWarmup ? 'Warm-up set' : 'Working set'} · change</Text>
                           </Pressable>
@@ -480,7 +481,7 @@ export default function SessionDetailScreen() {
                         </View>
                       ) : (
                         <>
-                          <Text style={styles.meta}>#{set.setOrder} · {set.reps} reps{set.weight !== null ? ` · ${set.weight}` : ''}{set.isWarmup ? ' · warm-up' : ''}</Text>
+                          <Text style={styles.meta}>#{set.setOrder} · {set.reps} reps{set.weight !== null ? ` · ${set.weight} ${weightUnit}` : ''}{set.isWarmup ? ' · warm-up' : ''}</Text>
                           {detail.session.status === 'active' ? (
                             <View style={styles.editActions}>
                               <Pressable disabled={saving} onPress={() => beginEditingSet(set)}><Text style={styles.addMovement}>Edit</Text></Pressable>

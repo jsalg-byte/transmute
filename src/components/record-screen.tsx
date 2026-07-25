@@ -464,7 +464,7 @@ function WorkoutPlansContent({
                                 <Text style={styles.dayMeta}>
                                   {entry.targetSets ?? 3} sets
                                   {entry.targetReps ? ` · ${entry.targetReps} reps` : ""}
-                                  {entry.targetWeight ? ` · ${entry.targetWeight}` : ""}
+                                  {entry.targetWeight ? ` · ${entry.targetWeight} ${record.settings.weight_unit === "kg" ? "kg" : "lbs"}` : ""}
                                 </Text>
                               </View>
                               <View style={styles.attachedExerciseActions}>
