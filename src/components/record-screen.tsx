@@ -2375,7 +2375,6 @@ const styles = StyleSheet.create({
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 12, marginTop: 22 },
   card: {
     borderColor: "#D4C9B9",
-    borderRadius: 12,
     borderWidth: 1,
     marginTop: 12,
     padding: 16,
@@ -2457,7 +2456,6 @@ const styles = StyleSheet.create({
   },
   planCard: {
     borderColor: "#101015",
-    borderRadius: 12,
     borderWidth: 1,
     marginTop: 16,
     padding: 18,
