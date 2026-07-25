@@ -2,18 +2,20 @@ import { router } from "expo-router";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 import { openBrowserAsync } from "expo-web-browser";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Image,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AlchemySvg } from "./alchemy-svg";
 import {
@@ -56,6 +58,8 @@ import {
 } from "../lib/api";
 
 const ouroboros = require("../../assets/transmute/ouroboros.svg");
+const DESKTOP_BREAKPOINT = 768;
+const BOTTOM_NAV_HEIGHT = 64;
 
 const nav = [
   ["dashboard", "Dashboard"],
@@ -70,7 +74,33 @@ const nav = [
   ["admin", "Admin"],
 ] as const;
 
+const primaryNav = [
+  ["dashboard", "Home"],
+  ["workout-plans", "Plans"],
+  ["sessions", "Train"],
+  ["progress", "Progress"],
+] as const;
+
+const moreNav = [
+  ["exercises", "Exercise library"],
+  ["nutrition", "Nutrition"],
+  ["fasting", "Fasting"],
+  ["friends", "Friend"],
+  ["settings", "Settings"],
+  ["admin", "Admin"],
+] as const;
+
 type Area = (typeof nav)[number][0];
+
+function routeFor(area: Area) {
+  return `/${area}` as const;
+}
+
+function currentPageProps(active: boolean) {
+  return Platform.OS === "web" && active
+    ? ({ "aria-current": "page" } as Record<string, string>)
+    : {};
+}
 
 function label(value: string | null | undefined) {
   return value ? value.replace(/_/g, " ") : "Unassigned";
@@ -87,6 +117,28 @@ function durationFromMinutes(minutes: number) {
   const remainder = Math.max(0, minutes % 60);
   return `${hours}h ${remainder}m`;
 }
+
+function startOfCurrentWeek() {
+  const value = new Date();
+  value.setHours(0, 0, 0, 0);
+  value.setDate(value.getDate() - ((value.getDay() + 6) % 7));
+  return value.getTime();
+}
+
+function isThisWeek(value: string) {
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) && timestamp >= startOfCurrentWeek();
+}
+
+function elapsedSince(value: string) {
+  const minutes = Math.max(1, Math.floor((Date.now() - new Date(value).getTime()) / 60_000));
+  return `${minutes} ${minutes === 1 ? "minute" : "minutes"} in`;
+}
+
+function firstName(name: string | null | undefined) {
+  const value = name?.trim();
+  return value && !value.includes("@") ? value.split(/\s+/)[0] : null;
+}
 function Card({ title, meta, imageUrl }: { title: string; meta?: string; imageUrl?: string | null }) {
   return (
     <View style={styles.card}>
@@ -100,6 +152,10 @@ function Card({ title, meta, imageUrl }: { title: string; meta?: string; imageUr
 export function RecordScreen({ area }: { area: Area }) {
   const [record, setRecord] = useState<TransmuteRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const isDesktop = width >= DESKTOP_BREAKPOINT;
   useEffect(() => {
     getRecord()
       .then(setRecord)
@@ -127,11 +183,8 @@ export function RecordScreen({ area }: { area: Area }) {
       );
     }
   };
-  const content = record ? (
-    <AreaContent area={area} record={record} refresh={refresh} />
-  ) : null;
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+    <SafeAreaView style={styles.safeArea} edges={["top"]}>
       <View style={styles.wrap}>
         <View style={styles.header}>
           <Pressable
@@ -143,30 +196,50 @@ export function RecordScreen({ area }: { area: Area }) {
             <AlchemySvg source={ouroboros} width={38} height={38} />
             <Text style={styles.wordmarkText}>TRANSMUTE</Text>
           </Pressable>
-          <Pressable accessibilityRole="button" onPress={leave}>
-            <Text style={styles.signOut}>Sign out</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded: !isDesktop && moreOpen }}
+            onPress={() => {
+              if (isDesktop) {
+                void leave();
+                return;
+              }
+              setMoreOpen((open) => !open);
+            }}
+            style={styles.headerAccount}
+          >
+            <Text style={styles.signOut}>{isDesktop ? "Sign out" : "Account"}</Text>
           </Pressable>
         </View>
-        <View accessibilityRole="tablist" style={styles.nav}>
-          {nav
-            .filter(([key]) => key !== "admin" || record?.isAdmin)
-            .map(([key, name]) => (
-              <Pressable
-                accessibilityRole="tab"
-                accessibilityState={{ selected: key === area }}
-                key={key}
-                onPress={() => router.replace(`/${key}`)}
-                style={styles.navButton}
-              >
-                <Text
-                  style={[styles.navItem, key === area && styles.navActive]}
+        {isDesktop ? (
+          <View accessibilityRole="tablist" style={styles.nav}>
+            {nav
+              .filter(([key]) => key !== "admin" || record?.isAdmin)
+              .map(([key, name]) => (
+                <Pressable
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: key === area }}
+                  key={key}
+                  onPress={() => router.replace(routeFor(key))}
+                  style={styles.navButton}
                 >
-                  {name}
-                </Text>
-              </Pressable>
-            ))}
-        </View>
-        <ScrollView contentContainerStyle={styles.content}>
+                  <Text
+                    style={[styles.navItem, key === area && styles.navActive]}
+                  >
+                    {name}
+                  </Text>
+                </Pressable>
+              ))}
+          </View>
+        ) : null}
+        <ScrollView
+          contentContainerStyle={[
+            styles.content,
+            !isDesktop && {
+              paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 28,
+            },
+          ]}
+        >
           {error ? (
             <>
               <Text style={styles.title}>The record is unavailable.</Text>
@@ -178,11 +251,284 @@ export function RecordScreen({ area }: { area: Area }) {
               <Text style={styles.body}>Reading your record…</Text>
             </View>
           ) : (
-            content
+            <AreaContent area={area} record={record} refresh={refresh} isDesktop={isDesktop} />
           )}
         </ScrollView>
       </View>
+      {!isDesktop ? (
+        <>
+          {moreOpen ? (
+            <Pressable
+              accessibilityLabel="Close account menu"
+              accessibilityRole="button"
+              onPress={() => setMoreOpen(false)}
+              style={styles.moreBackdrop}
+            />
+          ) : null}
+          {moreOpen ? (
+            <View
+              accessibilityRole="menu"
+              style={[styles.moreSheet, { bottom: BOTTOM_NAV_HEIGHT + insets.bottom }]}
+            >
+              <Text style={styles.moreHeading}>MORE</Text>
+              {moreNav
+                .filter(([key]) => key !== "admin" || record?.isAdmin)
+                .map(([key, name]) => (
+                  <Pressable
+                    accessibilityRole="menuitem"
+                    key={key}
+                    onPress={() => {
+                      setMoreOpen(false);
+                      router.replace(routeFor(key));
+                    }}
+                    style={styles.moreItem}
+                  >
+                    <Text style={[styles.moreItemText, key === area && styles.moreItemTextActive]}>{name}</Text>
+                  </Pressable>
+                ))}
+              <Pressable accessibilityRole="menuitem" onPress={() => void leave()} style={styles.moreItem}>
+                <Text style={styles.moreSignOut}>Sign out</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          <View style={[styles.bottomNav, { paddingBottom: insets.bottom }]}>
+            {primaryNav.map(([key, name]) => {
+              const active = key === area;
+              return (
+                <Pressable
+                  {...currentPageProps(active)}
+                  accessibilityLabel={name}
+                  accessibilityRole="link"
+                  accessibilityState={{ selected: active }}
+                  key={key}
+                  onPress={() => router.replace(routeFor(key))}
+                  style={styles.bottomNavItem}
+                >
+                  {active ? <View style={styles.bottomNavIndicator} /> : null}
+                  <Text style={[styles.bottomNavText, active && styles.bottomNavTextActive]}>{name}</Text>
+                </Pressable>
+              );
+            })}
+            <Pressable
+              {...currentPageProps(moreNav.some(([key]) => key === area))}
+              accessibilityLabel="More"
+              accessibilityRole="button"
+              accessibilityState={{ expanded: moreOpen, selected: moreNav.some(([key]) => key === area) }}
+              onPress={() => setMoreOpen((open) => !open)}
+              style={styles.bottomNavItem}
+            >
+              {moreNav.some(([key]) => key === area) ? <View style={styles.bottomNavIndicator} /> : null}
+              <Text style={[styles.bottomNavText, moreNav.some(([key]) => key === area) && styles.bottomNavTextActive]}>More</Text>
+            </Pressable>
+          </View>
+        </>
+      ) : null}
     </SafeAreaView>
+  );
+}
+
+type RecentRecordItem = {
+  id: string;
+  title: string;
+  meta: string;
+  timestamp: string;
+};
+
+function DashboardContent({
+  record,
+  isDesktop,
+}: {
+  record: TransmuteRecord;
+  isDesktop: boolean;
+}) {
+  const [starting, setStarting] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const activeSession = record.dashboard.activeSession;
+  const nextSession = record.dashboard.nextSession;
+  const nextDay = useMemo(
+    () =>
+      nextSession
+        ? record.workoutPlans
+            .flatMap((plan) => plan.days)
+            .find((day) => day.id === nextSession.dayId) ?? null
+        : null,
+    [nextSession, record.workoutPlans],
+  );
+  const weekly = useMemo(() => {
+    const sessions = record.sessions.filter(
+      (session) =>
+        session.status === "completed" &&
+        isThisWeek(session.ended_at ?? session.started_at),
+    );
+    const meals = record.nutrition.meals.filter((meal) =>
+      isThisWeek(meal.consumed_at),
+    );
+    const checkIns = record.progress.filter((checkIn) =>
+      isThisWeek(checkIn.captured_at),
+    );
+    return {
+      checkIns: checkIns.length,
+      meals: meals.length,
+      sessions: sessions.length,
+      sets: sessions.reduce((total, session) => total + session.set_count, 0),
+    };
+  }, [record.nutrition.meals, record.progress, record.sessions]);
+  const recent = useMemo<RecentRecordItem[]>(() => {
+    const sessions = record.sessions.map((session) => ({
+      id: `session-${session.id}`,
+      title:
+        session.status === "completed" ? "Session completed" : "Session recorded",
+      meta: `${session.routine_name ?? "Workout plan"} · ${session.day_name ?? "Day"}`,
+      timestamp: session.ended_at ?? session.started_at,
+    }));
+    const meals = record.nutrition.meals.map((meal) => ({
+      id: `meal-${meal.id}`,
+      title: "Nutrition logged",
+      meta: meal.name,
+      timestamp: meal.consumed_at,
+    }));
+    const checkIns = record.progress.map((checkIn) => ({
+      id: `progress-${checkIn.id}`,
+      title: "Progress check-in",
+      meta: checkIn.note?.trim() || "Visual record updated",
+      timestamp: checkIn.captured_at,
+    }));
+    return [...sessions, ...meals, ...checkIns]
+      .sort(
+        (left, right) =>
+          new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime(),
+      )
+      .slice(0, 4);
+  }, [record.nutrition.meals, record.progress, record.sessions]);
+  const welcome = firstName(record.user.name);
+  const hasPlan = record.workoutPlans.length > 0;
+
+  const beginNextSession = async () => {
+    if (!nextSession) return;
+    setStarting(true);
+    setNotice(null);
+    try {
+      const { session } = await startWorkoutSession({
+        routineDayId: nextSession.dayId,
+      });
+      router.push(`/sessions/${session.id}`);
+    } catch (reason) {
+      setNotice(
+        reason instanceof Error ? reason.message : "Unable to start the session.",
+      );
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const primary = activeSession
+    ? {
+        action: () => router.push(`/sessions/${activeSession.id}`),
+        button: "Continue session",
+        label: "ACTIVE WORK",
+        meta: `${elapsedSince(activeSession.started_at)} the session`,
+        title: `${activeSession.routine_name ?? "Workout plan"} — ${activeSession.day_name ?? "Session"}`,
+      }
+    : nextSession
+      ? {
+          action: () => void beginNextSession(),
+          button: starting ? "Beginning session…" : "Begin session",
+          label: "YOUR NEXT SESSION",
+          meta: `${nextSession.exerciseCount} ${nextSession.exerciseCount === 1 ? "exercise" : "exercises"} ready to log`,
+          title: `${nextSession.routineName ?? "Workout plan"} — ${nextSession.dayName}`,
+        }
+      : hasPlan
+        ? {
+            action: () => router.push("/workout-plans"),
+            button: "Open workout plan",
+            label: "YOUR NEXT SESSION",
+            meta: "Add a day to make the next session available.",
+            title: "Your plan needs its next day.",
+          }
+        : {
+            action: () => router.push("/workout-plans"),
+            button: "Build your first plan",
+            label: "FIRST INPUT",
+            meta: "A plan gives your next session a place to begin.",
+            title: "Build the work before you perform it.",
+          };
+
+  return (
+    <>
+      <Text style={styles.eyebrow}>THE WORKBENCH</Text>
+      <Text style={styles.dashboardTitle}>
+        {welcome ? `Welcome back, ${welcome}.` : "Welcome back."}
+      </Text>
+
+      <View style={styles.dashboardPrimary}>
+        <Text style={styles.dashboardPrimaryLabel}>{primary.label}</Text>
+        <Text style={styles.dashboardPrimaryTitle}>{primary.title}</Text>
+        <Text style={styles.dashboardPrimaryMeta}>{primary.meta}</Text>
+        {nextDay && nextDay.exercises.length > 0 && !activeSession ? (
+          <Text style={styles.dashboardMovementList}>
+            {nextDay.exercises
+              .sort((left, right) => left.sortOrder - right.sortOrder)
+              .slice(0, 3)
+              .map((exercise) => exercise.name)
+              .join(" · ")}
+          </Text>
+        ) : null}
+        <Pressable
+          accessibilityRole="button"
+          disabled={starting}
+          onPress={primary.action}
+          style={({ pressed }) => [
+            styles.dashboardAction,
+            pressed && styles.buttonPressed,
+            starting && styles.buttonDisabled,
+          ]}
+        >
+          <Text style={styles.actionButtonText}>{primary.button}</Text>
+        </Pressable>
+        {notice ? <Text accessibilityRole="alert" style={styles.notice}>{notice}</Text> : null}
+      </View>
+
+      <View style={[styles.dashboardSecondary, isDesktop && styles.dashboardSecondaryDesktop]}>
+        <View style={styles.weeklyRecord}>
+          <Text style={styles.sectionLabel}>THIS WEEK</Text>
+          <View style={styles.weeklyGrid}>
+            {[
+              [weekly.sessions, "SESSIONS"],
+              [weekly.meals, "MEALS"],
+              [weekly.checkIns, "CHECK-INS"],
+              [weekly.sets, "SETS LOGGED"],
+            ].map(([value, label], index) => (
+              <View
+                key={label}
+                style={[
+                  styles.weeklyMetric,
+                  index % 2 === 0 && styles.weeklyMetricLeft,
+                  index < 2 && styles.weeklyMetricTop,
+                ]}
+              >
+                <Text style={styles.weeklyMetricValue}>{value}</Text>
+                <Text style={styles.weeklyMetricLabel}>{label}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        {recent.length ? (
+          <View style={styles.recentRecord}>
+            <Text style={styles.sectionLabel}>RECENT RECORD</Text>
+            {recent.map((item) => (
+              <View key={item.id} style={styles.recentRow}>
+                <View style={styles.recentCopy}>
+                  <Text style={styles.recentTitle}>{item.title}</Text>
+                  <Text style={styles.recentMeta}>{item.meta}</Text>
+                </View>
+                <Text style={styles.recentDate}>{date(item.timestamp)}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+      </View>
+    </>
   );
 }
 
@@ -190,64 +536,15 @@ function AreaContent({
   area,
   record: r,
   refresh,
+  isDesktop,
 }: {
   area: Area;
   record: TransmuteRecord;
   refresh: () => Promise<void>;
+  isDesktop: boolean;
 }) {
   if (area === "dashboard")
-    return (
-      <>
-        <Text style={styles.eyebrow}>THE WORKBENCH</Text>
-        <Text style={styles.title}>Welcome back, {r.user.name}.</Text>
-        <Text style={styles.body}>
-          {r.dashboard.activeSession
-            ? `Active: ${r.dashboard.activeSession.routine_name ?? "workout"} — ${r.dashboard.activeSession.day_name ?? "today"}.`
-            : r.dashboard.nextSession
-              ? `Up next: ${r.dashboard.nextSession.dayName} in ${r.dashboard.nextSession.routineName ?? "your active workout plan"}.`
-              : "Your training record is ready for the next input."}
-        </Text>
-        <Pressable
-          accessibilityRole="button"
-          onPress={() =>
-            router.push(
-              r.dashboard.activeSession
-                ? `/sessions/${r.dashboard.activeSession.id}`
-                : "/sessions",
-            )
-          }
-          style={styles.dashboardAction}
-        >
-          <Text style={styles.actionButtonText}>
-            {r.dashboard.activeSession
-              ? "Continue session"
-              : r.dashboard.nextSession
-                ? `Begin ${r.dashboard.nextSession.dayName}`
-                : "Set up a workout plan"}
-          </Text>
-        </Pressable>
-        {r.dashboard.nextSession && !r.dashboard.activeSession ? (
-          <Text style={styles.dashboardMeta}>
-            {r.dashboard.nextSession.exerciseCount} {r.dashboard.nextSession.exerciseCount === 1 ? "movement" : "movements"} ready to log.
-          </Text>
-        ) : null}
-        <View style={styles.grid}>
-          <Card title={`${r.workoutPlans.length} plans`} meta="Workout plans" />
-          <Card
-            title={`${r.sessions.length} sessions`}
-            meta="Training record"
-          />
-          <Card
-            title={`${r.nutrition.meals.length} meals`}
-            meta="Nutrition log"
-          />
-          <Card
-            title={`${r.progress.length} check-ins`}
-            meta="Progress record"
-          />
-        </View>
-      </>
-    );
+    return <DashboardContent record={r} isDesktop={isDesktop} />;
   if (area === "workout-plans")
     return <WorkoutPlansContent record={r} refresh={refresh} />;
   if (area === "exercises")
@@ -2323,6 +2620,7 @@ const styles = StyleSheet.create({
     paddingTop: 10,
   },
   wordmark: { alignItems: "center", flexDirection: "row", gap: 10 },
+  headerAccount: { alignItems: "center", justifyContent: "center", minHeight: 44, minWidth: 44 },
   wordmarkText: {
     color: "#101015",
     fontSize: 15,
@@ -2354,7 +2652,7 @@ const styles = StyleSheet.create({
     textDecorationColor: "#A95B5B",
     textDecorationLine: "underline",
   },
-  content: { paddingBottom: 56, maxWidth: 760 },
+  content: { paddingBottom: 56, maxWidth: 760, width: "100%" },
   eyebrow: {
     color: "#642D2A",
     fontFamily: "Courier",
@@ -2372,7 +2670,6 @@ const styles = StyleSheet.create({
   },
   body: { color: "#2C2C31", fontSize: 17, lineHeight: 27, marginTop: 14 },
   loading: { alignItems: "flex-start", gap: 8, marginTop: 100 },
-  grid: { flexDirection: "row", flexWrap: "wrap", gap: 12, marginTop: 22 },
   card: {
     borderColor: "#D4C9B9",
     borderWidth: 1,
@@ -2538,7 +2835,109 @@ const styles = StyleSheet.create({
     minHeight: 52,
     paddingHorizontal: 18,
   },
-  dashboardMeta: { color: "#655D57", fontSize: 13, marginTop: 10 },
+  dashboardTitle: {
+    color: "#101015",
+    fontSize: 42,
+    fontWeight: "900",
+    letterSpacing: -2.2,
+    lineHeight: 44,
+    marginTop: 12,
+  },
+  dashboardPrimary: {
+    borderBottomColor: "#D4C9B9",
+    borderBottomWidth: 1,
+    borderTopColor: "#101015",
+    borderTopWidth: 1,
+    marginTop: 28,
+    paddingVertical: 18,
+  },
+  dashboardPrimaryLabel: {
+    color: "#642D2A",
+    fontFamily: "Courier",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 1.7,
+  },
+  dashboardPrimaryTitle: {
+    color: "#101015",
+    fontSize: 27,
+    fontWeight: "900",
+    letterSpacing: -1.2,
+    lineHeight: 31,
+    marginTop: 8,
+  },
+  dashboardPrimaryMeta: { color: "#655D57", fontSize: 15, lineHeight: 22, marginTop: 8 },
+  dashboardMovementList: { color: "#2C2C31", fontSize: 14, lineHeight: 21, marginTop: 7 },
+  dashboardSecondary: { gap: 30, marginTop: 30 },
+  dashboardSecondaryDesktop: { flexDirection: "row", gap: 36 },
+  weeklyRecord: { flex: 1 },
+  recentRecord: { flex: 1 },
+  sectionLabel: {
+    color: "#642D2A",
+    fontFamily: "Courier",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 1.7,
+  },
+  weeklyGrid: {
+    borderBottomColor: "#D4C9B9",
+    borderBottomWidth: 1,
+    borderTopColor: "#D4C9B9",
+    borderTopWidth: 1,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginTop: 12,
+  },
+  weeklyMetric: { paddingBottom: 14, paddingTop: 14, width: "50%" },
+  weeklyMetricLeft: { borderRightColor: "#D4C9B9", borderRightWidth: 1, paddingRight: 14 },
+  weeklyMetricTop: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1 },
+  weeklyMetricValue: { color: "#101015", fontSize: 30, fontWeight: "900", letterSpacing: -1.4 },
+  weeklyMetricLabel: { color: "#655D57", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.1, marginTop: 3 },
+  recentRow: {
+    alignItems: "flex-start",
+    borderBottomColor: "#D4C9B9",
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    gap: 12,
+    justifyContent: "space-between",
+    paddingVertical: 13,
+  },
+  recentCopy: { flex: 1 },
+  recentTitle: { color: "#101015", fontSize: 15, fontWeight: "800" },
+  recentMeta: { color: "#655D57", fontSize: 13, lineHeight: 19, marginTop: 3 },
+  recentDate: { color: "#655D57", fontFamily: "Courier", fontSize: 10, fontWeight: "700", letterSpacing: 0.5, paddingTop: 3 },
+  moreBackdrop: { backgroundColor: "rgba(16, 16, 21, 0.14)", bottom: 0, left: 0, position: "absolute", right: 0, top: 0, zIndex: 1 },
+  moreSheet: {
+    backgroundColor: "#F4EFE7",
+    borderColor: "#101015",
+    borderTopWidth: 1,
+    left: 0,
+    paddingHorizontal: 24,
+    paddingTop: 12,
+    position: "absolute",
+    right: 0,
+    zIndex: 2,
+  },
+  moreHeading: { color: "#642D2A", fontFamily: "Courier", fontSize: 11, fontWeight: "800", letterSpacing: 1.7, paddingBottom: 5 },
+  moreItem: { borderTopColor: "#D4C9B9", borderTopWidth: 1, justifyContent: "center", minHeight: 44 },
+  moreItemText: { color: "#101015", fontSize: 15, fontWeight: "700" },
+  moreItemTextActive: { color: "#642D2A" },
+  moreSignOut: { color: "#642D2A", fontSize: 15, fontWeight: "800", textDecorationLine: "underline", textDecorationColor: "#A95B5B" },
+  bottomNav: {
+    backgroundColor: "#F4EFE7",
+    borderTopColor: "#D4C9B9",
+    borderTopWidth: 1,
+    bottom: 0,
+    flexDirection: "row",
+    left: 0,
+    position: "absolute",
+    right: 0,
+    zIndex: 3,
+  },
+  bottomNavItem: { alignItems: "center", flex: 1, justifyContent: "center", minHeight: BOTTOM_NAV_HEIGHT, position: "relative" },
+  bottomNavIndicator: { backgroundColor: "#642D2A", height: 2, left: 13, position: "absolute", right: 13, top: 0 },
+  bottomNavText: { color: "#655D57", fontSize: 12, fontWeight: "700" },
+  bottomNavTextActive: { color: "#101015", fontWeight: "900" },
   actionButtonText: { color: "#F4EFE7", fontSize: 14, fontWeight: "800" },
   dayAction: { borderColor: "#D4C9B9", borderTopWidth: 1, paddingVertical: 12 },
   dayActionText: { color: "#101015", fontSize: 16, fontWeight: "800" },
