@@ -92,6 +92,10 @@ const exerciseSchema = z.object({
   category: z.enum(['strength', 'cardio', 'mobility']).default('strength'),
   muscleGroup: z.string().trim().max(80).optional(),
 });
+const exerciseDemoSchema = z.object({
+  demoUrl: z.string().url().refine((value) => /^https?:\/\//.test(value), 'A public http(s) URL is required.'),
+  sourceName: z.string().trim().min(2).max(160).optional(),
+});
 const activePlanSchema = z.object({ routineId: z.string().uuid() });
 const startSessionSchema = z.object({
   routineDayId: z.string().uuid(),
@@ -606,6 +610,24 @@ app.post('/v1/exercises', async (request, reply) => {
     RETURNING id, name, category, muscle_group
   `;
   return reply.code(201).send({ exercise: { id: exercise.id, name: exercise.name, category: exercise.category, muscleGroup: exercise.muscle_group } });
+});
+
+app.put('/v1/exercises/:id/demo', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = exerciseDemoSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Enter a valid public demo URL.' });
+  const [exercise] = await sql<{ id: string }[]>`SELECT id FROM exercises WHERE id = ${params.data.id} LIMIT 1`;
+  if (!exercise) return reply.code(404).send({ error: 'Exercise not found.' });
+  const [demo] = await sql<{ exercise_id: string; gif_url: string; source_name: string | null }[]>`
+    INSERT INTO exercise_gif_overrides (id, user_id, exercise_id, gif_url, source_name, created_at, updated_at)
+    VALUES (${randomUUID()}, ${userId}, ${exercise.id}, ${parsed.data.demoUrl}, ${parsed.data.sourceName ?? null}, now(), now())
+    ON CONFLICT (user_id, exercise_id) DO UPDATE
+      SET gif_url = EXCLUDED.gif_url, source_name = EXCLUDED.source_name, updated_at = now()
+    RETURNING exercise_id, gif_url, source_name
+  `;
+  return reply.send({ demo: { exerciseId: demo.exercise_id, demoUrl: demo.gif_url, sourceName: demo.source_name } });
 });
 
 app.patch('/v1/plans/:id', async (request, reply) => {
@@ -1447,7 +1469,13 @@ app.get('/v1/record', async (request, reply) => {
       WHERE r.user_id = ${userId}
       ORDER BY rd.sort_order ASC, rde.sort_order ASC
     `,
-    sql`SELECT id, name, category, muscle_group FROM exercises ORDER BY name ASC LIMIT 300`,
+    sql<{ id: string; name: string; category: string; muscle_group: string | null; demo_url: string | null; demo_source_name: string | null }[]>`
+      SELECT e.id, e.name, e.category, e.muscle_group,
+        ego.gif_url AS demo_url, ego.source_name AS demo_source_name
+      FROM exercises e
+      LEFT JOIN exercise_gif_overrides ego ON ego.exercise_id = e.id AND ego.user_id = ${userId}
+      ORDER BY e.name ASC LIMIT 300
+    `,
     sql`
       SELECT ws.id, ws.status, ws.started_at, ws.ended_at, r.name AS routine_name, rd.day_name,
         count(wset.id)::int AS set_count
@@ -1662,7 +1690,14 @@ app.get('/v1/record', async (request, reply) => {
         : null,
     },
     workoutPlans,
-    exercises,
+    exercises: (exercises as Array<{ id: string; name: string; category: string; muscle_group: string | null; demo_url: string | null; demo_source_name: string | null }>).map((exercise) => ({
+      id: exercise.id,
+      name: exercise.name,
+      category: exercise.category,
+      muscle_group: exercise.muscle_group,
+      demoUrl: exercise.demo_url,
+      demoSourceName: exercise.demo_source_name,
+    })),
     sessions,
     nutrition: { foods, meals: mealsWithPhotos },
     fasting: { active: activeFast[0] ?? null, logs: fasts },

@@ -69,7 +69,14 @@ export type TransmuteRecord = {
       }[];
     }[];
   }[];
-  exercises: { id: string; name: string; category: string; muscle_group: string | null }[];
+  exercises: {
+    id: string;
+    name: string;
+    category: string;
+    muscle_group: string | null;
+    demoUrl: string | null;
+    demoSourceName: string | null;
+  }[];
   sessions: { id: string; status: string; started_at: string; ended_at: string | null; routine_name: string | null; day_name: string | null; set_count: number }[];
   nutrition: {
     foods: {
@@ -290,6 +297,12 @@ export async function deleteWorkoutPlanDay(dayId: string) {
 export async function createExercise(payload: { name: string; category?: 'strength' | 'cardio' | 'mobility'; muscleGroup?: string }) {
   return authenticatedRequest<{ exercise: { id: string; name: string; category: string; muscleGroup: string | null } }>('/v1/exercises', {
     method: 'POST', body: JSON.stringify(payload),
+  });
+}
+
+export async function updateExerciseDemo(exerciseId: string, payload: { demoUrl: string; sourceName?: string }) {
+  return authenticatedRequest<{ demo: { exerciseId: string; demoUrl: string; sourceName: string | null } }>(`/v1/exercises/${exerciseId}/demo`, {
+    method: 'PUT', body: JSON.stringify(payload),
   });
 }
 

@@ -1,6 +1,7 @@
 import { router } from "expo-router";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
+import { openBrowserAsync } from "expo-web-browser";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -42,6 +43,7 @@ import {
   signOut,
   startWorkoutSession,
   updateFasting,
+  updateExerciseDemo,
   updateProgressPhoto,
   updateWeightUnit,
   uploadMealPhoto,
@@ -725,6 +727,9 @@ function ExercisesContent({
   const [muscleGroup, setMuscleGroup] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [editingDemoExerciseId, setEditingDemoExerciseId] = useState<string | null>(null);
+  const [demoUrl, setDemoUrl] = useState("");
+  const [demoSourceName, setDemoSourceName] = useState("");
   const submit = async () => {
     setSaving(true);
     setNotice(null);
@@ -749,6 +754,34 @@ function ExercisesContent({
       );
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveDemo = async (exerciseId: string) => {
+    setSaving(true);
+    setNotice(null);
+    try {
+      await updateExerciseDemo(exerciseId, {
+        demoUrl: demoUrl.trim(),
+        sourceName: demoSourceName.trim() || undefined,
+      });
+      await refresh();
+      setEditingDemoExerciseId(null);
+      setDemoUrl("");
+      setDemoSourceName("");
+      setNotice("Exercise demonstration source saved.");
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "Unable to save the demonstration source.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openDemo = async (url: string) => {
+    try {
+      await openBrowserAsync(url);
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "Unable to open the exercise demonstration.");
     }
   };
   return (
@@ -809,11 +842,69 @@ function ExercisesContent({
       <Text style={[styles.eyebrow, styles.section]}>LIBRARY</Text>
       {record.exercises.length ? (
         record.exercises.map((exercise) => (
-          <Card
-            key={exercise.id}
-            title={exercise.name}
-            meta={`${label(exercise.category)}${exercise.muscle_group ? ` · ${exercise.muscle_group}` : ""}`}
-          />
+          <View key={exercise.id} style={styles.exerciseCard}>
+            <Text style={styles.cardTitle}>{exercise.name}</Text>
+            <Text style={styles.cardMeta}>
+              {label(exercise.category)}{exercise.muscle_group ? ` · ${exercise.muscle_group}` : ""}
+            </Text>
+            {editingDemoExerciseId === exercise.id ? (
+              <View style={styles.demoForm}>
+                <TextInput
+                  value={demoUrl}
+                  onChangeText={setDemoUrl}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="url"
+                  placeholder="Public demo URL"
+                  placeholderTextColor="#655D57"
+                  style={styles.input}
+                  returnKeyType="next"
+                />
+                <TextInput
+                  value={demoSourceName}
+                  onChangeText={setDemoSourceName}
+                  placeholder="Source name (optional)"
+                  placeholderTextColor="#655D57"
+                  style={styles.input}
+                  returnKeyType="done"
+                  onSubmitEditing={() => void saveDemo(exercise.id)}
+                />
+                <View style={styles.demoActions}>
+                  <Pressable disabled={saving} onPress={() => void saveDemo(exercise.id)}>
+                    <Text style={styles.inlineAction}>Save source</Text>
+                  </Pressable>
+                  <Pressable
+                    disabled={saving}
+                    onPress={() => {
+                      setEditingDemoExerciseId(null);
+                      setDemoUrl("");
+                      setDemoSourceName("");
+                    }}
+                  >
+                    <Text style={styles.inlineAction}>Cancel</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.demoActions}>
+                {exercise.demoUrl ? (
+                  <Pressable accessibilityRole="link" onPress={() => void openDemo(exercise.demoUrl!)}>
+                    <Text style={styles.inlineAction}>Watch demo</Text>
+                  </Pressable>
+                ) : null}
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => {
+                    setEditingDemoExerciseId(exercise.id);
+                    setDemoUrl(exercise.demoUrl ?? "");
+                    setDemoSourceName(exercise.demoSourceName ?? "");
+                  }}
+                >
+                  <Text style={styles.inlineAction}>{exercise.demoUrl ? "Edit demo source" : "Add demo source"}</Text>
+                </Pressable>
+              </View>
+            )}
+          </View>
         ))
       ) : (
         <Card
@@ -2287,6 +2378,16 @@ const styles = StyleSheet.create({
     textAlign: "right",
     width: "100%",
   },
+  exerciseCard: {
+    backgroundColor: "#FBF7F0",
+    borderColor: "#D4C9B9",
+    borderWidth: 1,
+    gap: 7,
+    marginTop: 12,
+    padding: 16,
+  },
+  demoForm: { gap: 10, marginTop: 6 },
+  demoActions: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: 16, marginTop: 6 },
   adminUserCard: {
     backgroundColor: "#FBF7F0",
     borderColor: "#D4C9B9",
