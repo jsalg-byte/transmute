@@ -460,6 +460,7 @@ async function readAdminUsers() {
 }
 
 await app.register(cors, {
+  methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   origin: (origin, callback) => {
     if (!origin || env.CORS_ORIGINS.split(',').map((value) => value.trim()).includes(origin)) {
       callback(null, true);
