@@ -34,7 +34,7 @@ function decodeHtml(input: string) {
     .replace(/&gt;/g, '>');
 }
 
-async function getCatalog() {
+export async function getCalistreeCatalog() {
   if (!catalogPromise) {
     catalogPromise = fetch(CALISTREE_EXERCISES_URL)
       .then(async (response) => {
@@ -64,7 +64,7 @@ export async function searchCalistreeExercises(query: string, limit = 8) {
   if (needle.length < 2) return [];
 
   const words = needle.split(' ');
-  return (await getCatalog())
+  return (await getCalistreeCatalog())
     .map((entry) => ({ entry, normalizedName: normalize(entry.name) }))
     .filter(({ normalizedName }) => words.every((word) => normalizedName.includes(word)))
     .sort((left, right) => {
@@ -119,7 +119,7 @@ async function metadataForEntry(entry: CalistreeCatalogEntry): Promise<Calistree
 }
 
 export async function getCalistreeExerciseMetadata({ name, slug }: { name?: string; slug?: string | null }) {
-  const catalog = await getCatalog();
+  const catalog = await getCalistreeCatalog();
   const entry = slug
     ? catalog.find((candidate) => candidate.slug === slug)
     : catalog.find((candidate) => Boolean(name) && normalize(candidate.name) === normalize(name!));

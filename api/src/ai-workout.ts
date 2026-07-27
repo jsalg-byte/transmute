@@ -1,6 +1,9 @@
 type WorkoutWorkerRequest = {
   prompt: string;
-  exerciseCatalog: Array<{ id: string; name: string; category: string; muscleGroup: string | null }>;
+  exerciseCatalog: {
+    library: Array<{ name: string; category: string; muscleGroup: string | null }>;
+    calistree: Array<{ name: string }>;
+  };
 };
 
 export async function requestAiWorkoutDraft({

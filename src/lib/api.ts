@@ -22,7 +22,7 @@ export type AiWorkoutPlanDraft = {
   days: {
     name: string;
     exercises: {
-      exerciseId: string;
+      exerciseName: string;
       targetSets: number;
       targetReps?: number;
       targetWeight?: number;
@@ -303,7 +303,7 @@ export async function generateAiWorkoutPlan(prompt: string) {
 }
 
 export async function importAiWorkoutPlan(plan: AiWorkoutPlanDraft) {
-  return authenticatedRequest<{ plan: TransmuteRecord['workoutPlans'][number] }>('/v1/ai/workout-plans', {
+  return authenticatedRequest<{ plan: TransmuteRecord['workoutPlans'][number]; addedExercises: number }>('/v1/ai/workout-plans', {
     method: 'POST', body: JSON.stringify({ plan }),
   });
 }

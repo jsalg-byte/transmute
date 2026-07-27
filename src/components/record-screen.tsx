@@ -459,6 +459,11 @@ function DashboardContent({
   }, [record.nutrition.meals, record.progress, record.sessions]);
   const welcome = firstName(record.user.name);
   const hasPlan = record.workoutPlans.length > 0;
+  const recoveringNames = recovery.recovering.map((group) => group.name);
+  const longestRecoveryHours = Math.max(...recovery.recovering.map((group) => group.hoursRemaining), 0);
+  const readyNames = recovery.ready.slice(0, 4);
+  const remainingReadyCount = Math.max(0, recovery.ready.length - readyNames.length);
+  const isQuietWeek = weekly.sessions === 0 && weekly.meals === 0 && !recovery.hasCompletedWork;
 
   const beginNextSession = async () => {
     if (!nextSession) return;
@@ -546,10 +551,7 @@ function DashboardContent({
       </View>
 
       <View style={[styles.recoveryRecord, isDesktop && styles.recoveryRecordDesktop]}>
-        <View style={styles.recoveryHeading}>
-          <Text style={styles.sectionLabel}>RECOVERY</Text>
-          <Text style={styles.recoveryIntro}>Based on completed working sets from the last 48 hours.</Text>
-        </View>
+        <Text style={styles.sectionLabel}>RECOVERY</Text>
         {recovery.hasCompletedWork ? (
           <>
             <View style={styles.recoveryMap}>
@@ -577,28 +579,28 @@ function DashboardContent({
       </View>
 
       <View style={[styles.dashboardSecondary, isDesktop && styles.dashboardSecondaryDesktop]}>
-        <View style={styles.weeklyRecord}>
+        <View style={styles.weeklyFieldReport}>
           <Text style={styles.sectionLabel}>THIS WEEK</Text>
-          <View style={styles.weeklyGrid}>
-            {[
-              [weekly.sessions, "SESSIONS"],
-              [weekly.meals, "MEALS"],
-              [recovery.recovering.length, "RECOVERING"],
-              [recovery.hasCompletedWork ? recovery.ready.length : 0, "READY NOW"],
-            ].map(([value, label], index) => (
-              <View
-                key={label}
-                style={[
-                  styles.weeklyMetric,
-                  index % 2 === 0 && styles.weeklyMetricLeft,
-                  index < 2 && styles.weeklyMetricTop,
-                ]}
-              >
-                <Text style={styles.weeklyMetricValue}>{value}</Text>
-                <Text style={styles.weeklyMetricLabel}>{label}</Text>
+          {isQuietWeek ? (
+            <View style={styles.weeklyEmptyState}>
+              <Text style={styles.weeklyEmptyTitle}>No work recorded yet.</Text>
+              <Text style={styles.editorHint}>Complete a session to begin building the record.</Text>
+              {nextSession ? <Pressable accessibilityRole="button" disabled={starting} onPress={() => void beginNextSession()} style={[styles.weeklyStartAction, starting && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{starting ? "Starting…" : "Start a Session"}</Text></Pressable> : null}
+            </View>
+          ) : (
+            <>
+              <View style={styles.weeklyActivityMetrics}>
+                {weekly.sessions ? <View style={styles.weeklyActivityMetric}><Text style={styles.weeklyActivityValue}>{weekly.sessions}</Text><Text style={styles.weeklyActivityLabel}>{weekly.sessions === 1 ? "SESSION" : "SESSIONS"}</Text></View> : null}
+                {weekly.meals ? <View style={styles.weeklyActivityMetric}><Text style={styles.weeklyActivityValue}>{weekly.meals}</Text><Text style={styles.weeklyActivityLabel}>{weekly.meals === 1 ? "MEAL" : "MEALS"}</Text></View> : null}
               </View>
-            ))}
-          </View>
+              {weekly.meals > 0 && weekly.sessions === 0 ? <Text style={styles.weeklyContext}>Recovery begins after your first completed session.</Text> : null}
+              {recovery.hasCompletedWork ? <View style={styles.weeklyRecoverySummary}>
+                <Text style={styles.weeklySummaryLabel}>RECOVERY</Text>
+                {recoveringNames.length ? <><Text style={styles.weeklyMuscleNames} accessibilityLabel={`Recovering: ${recoveringNames.join(", ")}`}>{recoveringNames.join(" · ")}</Text><Text style={styles.weeklyRecoveryTiming}>Longest recovery: approximately {longestRecoveryHours}h</Text></> : <Text style={styles.weeklyContext}>Everything trained recently is ready again.</Text>}
+                {readyNames.length ? <><Text style={styles.weeklySummaryLabel}>READY NOW</Text><Text style={styles.weeklyMuscleNames} accessibilityLabel={`Ready now: ${recovery.ready.join(", ")}`}>{readyNames.join(" · ")}{remainingReadyCount ? ` · +${remainingReadyCount} more` : ""}</Text></> : null}
+              </View> : null}
+            </>
+          )}
         </View>
 
         {recent.length ? (
@@ -777,7 +779,7 @@ function WorkoutPlansContent({
       setAiPrompt("");
       setNewPlanMode("manual");
       setCreatePlanOpen(false);
-      setNotice("AI workout plan added. Review it before your first session.");
+      setNotice(result.addedExercises ? `AI workout plan added with ${result.addedExercises} movement${result.addedExercises === 1 ? "" : "s"} from Calistree. Review it before your first session.` : "AI workout plan added. Review it before your first session.");
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : "Unable to add this workout plan.");
     } finally {
@@ -1213,12 +1215,12 @@ function WorkoutPlansContent({
                 <Pressable disabled={saving} onPress={() => void run(createPlan, "Workout plan created.")} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>Create plan</Text></Pressable>
                 <View style={styles.editorRule} />
                 <Text style={styles.editorLabel}>PLAN ASSISTANT</Text>
-                <Text style={styles.editorHint}>Describe the training you want, and build it from your saved exercise library.</Text>
+                <Text style={styles.editorHint}>Describe the training you want. The assistant can suggest beyond your library and adds missing Calistree movements when you import the plan.</Text>
                 <Pressable onPress={() => setNewPlanMode("ai")} style={styles.planSecondaryAction}><Text style={styles.planSecondaryActionText}>Plan with AI</Text></Pressable>
               </>
             ) : (
               <>
-                <Text style={styles.editorHint}>Tell it your goal, days available, experience, equipment, and any limits. It will build from your saved exercise library.</Text>
+                <Text style={styles.editorHint}>Tell it your goal, days available, experience, equipment, and any limits. It can use any suitable Calistree movement, adding anything missing to your library when you import.</Text>
                 {!aiDraft ? (
                   <>
                     <TextInput value={aiPrompt} onChangeText={setAiPrompt} multiline placeholder="Example: I have three days, dumbbells and a bench. I want to build strength without aggravating my knee." placeholderTextColor="#655D57" style={[styles.input, styles.aiPromptInput]} textAlignVertical="top" />
@@ -1233,9 +1235,8 @@ function WorkoutPlansContent({
                       <View key={day.name} style={styles.aiDraftDay}>
                         <Text style={styles.aiDraftDayTitle}>{day.name}</Text>
                         {day.exercises.map((exercise, index) => {
-                          const catalogExercise = record.exercises.find((candidate) => candidate.id === exercise.exerciseId);
                           const prescription = exercise.targetReps ? `${exercise.targetSets} × ${exercise.targetReps}` : `${exercise.targetSets} sets`;
-                          return <Text key={`${day.name}-${exercise.exerciseId}-${index}`} style={styles.aiDraftExercise}>{catalogExercise?.name ?? "Saved exercise"} · {prescription}{exercise.targetWeight ? ` · ${exercise.targetWeight} ${record.settings.weight_unit}` : ""}</Text>;
+                          return <Text key={`${day.name}-${exercise.exerciseName}-${index}`} style={styles.aiDraftExercise}>{exercise.exerciseName} · {prescription}{exercise.targetWeight ? ` · ${exercise.targetWeight} ${record.settings.weight_unit}` : ""}</Text>;
                         })}
                       </View>
                     ))}
@@ -2739,7 +2740,7 @@ function FastingContent({
   const [noteOpen, setNoteOpen] = useState(false);
   const [customTargetOpen, setCustomTargetOpen] = useState(false);
   const [customTargetHours, setCustomTargetHours] = useState("");
-  const [targetMinutes, setTargetMinutes] = useState<number | null>(16 * 60);
+  const [targetMinutes, setTargetMinutes] = useState<number | null>(12 * 60);
   const [endConfirmOpen, setEndConfirmOpen] = useState(false);
   const [fastDeleteTarget, setFastDeleteTarget] = useState<TransmuteRecord["fasting"]["logs"][number] | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -2831,7 +2832,7 @@ function FastingContent({
         <View style={styles.fastHero}>
           <FastingHourglass progress={progress} size={Math.min(166, Math.max(128, width - 190))} />
           <Text style={styles.fastElapsed}>{fastElapsed(activeMinutes)}</Text>
-          <Text style={styles.fastElapsedLabel}>{activeTargetMinutes ? "ELAPSED" : "OPEN-ENDED FAST"}</Text>
+          <Text style={styles.fastElapsedLabel}>{activeTargetMinutes ? "ELAPSED" : "UNTIMED FAST"}</Text>
           <Text style={styles.fastTimestamp}>{fastStartLabel(active.started_at)}</Text>
           {activeTargetMinutes && endAt && progress !== null ? <View style={styles.fastTarget}>
             <Text style={styles.fastTargetTitle}>Target {durationFromMinutes(activeTargetMinutes)}</Text>
@@ -2845,11 +2846,11 @@ function FastingContent({
       ) : (
         <View style={styles.fastStart}>
           <Text style={styles.fastStartTitle}>Begin an interval.</Text>
-          <Text style={styles.editorHint}>Choose a target or keep this fast open-ended.</Text>
+          <Text style={styles.editorHint}>Choose a target or keep this fast untimed.</Text>
           <View style={styles.fastTargets}>
-            {[12, 14, 16, 18].map((hours) => <Pressable key={hours} onPress={() => { setTargetMinutes(hours * 60); setCustomTargetOpen(false); }} style={[styles.fastTargetOption, !customTargetOpen && targetMinutes === hours * 60 && styles.fastTargetOptionActive]}><Text style={[styles.fastTargetOptionText, !customTargetOpen && targetMinutes === hours * 60 && styles.fastTargetOptionTextActive]}>{hours}h</Text></Pressable>)}
-            <Pressable onPress={() => { setTargetMinutes(null); setCustomTargetOpen(false); }} style={[styles.fastTargetOption, !customTargetOpen && targetMinutes === null && styles.fastTargetOptionActive]}><Text style={[styles.fastTargetOptionText, !customTargetOpen && targetMinutes === null && styles.fastTargetOptionTextActive]}>Open-ended</Text></Pressable>
+            <Pressable onPress={() => { setTargetMinutes(12 * 60); setCustomTargetOpen(false); }} style={[styles.fastTargetOption, !customTargetOpen && targetMinutes === 12 * 60 && styles.fastTargetOptionActive]}><Text style={[styles.fastTargetOptionText, !customTargetOpen && targetMinutes === 12 * 60 && styles.fastTargetOptionTextActive]}>12h</Text></Pressable>
             <Pressable onPress={() => setCustomTargetOpen(true)} style={[styles.fastTargetOption, customTargetOpen && styles.fastTargetOptionActive]}><Text style={[styles.fastTargetOptionText, customTargetOpen && styles.fastTargetOptionTextActive]}>Custom</Text></Pressable>
+            <Pressable onPress={() => { setTargetMinutes(null); setCustomTargetOpen(false); }} style={[styles.fastTargetOption, !customTargetOpen && targetMinutes === null && styles.fastTargetOptionActive]}><Text style={[styles.fastTargetOptionText, !customTargetOpen && targetMinutes === null && styles.fastTargetOptionTextActive]}>Untimed</Text></Pressable>
           </View>
           {customTargetOpen ? <TextInput value={customTargetHours} onChangeText={setCustomTargetHours} keyboardType="decimal-pad" placeholder="Target hours" placeholderTextColor="#655D57" style={styles.input} /> : null}
           {noteOpen ? <View style={styles.fastNoteEditor}><TextInput value={note} onChangeText={setNote} placeholder="Add a note" placeholderTextColor="#655D57" style={styles.input} /><Pressable onPress={() => setNoteOpen(false)}><Text style={styles.editorRemoveText}>Hide note</Text></Pressable></View> : <Pressable onPress={revealNote} style={styles.fastNoteAction}><Text style={styles.editorRemoveText}>+ Add a Note</Text></Pressable>}
@@ -3580,8 +3581,6 @@ const styles = StyleSheet.create({
   dashboardMovementList: { color: "#2C2C31", fontSize: 14, lineHeight: 21, marginTop: 7 },
   recoveryRecord: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, borderTopColor: "#101015", borderTopWidth: 1, gap: 18, marginTop: 30, paddingVertical: 18 },
   recoveryRecordDesktop: { alignItems: "flex-start", flexDirection: "row", flexWrap: "wrap", gap: 26 },
-  recoveryHeading: { gap: 7, width: "100%" },
-  recoveryIntro: { color: "#655D57", fontSize: 14, lineHeight: 20 },
   recoveryMap: { flex: 1, minWidth: 260 },
   recoveryDetails: { flex: 1, gap: 0, minWidth: 240 },
   recoverySubhead: { color: "#642D2A", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.25, marginBottom: 5 },
@@ -3593,7 +3592,7 @@ const styles = StyleSheet.create({
   recoveryEmpty: { color: "#655D57", fontSize: 14, lineHeight: 21 },
   dashboardSecondary: { gap: 30, marginTop: 30 },
   dashboardSecondaryDesktop: { flexDirection: "row", gap: 36 },
-  weeklyRecord: { flex: 1 },
+  weeklyFieldReport: { flex: 1, maxWidth: 440 },
   recentRecord: { flex: 1 },
   sectionLabel: {
     color: "#642D2A",
@@ -3602,20 +3601,23 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 1.7,
   },
-  weeklyGrid: {
-    borderBottomColor: "#D4C9B9",
-    borderBottomWidth: 1,
-    borderTopColor: "#D4C9B9",
-    borderTopWidth: 1,
+  weeklyActivityMetrics: {
     flexDirection: "row",
     flexWrap: "wrap",
+    gap: 28,
     marginTop: 12,
   },
-  weeklyMetric: { paddingBottom: 14, paddingTop: 14, width: "50%" },
-  weeklyMetricLeft: { borderRightColor: "#D4C9B9", borderRightWidth: 1, paddingRight: 14 },
-  weeklyMetricTop: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1 },
-  weeklyMetricValue: { color: "#101015", fontSize: 30, fontWeight: "900", letterSpacing: -1.4 },
-  weeklyMetricLabel: { color: "#655D57", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.1, marginTop: 3 },
+  weeklyActivityMetric: { minWidth: 92 },
+  weeklyActivityValue: { color: "#101015", fontSize: 28, fontWeight: "900", letterSpacing: -1.2 },
+  weeklyActivityLabel: { color: "#655D57", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.1, marginTop: 3 },
+  weeklyContext: { color: "#655D57", fontSize: 14, lineHeight: 20, marginTop: 16 },
+  weeklyRecoverySummary: { borderTopColor: "#D4C9B9", borderTopWidth: 1, gap: 5, marginTop: 18, paddingTop: 16 },
+  weeklySummaryLabel: { color: "#642D2A", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.25, marginTop: 10 },
+  weeklyMuscleNames: { color: "#101015", fontSize: 16, fontWeight: "800", lineHeight: 23 },
+  weeklyRecoveryTiming: { color: "#655D57", fontSize: 13, lineHeight: 19 },
+  weeklyEmptyState: { gap: 8, marginTop: 14 },
+  weeklyEmptyTitle: { color: "#101015", fontSize: 20, fontWeight: "900", letterSpacing: -0.6 },
+  weeklyStartAction: { alignSelf: "flex-start", backgroundColor: "#101015", marginTop: 8, minHeight: 42, paddingHorizontal: 16, justifyContent: "center" },
   recentRow: {
     alignItems: "flex-start",
     borderBottomColor: "#D4C9B9",

@@ -11,7 +11,7 @@ import type { Worker } from 'tesseract.js';
 import { z } from 'zod';
 
 import { requestAiWorkoutDraft } from './ai-workout.js';
-import { getCalistreeExerciseMetadata, searchCalistreeExercises } from './calistree.js';
+import { getCalistreeCatalog, getCalistreeExerciseMetadata, searchCalistreeExercises } from './calistree.js';
 
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
@@ -93,7 +93,7 @@ const planDayExerciseSchema = z.object({
 });
 const aiWorkoutPromptSchema = z.object({ prompt: z.string().trim().min(12).max(2_000) });
 const aiWorkoutExerciseSchema = z.object({
-  exerciseId: z.string().uuid(),
+  exerciseName: z.string().trim().min(2).max(120),
   targetSets: z.number().int().min(1).max(12),
   targetReps: z.number().int().min(1).max(50).optional(),
   targetWeight: z.number().nonnegative().max(2_000).optional(),
@@ -635,6 +635,10 @@ function parseAiWorkoutDraft(response: string) {
   return parsed.data;
 }
 
+function aiExerciseNameKey(name: string) {
+  return name.trim().toLocaleLowerCase();
+}
+
 app.post('/v1/ai/workout-drafts', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
@@ -644,22 +648,25 @@ app.post('/v1/ai/workout-drafts', async (request, reply) => {
     return reply.code(503).send({ error: 'The plan assistant is not configured yet.' });
   }
 
-  const exercises = await sql<{ id: string; name: string; category: string; muscle_group: string | null }[]>`
-    SELECT id, name, category, muscle_group FROM exercises ORDER BY name ASC LIMIT 300
-  `;
-  if (!exercises.length) return reply.code(409).send({ error: 'Add exercises to the library before creating an AI plan.' });
-
   try {
+    const [exercises, calistreeExercises] = await Promise.all([
+      sql<{ name: string; category: string; muscle_group: string | null }[]>`
+        SELECT name, category, muscle_group FROM exercises ORDER BY name ASC LIMIT 300
+      `,
+      getCalistreeCatalog(),
+    ]);
     const response = await requestAiWorkoutDraft({
       workerUrl: env.AI_WORKOUT_WORKER_URL,
       workerToken: env.AI_WORKOUT_WORKER_TOKEN,
       prompt: parsed.data.prompt,
-      exerciseCatalog: exercises.map((exercise) => ({
-        id: exercise.id,
-        name: exercise.name,
-        category: exercise.category,
-        muscleGroup: exercise.muscle_group,
-      })),
+      exerciseCatalog: {
+        library: exercises.map((exercise) => ({
+          name: exercise.name,
+          category: exercise.category,
+          muscleGroup: exercise.muscle_group,
+        })),
+        calistree: calistreeExercises.map((exercise) => ({ name: exercise.name })),
+      },
     });
     return reply.send({ draft: parseAiWorkoutDraft(response) });
   } catch (error) {
@@ -674,13 +681,61 @@ app.post('/v1/ai/workout-plans', async (request, reply) => {
   const parsed = aiWorkoutImportSchema.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: 'Invalid AI workout plan.' });
   const draft = parsed.data.plan;
-  const exerciseIds = [...new Set(draft.days.flatMap((day) => day.exercises.map((exercise) => exercise.exerciseId)))];
-  const exerciseRows = await sql<{ id: string }[]>`SELECT id FROM exercises WHERE id = ANY(${exerciseIds}::uuid[])`;
-  if (exerciseRows.length !== exerciseIds.length) {
-    return reply.code(409).send({ error: 'One or more exercises in this draft are no longer available. Generate it again.' });
+  const exerciseNames = [...new Set(draft.days.flatMap((day) => day.exercises.map((exercise) => exercise.exerciseName)))];
+  const existingExercises = await sql<{ id: string; name: string }[]>`
+    SELECT id, name FROM exercises
+    WHERE lower(name) = ANY(${exerciseNames.map(aiExerciseNameKey)}::text[])
+  `;
+  const existingNames = new Set(existingExercises.map((exercise) => aiExerciseNameKey(exercise.name)));
+  let metadataByName: Map<string, Awaited<ReturnType<typeof getCalistreeExerciseMetadata>>>;
+  try {
+    const metadata = await Promise.all(exerciseNames.map(async (name) => ({
+      name,
+      metadata: existingNames.has(aiExerciseNameKey(name)) ? null : await getCalistreeExerciseMetadata({ name }),
+    })));
+    const unresolved = metadata.find((entry) => !existingNames.has(aiExerciseNameKey(entry.name)) && !entry.metadata);
+    if (unresolved) {
+      return reply.code(409).send({ error: `The plan assistant suggested “${unresolved.name},” which Calistree could not resolve. Generate the plan again.` });
+    }
+    metadataByName = new Map(metadata.map((entry) => [aiExerciseNameKey(entry.name), entry.metadata]));
+  } catch (error) {
+    request.log.error(error, 'Calistree exercise resolution failed for AI workout plan');
+    return reply.code(502).send({ error: 'Calistree is unavailable right now. Try importing the plan again shortly.' });
   }
 
   const plan = await sql.begin(async (transaction) => {
+    const resolvedExerciseIds = new Map<string, string>();
+    let addedExercises = 0;
+    for (const exerciseName of exerciseNames) {
+      const metadata = metadataByName.get(aiExerciseNameKey(exerciseName));
+      const canonicalName = metadata?.name ?? exerciseName;
+      const [existing] = await transaction<{ id: string }[]>`
+        SELECT id FROM exercises
+        WHERE lower(name) = lower(${exerciseName}) OR lower(name) = lower(${canonicalName})
+        LIMIT 1
+      `;
+      if (existing) {
+        resolvedExerciseIds.set(aiExerciseNameKey(exerciseName), existing.id);
+        continue;
+      }
+      if (!metadata) throw new Error('Unable to resolve an AI-suggested exercise.');
+      const [exercise] = await transaction<{ id: string }[]>`
+        INSERT INTO exercises (id, name, category, muscle_group, created_by_user_id, created_at)
+        VALUES (${randomUUID()}, ${metadata.name}, ${metadata.category}, ${metadata.muscleGroup}, ${userId}, now())
+        RETURNING id
+      `;
+      addedExercises += 1;
+      if (metadata.videoUrl) {
+        const sourceName = JSON.stringify({ provider: 'Calistree', sourceUrl: metadata.sourceUrl, importedAt: new Date().toISOString() });
+        await transaction`
+          INSERT INTO exercise_gif_overrides (id, user_id, exercise_id, gif_url, source_name, created_at, updated_at)
+          VALUES (${randomUUID()}, ${userId}, ${exercise.id}, ${metadata.videoUrl}, ${sourceName}, now(), now())
+          ON CONFLICT (user_id, exercise_id) DO UPDATE
+            SET gif_url = EXCLUDED.gif_url, source_name = EXCLUDED.source_name, updated_at = now()
+        `;
+      }
+      resolvedExerciseIds.set(aiExerciseNameKey(exerciseName), exercise.id);
+    }
     const [created] = await transaction<{ id: string; name: string; description: string | null; created_at: Date }[]>`
       INSERT INTO routines (id, user_id, name, description, is_preset, created_at, updated_at)
       VALUES (${randomUUID()}, ${userId}, ${draft.name}, ${draft.description ?? null}, false, now(), now())
@@ -694,14 +749,16 @@ app.post('/v1/ai/workout-plans', async (request, reply) => {
         RETURNING id, day_name, sort_order
       `;
       for (const [exerciseIndex, exercise] of day.exercises.entries()) {
+        const exerciseId = resolvedExerciseIds.get(aiExerciseNameKey(exercise.exerciseName));
+        if (!exerciseId) throw new Error('Unable to resolve an AI-suggested exercise.');
         await transaction`
           INSERT INTO routine_day_exercises (id, routine_day_id, exercise_id, sort_order, target_sets, target_reps, target_weight)
-          VALUES (${randomUUID()}, ${createdDay.id}, ${exercise.exerciseId}, ${exerciseIndex}, ${exercise.targetSets}, ${exercise.targetReps ?? null}, ${exercise.targetWeight?.toString() ?? null})
+          VALUES (${randomUUID()}, ${createdDay.id}, ${exerciseId}, ${exerciseIndex}, ${exercise.targetSets}, ${exercise.targetReps ?? null}, ${exercise.targetWeight?.toString() ?? null})
         `;
       }
       days.push({ id: createdDay.id, name: createdDay.day_name, sortOrder: createdDay.sort_order, exercises: day.exercises });
     }
-    return { created, days };
+    return { created, days, addedExercises };
   });
 
   return reply.code(201).send({
@@ -712,6 +769,7 @@ app.post('/v1/ai/workout-plans', async (request, reply) => {
       createdAt: plan.created.created_at,
       days: plan.days.map((day) => ({ id: day.id, name: day.name, sortOrder: day.sortOrder, exerciseCount: day.exercises.length })),
     },
+    addedExercises: plan.addedExercises,
   });
 });
 

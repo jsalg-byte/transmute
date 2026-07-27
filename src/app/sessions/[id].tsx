@@ -2,7 +2,7 @@ import * as Clipboard from 'expo-clipboard';
 import { router, useLocalSearchParams } from 'expo-router';
 import { openBrowserAsync } from 'expo-web-browser';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clock, ExternalLink, Minimize2, Play, Plus, RotateCcw, X } from 'lucide-react-native';
+import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clock, ExternalLink, Minimize2, Pencil, Play, Plus, RotateCcw, Trash2, X } from 'lucide-react-native';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -313,11 +313,30 @@ export default function SessionDetailScreen() {
     }, null, 2);
   }, [detail, setsByExercise]);
 
-  const logSet = async (payload: { exerciseId: string; reps: string; weight: string; isWarmup: boolean }) => {
-    const parsedReps = Number(payload.reps);
-    const parsedWeight = payload.weight.trim() ? Number(payload.weight) : undefined;
-    if (!id || !payload.exerciseId || !Number.isInteger(parsedReps) || parsedReps < 1 || (parsedWeight !== undefined && (!Number.isFinite(parsedWeight) || parsedWeight < 0))) {
+  const logSet = async (payload: { exerciseId: string; reps: string; weight: string; repsPlaceholder: string; weightPlaceholder: string; isWarmup: boolean }) => {
+    const resolvedReps = payload.reps.trim() || payload.repsPlaceholder.trim();
+    const resolvedWeight = payload.weight.trim() || payload.weightPlaceholder.trim();
+    const parsedReps = resolvedReps ? Number(resolvedReps) : 0;
+    const parsedWeight = resolvedWeight ? Number(resolvedWeight) : undefined;
+    const hasAnyLoggedValue = parsedReps > 0 || (parsedWeight !== undefined && parsedWeight > 0);
+
+    if (!id || !payload.exerciseId) {
+      const reason = new Error('Workout session is unavailable.');
+      setError(reason.message);
+      throw reason;
+    }
+    if (!hasAnyLoggedValue) {
       const reason = new Error('Enter valid reps and weight before logging the set.');
+      setError(reason.message);
+      throw reason;
+    }
+    if (!Number.isInteger(parsedReps) || parsedReps < 1) {
+      const reason = new Error('Enter at least one rep before logging the set.');
+      setError(reason.message);
+      throw reason;
+    }
+    if (parsedWeight !== undefined && (!Number.isFinite(parsedWeight) || parsedWeight < 0)) {
+      const reason = new Error('Enter a valid weight or leave it empty.');
       setError(reason.message);
       throw reason;
     }
@@ -669,7 +688,7 @@ function formatPreviousValue(set: { reps: number; weight: string | number | null
 
 function SetLedger({ exercise, sets, previousSets, weightUnit, saving, editableSetId, editReps, editWeight, onLog, onEdit, onRemove, onCancelEdit, onSave, onChangeReps, onChangeWeight }: {
   exercise: WorkoutSessionDetail['exercises'][number]; sets: WorkoutSessionDetail['sets']; previousSets: WorkoutSessionDetail['previousPerformances']; weightUnit: 'kg' | 'lbs'; saving: boolean; editableSetId: string | null; editReps: string; editWeight: string;
-  onLog: (payload: { exerciseId: string; reps: string; weight: string; isWarmup: boolean }) => Promise<void>; onEdit: (set: WorkoutSessionDetail['sets'][number]) => void; onRemove: (setId: string) => void; onCancelEdit: () => void; onSave: () => void; onChangeReps: (value: string) => void; onChangeWeight: (value: string) => void;
+  onLog: (payload: { exerciseId: string; reps: string; weight: string; repsPlaceholder: string; weightPlaceholder: string; isWarmup: boolean }) => Promise<void>; onEdit: (set: WorkoutSessionDetail['sets'][number]) => void; onRemove: (setId: string) => void; onCancelEdit: () => void; onSave: () => void; onChangeReps: (value: string) => void; onChangeWeight: (value: string) => void;
 }) {
   const workingSets = useMemo(() => sets.filter((set) => !set.isWarmup).sort((a, b) => a.createdAt.localeCompare(b.createdAt)), [sets]);
   const targetCount = expectedWorkingSets(exercise, sets);
@@ -688,12 +707,20 @@ function SetLedger({ exercise, sets, previousSets, weightUnit, saving, editableS
     return [...current, makeDraft(ordinal, false)];
   });
   const logDraft = async (draft: LedgerDraft) => {
-    await onLog({ exerciseId: exercise.id, reps: draft.reps, weight: draft.weight, isWarmup: draft.isWarmup });
+    const ordinal = workingSets.length + drafts.filter((candidate) => !candidate.isWarmup).findIndex((candidate) => candidate.id === draft.id) + 1;
+    const previous = previousSets[Math.min(ordinal - 1, Math.max(0, previousSets.length - 1))];
+    const weightPlaceholder = previous?.weight !== null && previous?.weight !== undefined
+      ? String(previous.weight)
+      : exercise.targetWeight !== null && exercise.targetWeight !== undefined
+        ? String(exercise.targetWeight)
+        : '';
+    const repsPlaceholder = previous ? String(previous.reps) : exercise.targetReps ? String(exercise.targetReps) : '';
+    await onLog({ exerciseId: exercise.id, reps: draft.reps, weight: draft.weight, repsPlaceholder, weightPlaceholder, isWarmup: draft.isWarmup });
   };
 
   return <View style={styles.ledger}>
     <View style={styles.ledgerHeader}><Text style={styles.panelLabel}>SETS</Text><Text style={styles.sectionCount}>{workingSets.length}/{targetCount}</Text></View>
-    {workingSets.map((set, index) => editableSetId === set.id ? <View key={set.id} style={styles.ledgerEditRow}><Text style={styles.ledgerSetNumber}>{String(index + 1).padStart(2, '0')}</Text><View style={styles.ledgerField}><TextInput accessibilityLabel={`${weightUnit} for set ${index + 1}`} value={editWeight} onChangeText={onChangeWeight} keyboardType="decimal-pad" placeholder={weightUnit} placeholderTextColor="#81776D" style={styles.ledgerInput} /></View><View style={styles.ledgerField}><TextInput accessibilityLabel={`Reps for set ${index + 1}`} value={editReps} onChangeText={onChangeReps} keyboardType="number-pad" placeholder="reps" placeholderTextColor="#81776D" style={styles.ledgerInput} /></View><View style={styles.ledgerRowActions}><Pressable disabled={saving} onPress={onSave}><Text style={styles.textActionText}>Save</Text></Pressable><Pressable disabled={saving} onPress={onCancelEdit}><Text style={styles.discardText}>Cancel</Text></Pressable></View></View> : <View key={set.id} style={styles.ledgerSavedRow}><Text style={styles.ledgerSetNumber}>{String(index + 1).padStart(2, '0')}</Text><Text style={styles.ledgerSavedValue}>{set.weight === null ? 'Bodyweight' : `${set.weight} ${weightUnit}`}</Text><Text style={styles.ledgerSavedValue}>{set.reps} reps</Text><View style={styles.ledgerRowActions}><Pressable disabled={saving || editableSetId !== null} onPress={() => onEdit(set)}><Text style={styles.textActionText}>Edit</Text></Pressable><Pressable disabled={saving || editableSetId !== null} onPress={() => onRemove(set.id)}><Text style={styles.discardText}>Remove</Text></Pressable></View></View>)}
+    {workingSets.map((set, index) => editableSetId === set.id ? <View key={set.id} style={styles.ledgerEditRow}><Text style={styles.ledgerSetNumber}>{String(index + 1).padStart(2, '0')}</Text><View style={styles.ledgerField}><TextInput accessibilityLabel={`${weightUnit} for set ${index + 1}`} value={editWeight} onChangeText={onChangeWeight} keyboardType="decimal-pad" placeholder={weightUnit} placeholderTextColor="#81776D" style={styles.ledgerInput} /></View><View style={styles.ledgerField}><TextInput accessibilityLabel={`Reps for set ${index + 1}`} value={editReps} onChangeText={onChangeReps} keyboardType="number-pad" placeholder="reps" placeholderTextColor="#81776D" style={styles.ledgerInput} /></View><View style={styles.ledgerRowActions}><Pressable disabled={saving} onPress={onSave}><Text style={styles.textActionText}>Save</Text></Pressable><Pressable disabled={saving} onPress={onCancelEdit}><Text style={styles.discardText}>Cancel</Text></Pressable></View></View> : <View key={set.id} style={styles.ledgerSavedRow}><Text style={styles.ledgerSetNumber}>{String(index + 1).padStart(2, '0')}</Text><Text style={styles.ledgerSavedValue}>{set.weight === null ? 'Bodyweight' : `${set.weight} ${weightUnit}`}</Text><Text style={styles.ledgerSavedValue}>{set.reps} reps</Text><View style={styles.ledgerRowActions}><Pressable accessibilityRole="button" accessibilityLabel={`Edit set ${index + 1}`} disabled={saving || editableSetId !== null} onPress={() => onEdit(set)} style={styles.ledgerIconAction}><Pencil color="#642D2A" size={17} strokeWidth={2.4} /></Pressable><Pressable accessibilityRole="button" accessibilityLabel={`Remove set ${index + 1}`} disabled={saving || editableSetId !== null} onPress={() => onRemove(set.id)} style={styles.ledgerIconAction}><Trash2 color="#642D2A" size={17} strokeWidth={2.4} /></Pressable></View></View>)}
     {drafts.filter((draft) => !draft.isWarmup).map((draft, index) => {
       const ordinal = workingSets.length + index + 1;
       const previous = previousSets[Math.min(ordinal - 1, Math.max(0, previousSets.length - 1))];
@@ -739,6 +766,7 @@ const styles = StyleSheet.create({
   ledger: { borderColor: '#101015', borderWidth: 1, gap: 0, marginTop: 16, maxWidth: '100%', padding: 14 }, ledgerHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', paddingBottom: 8 }, ledgerSavedRow: { alignItems: 'center', borderBottomColor: '#D4C9B9', borderBottomWidth: 1, flexDirection: 'row', minHeight: 54, paddingVertical: 7 }, ledgerEditRow: { alignItems: 'center', backgroundColor: '#FBF7F0', borderBottomColor: '#D4C9B9', borderBottomWidth: 1, flexDirection: 'row', minHeight: 60, paddingVertical: 7 }, ledgerDraftBlock: { borderBottomColor: '#D4C9B9', borderBottomWidth: 1, maxWidth: '100%', paddingVertical: 8 }, ledgerDraftRow: { alignItems: 'center', flexDirection: 'row', maxWidth: '100%', minHeight: 44 }, ledgerSetNumber: { color: '#A95B5B', fontFamily: 'Courier', fontSize: 12, fontWeight: '800', width: 30 }, ledgerField: { flex: 1, minWidth: 0, paddingHorizontal: 3 }, ledgerSavedValue: { color: '#101015', flex: 1, fontSize: 13, fontWeight: '700', minWidth: 0, paddingHorizontal: 3 }, ledgerInput: { borderBottomColor: '#667798', borderBottomWidth: 1, color: '#101015', fontSize: 15, maxWidth: '100%', minHeight: 44, paddingHorizontal: 2, paddingVertical: 4, width: '100%' }, ledgerRowActions: { alignItems: 'flex-end', flexDirection: 'row', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end', marginLeft: 5, minWidth: 0, width: 68 }, ledgerLogButton: { alignItems: 'center', backgroundColor: '#101015', justifyContent: 'center', marginLeft: 5, minHeight: 44, paddingHorizontal: 6, width: 52 }, ledgerLogButtonText: { color: '#F4EFE7', fontSize: 11, fontWeight: '800' }, previousValue: { color: '#655D57', fontSize: 11, lineHeight: 16, marginLeft: 30, marginTop: 4 }, ledgerAddActions: { paddingTop: 14 },
   primaryButton: { alignItems: 'center', backgroundColor: '#101015', justifyContent: 'center', minHeight: 52, paddingHorizontal: 16 }, primaryButtonText: { color: '#F4EFE7', fontSize: 15, fontWeight: '800' }, nextMovementButton: { marginBottom: 14 }, outlineButton: { alignItems: 'center', borderColor: '#101015', borderWidth: 1, justifyContent: 'center', minHeight: 52, paddingHorizontal: 16 }, outlineButtonText: { color: '#101015', fontSize: 15, fontWeight: '800' }, buttonDisabled: { opacity: 0.5 },
   textActionText: { color: '#642D2A', fontSize: 13, fontWeight: '800', textDecorationLine: 'underline' },
+  ledgerIconAction: { alignItems: 'center', justifyContent: 'center', minHeight: 36, minWidth: 30 },
   logPanel: { borderColor: '#D4C9B9', borderWidth: 1, padding: 17 }, evidenceSummary: { gap: 3, marginTop: 18 }, evidenceSummaryValue: { color: '#101015', fontSize: 31, fontWeight: '900', letterSpacing: -1 }, evidenceSummaryLabel: { color: '#655D57', fontSize: 13, marginBottom: 9 }, emptyState: { gap: 8, paddingVertical: 35 }, emptyStateTitle: { color: '#101015', fontSize: 18, fontWeight: '900' }, exerciseLog: { borderTopColor: '#D4C9B9', borderTopWidth: 1, gap: 6, marginTop: 15, paddingTop: 13 }, exerciseLogHeader: { alignItems: 'baseline', flexDirection: 'row', gap: 9, justifyContent: 'space-between' }, exerciseLogTitle: { color: '#101015', flex: 1, fontSize: 16, fontWeight: '900' }, exerciseLogCount: { color: '#655D57', fontSize: 12, fontWeight: '700' }, setLine: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', paddingTop: 5 }, setLineText: { color: '#2C2C31', flex: 1, fontSize: 13, lineHeight: 20 }, inlineActions: { alignItems: 'center', flexDirection: 'row', gap: 10, marginLeft: 12 }, discardAction: { alignSelf: 'center', marginTop: 17 }, discardText: { color: '#642D2A', fontSize: 13, fontWeight: '800', textDecorationLine: 'underline' }, completeButton: { marginTop: 16 },
   editBlock: { backgroundColor: '#FBF7F0', borderColor: '#D4C9B9', borderWidth: 1, gap: 10, marginTop: 7, padding: 12 }, editMovementPicker: { gap: 6, paddingRight: 12 }, editMovement: { borderColor: '#BFB2A1', borderWidth: 1, paddingHorizontal: 8, paddingVertical: 6 }, editMovementActive: { backgroundColor: '#101015', borderColor: '#101015' }, editMovementText: { color: '#101015', fontSize: 11, fontWeight: '700' }, editMovementTextActive: { color: '#F4EFE7' }, editInputRow: { flexDirection: 'row', gap: 12 }, editInput: { flex: 1, fontSize: 15 }, completedActions: { gap: 10 },
   restUtility: { borderColor: '#101015', borderWidth: 1, gap: 8, minWidth: 184, padding: 10, position: 'absolute' }, restUtilityActive: { backgroundColor: '#101015' }, restUtilityPaused: { backgroundColor: '#F4EFE7' }, restHeading: { alignItems: 'flex-end', flexDirection: 'row', justifyContent: 'flex-end', minHeight: 20 }, restClockButton: { alignSelf: 'flex-start' }, restClock: { color: '#F4EFE7', fontSize: 29, fontVariant: ['tabular-nums'], fontWeight: '900', letterSpacing: -1 }, restClockInput: { borderBottomColor: '#667798', borderBottomWidth: 1, color: '#101015', fontSize: 29, fontVariant: ['tabular-nums'], fontWeight: '900', letterSpacing: -1, minWidth: 110, paddingBottom: 2, paddingTop: 0 }, restPausedText: { color: '#101015' }, restControls: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 6 }, restPreset: { minHeight: 32, paddingHorizontal: 5, paddingVertical: 6 }, restControlText: { color: '#E8D194', fontSize: 11, fontWeight: '800', textDecorationLine: 'underline' }, restIconButton: { alignItems: 'center', justifyContent: 'center', minHeight: 32, minWidth: 32 }, restCompact: { alignItems: 'center', backgroundColor: '#F4EFE7', borderColor: '#101015', borderWidth: 1, flexDirection: 'row', padding: 3, position: 'absolute' }, restCompactButton: { alignItems: 'center', justifyContent: 'center', minHeight: 38, minWidth: 38 }, restCompactDivider: { backgroundColor: '#D4C9B9', height: 22, width: 1 },
