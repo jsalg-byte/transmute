@@ -463,12 +463,12 @@ export async function deleteWorkoutSession(sessionId: string) {
 }
 
 export async function createFood(payload: { name: string; caloriesKcal: number; proteinG?: number; carbsG?: number; fatG?: number; servingSizeG?: number; barcodeUpc?: string }) {
-  return authenticatedRequest('/v1/foods', { method: 'POST', body: JSON.stringify(payload) });
+  return authenticatedRequest<{ food: { id: string } }>('/v1/foods', { method: 'POST', body: JSON.stringify(payload) });
 }
 
 export type BarcodeLookup = {
   found: boolean;
-  source: 'local' | 'openfoodfacts' | 'none';
+  source: 'local' | 'openfoodfacts' | 'ai' | 'none';
   food?: {
     id: string | null;
     name: string;

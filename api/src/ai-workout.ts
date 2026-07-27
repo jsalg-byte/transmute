@@ -60,3 +60,30 @@ export async function requestAiNutritionLabel({
   }
   return body.text;
 }
+
+export async function requestAiBarcodeLookup({
+  workerUrl,
+  workerToken,
+  barcode,
+}: { workerUrl: string; workerToken: string; barcode: string }) {
+  const response = await fetch(`${workerUrl.replace(/\/$/, '')}/barcode-lookup`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${workerToken}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ barcode }),
+    signal: AbortSignal.timeout(120_000),
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error || 'The barcode assistant could not respond right now.');
+  }
+
+  const body = await response.json().catch(() => null) as { text?: unknown } | null;
+  if (typeof body?.text !== 'string' || !body.text.trim()) {
+    throw new Error('The barcode assistant returned an empty response.');
+  }
+  return body.text;
+}

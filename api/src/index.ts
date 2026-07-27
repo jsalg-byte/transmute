@@ -10,7 +10,7 @@ import postgres from 'postgres';
 import type { Worker } from 'tesseract.js';
 import { z } from 'zod';
 
-import { requestAiNutritionLabel, requestAiWorkoutDraft } from './ai-workout.js';
+import { requestAiBarcodeLookup, requestAiNutritionLabel, requestAiWorkoutDraft } from './ai-workout.js';
 import { getCalistreeCatalog, getCalistreeExerciseMetadata, searchCalistreeExercises } from './calistree.js';
 
 const envSchema = z.object({
@@ -113,6 +113,15 @@ const aiNutritionLabelSchema = z.object({
   proteinG: z.number().nonnegative().max(500).nullable(),
   carbsG: z.number().nonnegative().max(500).nullable(),
   fatG: z.number().nonnegative().max(500).nullable(),
+  confidence: z.number().min(0).max(1),
+}).strict();
+const aiBarcodeFoodSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  servingSizeG: z.number().positive().max(5_000).nullable(),
+  caloriesKcal: z.number().int().nonnegative().max(2_000),
+  proteinG: z.number().nonnegative().max(500),
+  carbsG: z.number().nonnegative().max(500),
+  fatG: z.number().nonnegative().max(500),
   confidence: z.number().min(0).max(1),
 }).strict();
 const aiWorkoutImportSchema = z.object({ plan: aiWorkoutDraftSchema });
@@ -411,6 +420,35 @@ async function lookupOpenFoodFacts(code: string) {
   }
 }
 
+async function lookupBarcodeWithAi(code: string, log: { warn: (error: unknown, message: string) => void }) {
+  if (!env.AI_WORKOUT_WORKER_URL || !env.AI_WORKOUT_WORKER_TOKEN) return { found: false as const, source: 'none' as const };
+  try {
+    const response = await requestAiBarcodeLookup({
+      workerUrl: env.AI_WORKOUT_WORKER_URL,
+      workerToken: env.AI_WORKOUT_WORKER_TOKEN,
+      barcode: code,
+    });
+    const food = parseAiBarcodeFood(response);
+    return {
+      found: true as const,
+      source: 'ai' as const,
+      food: {
+        id: null,
+        name: food.name,
+        barcodeUpc: code,
+        servingSizeG: food.servingSizeG,
+        caloriesKcal: food.caloriesKcal,
+        proteinG: food.proteinG,
+        carbsG: food.carbsG,
+        fatG: food.fatG,
+      },
+    };
+  } catch (error) {
+    log.warn(error, 'Barcode AI lookup failed');
+    return { found: false as const, source: 'none' as const };
+  }
+}
+
 function nutritionNumber(text: string, patterns: RegExp[]) {
   for (const pattern of patterns) {
     const match = text.match(pattern);
@@ -663,6 +701,16 @@ function parseAiNutritionLabel(response: string) {
     throw new Error('The label assistant could not find nutrition values.');
   }
   return label;
+}
+
+function parseAiBarcodeFood(response: string) {
+  const unwrapped = response.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  const start = unwrapped.indexOf('{');
+  const end = unwrapped.lastIndexOf('}');
+  if (start < 0 || end <= start) throw new Error('The barcode assistant did not return JSON.');
+  const parsed = aiBarcodeFoodSchema.safeParse(JSON.parse(unwrapped.slice(start, end + 1)));
+  if (!parsed.success) throw new Error('The barcode assistant returned incomplete product nutrition.');
+  return parsed.data;
 }
 
 function aiExerciseNameKey(name: string) {
@@ -1479,6 +1527,10 @@ app.get('/v1/barcodes/:code', async (request, reply) => {
       },
     });
   }
+  // The scanner gives us a numeric barcode; send only that number to the
+  // existing AI worker. Open Food Facts remains a provider fallback.
+  const aiLookup = await lookupBarcodeWithAi(params.data.code, request.log);
+  if (aiLookup.found) return reply.send(aiLookup);
   return reply.send(await lookupOpenFoodFacts(params.data.code));
 });
 
