@@ -1452,7 +1452,7 @@ app.get('/v1/barcodes/:code', async (request, reply) => {
   return reply.send(await lookupOpenFoodFacts(params.data.code));
 });
 
-app.post('/v1/nutrition-label/parse', async (request, reply) => {
+app.post('/v1/nutrition-label/parse', { bodyLimit: 13 * 1024 * 1024 }, async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
   const parsed = nutritionLabelOcrSchema.safeParse(request.body);

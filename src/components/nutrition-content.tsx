@@ -4,6 +4,7 @@ import { Camera, ChevronDown, ChevronRight, ImagePlus, Plus, Search, X } from "l
 import { useMemo, useState } from "react";
 import {
   Image,
+  ActivityIndicator,
   Modal,
   Pressable,
   ScrollView,
@@ -131,6 +132,7 @@ export function NutritionContent({
   const [carbs, setCarbs] = useState("");
   const [fat, setFat] = useState("");
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [scannerReady, setScannerReady] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const foodsById = useMemo(() => new Map(record.nutrition.foods.map((food) => [food.id, food])), [record.nutrition.foods]);
@@ -205,6 +207,7 @@ export function NutritionContent({
     setCarbs("");
     setFat("");
     setScannerOpen(false);
+    setScannerReady(false);
   };
   const openBuilder = (foodId?: string) => {
     setNotice(null);
@@ -269,6 +272,7 @@ export function NutritionContent({
         return;
       }
     }
+    setScannerReady(false);
     setScannerOpen(true);
   };
   const readNutritionLabel = async () => {
@@ -460,7 +464,7 @@ export function NutritionContent({
     </ScrollView><View style={[styles.stickyAction, { paddingBottom: Math.max(insets.bottom, 16) }]}><View><Text style={styles.stickyTotalLabel}>TOTAL</Text><Text style={styles.stickyTotal}>{selectedTotals.calories.toLocaleString()} kcal · {formatNumber(selectedTotals.protein)}p · {formatNumber(selectedTotals.carbs)}c</Text></View><Pressable accessibilityRole="button" disabled={saving || !selectedFoods.length} onPress={() => void saveMeal()} style={[styles.stickyButton, (saving || !selectedFoods.length) && styles.disabled]}><Text style={styles.stickyButtonText}>{saving ? "Logging…" : "Log meal"}</Text></Pressable></View></View></Modal>
 
     <Modal animationType="slide" visible={newFoodOpen} onRequestClose={() => !saving && setNewFoodOpen(false)}><View style={styles.modalPage}><View style={[styles.modalHeader, { paddingTop: Math.max(insets.top, 18) }]}><View><Text style={styles.sectionLabel}>NEW FOOD</Text><Text style={styles.modalTitle}>Add to the library.</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Close new food" disabled={saving} onPress={() => setNewFoodOpen(false)} style={styles.closeButton}><X color="#642D2A" size={21} strokeWidth={2.5} /></Pressable></View><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.modalScroll, { paddingBottom: 40 + insets.bottom }]}>
-      {scannerOpen ? <View style={styles.scanner}><CameraView barcodeScannerSettings={{ barcodeTypes: ["ean13", "ean8", "upc_a", "upc_e", "code128"] }} onBarcodeScanned={({ data }) => { if (!data || saving) return; setBarcode(data); setScannerOpen(false); void lookupFoodBarcode(data); }} style={styles.scannerCamera} /><Pressable accessibilityRole="button" onPress={() => setScannerOpen(false)} style={styles.scannerClose}><Text style={styles.scannerCloseText}>Close scanner</Text></Pressable></View> : null}
+      {scannerOpen ? <View style={styles.scanner}><View style={styles.scannerViewport}><CameraView facing="back" barcodeScannerSettings={{ barcodeTypes: ["ean13", "ean8", "upc_a", "upc_e", "code128"] }} onCameraReady={() => setScannerReady(true)} onMountError={({ message }) => { setScannerReady(false); setScannerOpen(false); setNotice(message || "The camera preview could not start. Enter the barcode manually instead."); }} onBarcodeScanned={({ data }) => { if (!data || saving) return; setBarcode(data); setScannerReady(false); setScannerOpen(false); void lookupFoodBarcode(data); }} style={styles.scannerCamera} />{!scannerReady ? <View pointerEvents="none" style={styles.scannerLoading}><ActivityIndicator color="#F4EFE7" /><Text style={styles.scannerLoadingText}>Opening rear camera…</Text></View> : null}</View><Pressable accessibilityRole="button" onPress={() => { setScannerReady(false); setScannerOpen(false); }} style={styles.scannerClose}><Text style={styles.scannerCloseText}>Close scanner</Text></Pressable></View> : null}
       <View style={styles.barcodeField}><TextInput value={barcode} onChangeText={setBarcode} keyboardType="number-pad" placeholder="Barcode (optional)" placeholderTextColor="#81776D" style={styles.barcodeInput} onSubmitEditing={() => void lookupFoodBarcode()} /><Pressable accessibilityRole="button" disabled={saving} onPress={() => void lookupFoodBarcode()}><Text style={styles.addText}>Look up</Text></Pressable></View><View style={styles.secondaryActions}><Pressable accessibilityRole="button" disabled={saving} onPress={() => void openBarcodeScanner()} style={styles.secondaryAction}><Camera color="#101015" size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan barcode</Text></Pressable><Pressable accessibilityRole="button" disabled={saving} onPress={() => void readNutritionLabel()} style={styles.secondaryAction}><ImagePlus color="#101015" size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan label</Text></Pressable></View>
       <TextInput value={name} onChangeText={setName} placeholder="Food name" placeholderTextColor="#81776D" style={styles.formInput} returnKeyType="next" /><TextInput value={servingSizeG} onChangeText={setServingSizeG} keyboardType="decimal-pad" placeholder="Reference grams" placeholderTextColor="#81776D" style={styles.formInput} returnKeyType="next" /><TextInput value={calories} onChangeText={setCalories} keyboardType="number-pad" placeholder="Calories per reference amount" placeholderTextColor="#81776D" style={styles.formInput} returnKeyType="next" /><View style={styles.macroFields}><TextInput value={protein} onChangeText={setProtein} keyboardType="decimal-pad" placeholder="Protein g" placeholderTextColor="#81776D" style={[styles.formInput, styles.macroInput]} /><TextInput value={carbs} onChangeText={setCarbs} keyboardType="decimal-pad" placeholder="Carbs g" placeholderTextColor="#81776D" style={[styles.formInput, styles.macroInput]} /><TextInput value={fat} onChangeText={setFat} keyboardType="decimal-pad" placeholder="Fat g" placeholderTextColor="#81776D" style={[styles.formInput, styles.macroInput]} /></View>
       {notice ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}<Pressable accessibilityRole="button" disabled={saving} onPress={() => void saveFood()} style={[styles.primaryAction, saving && styles.disabled]}><Text style={styles.primaryActionText}>{saving ? "Saving…" : "Save food"}</Text></Pressable>
@@ -569,7 +573,10 @@ const styles = StyleSheet.create({
   stickyButtonText: { color: "#F4EFE7", fontSize: 14, fontWeight: "900" },
   disabled: { opacity: 0.48 },
   scanner: { backgroundColor: "#101015", marginBottom: 18 },
-  scannerCamera: { height: 300, width: "100%" },
+  scannerViewport: { height: 300, position: "relative", width: "100%" },
+  scannerCamera: { height: "100%", width: "100%" },
+  scannerLoading: { alignItems: "center", backgroundColor: "#101015", bottom: 0, gap: 10, justifyContent: "center", left: 0, position: "absolute", right: 0, top: 0 },
+  scannerLoadingText: { color: "#F4EFE7", fontSize: 14, fontWeight: "800" },
   scannerClose: { alignItems: "center", minHeight: 48, justifyContent: "center" },
   scannerCloseText: { color: "#F4EFE7", fontSize: 14, fontWeight: "900" },
   barcodeField: { alignItems: "center", borderBottomColor: "#6A7CA0", borderBottomWidth: 1, flexDirection: "row", gap: 12, minHeight: 50 },
