@@ -5,8 +5,11 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { getSharedWorkoutSession, type SharedWorkoutSession } from '../../lib/api';
+import { useTransmuteStyles, useTransmuteTheme } from '../../theme/transmute-theme';
 
 export default function SharedSessionScreen() {
+  const styles = useTransmuteStyles(baseStyles);
+  const { palette } = useTransmuteTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
   const [detail, setDetail] = useState<SharedWorkoutSession | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -34,9 +37,9 @@ export default function SharedSessionScreen() {
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
       <ScrollView contentContainerStyle={styles.wrap}>
         <Pressable accessibilityRole="link" onPress={() => router.replace('/friends')}>
-          <View style={styles.backLink}><ArrowLeft color="#642D2A" size={17} strokeWidth={2.4} /><Text style={styles.back}>Friend activity</Text></View>
+          <View style={styles.backLink}><ArrowLeft color={palette.oxide} size={17} strokeWidth={2.4} /><Text style={styles.back}>Friend activity</Text></View>
         </Pressable>
-        {!detail && !error ? <View style={styles.loading}><ActivityIndicator color="#642D2A" /><Text style={styles.body}>Loading shared workout…</Text></View> : null}
+        {!detail && !error ? <View style={styles.loading}><ActivityIndicator color={palette.oxide} /><Text style={styles.body}>Loading shared workout…</Text></View> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
         {detail ? (
           <>
@@ -65,7 +68,7 @@ export default function SharedSessionScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
   safeArea: { backgroundColor: '#F4EFE7', flex: 1 },
   wrap: { alignSelf: 'center', maxWidth: 760, padding: 24, paddingBottom: 56, width: '100%' },
   backLink: { alignItems: 'center', alignSelf: 'flex-start', flexDirection: 'row', gap: 6 }, back: { color: '#642D2A', fontSize: 14, fontWeight: '800', textDecorationLine: 'underline' },

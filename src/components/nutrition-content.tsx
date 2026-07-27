@@ -1,10 +1,11 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
-import { Camera, ChevronDown, ChevronRight, ImagePlus, Plus, Search, X } from "lucide-react-native";
+import { Camera, ChevronDown, ChevronRight, ImagePlus, Pencil, Plus, Search, Trash2, X } from "lucide-react-native";
 import { useMemo, useState } from "react";
 import {
   Image,
   ActivityIndicator,
+  Alert,
   Modal,
   Pressable,
   ScrollView,
@@ -19,11 +20,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   createFood,
   createMealLog,
+  deleteMealLog,
   lookupBarcode,
   parseNutritionLabel,
+  updateMealLog,
   uploadMealPhoto,
   type TransmuteRecord,
 } from "../lib/api";
+import { useTransmuteStyles, useTransmuteTheme } from "../theme/transmute-theme";
 
 type Food = TransmuteRecord["nutrition"]["foods"][number];
 type MealLog = TransmuteRecord["nutrition"]["meals"][number];
@@ -86,6 +90,10 @@ function titleCase(value: string) {
   return value ? `${value.slice(0, 1).toUpperCase()}${value.slice(1)}` : "Meal";
 }
 
+function asMealType(value: string): MealType {
+  return mealTypes.includes(value as MealType) ? value as MealType : "snack";
+}
+
 function formatDay(value: string) {
   return new Date(`${value}T12:00:00`).toLocaleDateString(undefined, {
     month: "long",
@@ -105,6 +113,8 @@ export function NutritionContent({
   record: TransmuteRecord;
   refresh: () => Promise<void>;
 }) {
+  const styles = useTransmuteStyles(baseStyles);
+  const { palette } = useTransmuteTheme();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const isDesktop = width >= 768;
@@ -123,6 +133,10 @@ export function NutritionContent({
   const [mealType, setMealType] = useState<MealType>("snack");
   const [consumedAt, setConsumedAt] = useState("");
   const [mealPhoto, setMealPhoto] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const [editingMeal, setEditingMeal] = useState<MealLog | null>(null);
+  const [editMealType, setEditMealType] = useState<MealType>("snack");
+  const [editMealGrams, setEditMealGrams] = useState("");
+  const [editConsumedAt, setEditConsumedAt] = useState("");
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -436,6 +450,78 @@ export function NutritionContent({
     }
   };
 
+  const openMealEditor = (meal: MealLog) => {
+    const consumedAt = new Date(meal.consumed_at);
+    setNotice(null);
+    setEditingMeal(meal);
+    setEditMealType(asMealType(meal.meal_type));
+    setEditMealGrams(String(formatNumber(numeric(meal.quantity))));
+    setEditConsumedAt(Number.isNaN(consumedAt.getTime()) ? new Date().toISOString() : consumedAt.toISOString());
+  };
+
+  const closeMealEditor = () => {
+    if (saving) return;
+    setEditingMeal(null);
+  };
+
+  const saveMealEdit = async () => {
+    if (!editingMeal) return;
+    const grams = Number(editMealGrams);
+    const consumedAt = new Date(editConsumedAt);
+    if (!Number.isFinite(grams) || grams <= 0 || grams > 5000) {
+      setNotice("Enter an amount between 0 and 5,000 grams.");
+      return;
+    }
+    if (Number.isNaN(consumedAt.getTime())) {
+      setNotice("Use a valid date and time for the logged food.");
+      return;
+    }
+
+    setSaving(true);
+    setNotice(null);
+    try {
+      await updateMealLog(editingMeal.id, { mealType: editMealType, grams, consumedAt: consumedAt.toISOString() });
+      setEditingMeal(null);
+      await refresh();
+      setNotice("Logged food updated.");
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "Unable to update the logged food.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteLoggedFood = (meal: MealLog) => {
+    if (saving) return;
+    Alert.alert(
+      "Delete logged food?",
+      `Remove ${meal.name} from your ${titleCase(meal.meal_type)} log? This cannot be undone.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              setSaving(true);
+              setNotice(null);
+              try {
+                await deleteMealLog(meal.id);
+                if (editingMeal?.id === meal.id) setEditingMeal(null);
+                await refresh();
+                setNotice("Logged food deleted.");
+              } catch (reason) {
+                setNotice(reason instanceof Error ? reason.message : "Unable to delete the logged food.");
+              } finally {
+                setSaving(false);
+              }
+            })();
+          },
+        },
+      ],
+    );
+  };
+
   const renderMealRow = (meal: MealGroup) => {
     const totals = mealTotals(meal);
     const detailOpen = detailKey === meal.key;
@@ -451,15 +537,18 @@ export function NutritionContent({
           <Text style={styles.mealCalories}>{totals.calories.toLocaleString()} kcal</Text>
           <Text style={styles.mealTime}>{formatTime(meal.consumedAt)}</Text>
         </View>
-        <ChevronRight color="#642D2A" size={18} strokeWidth={2.3} style={detailOpen ? styles.chevronOpen : undefined} />
+        <ChevronRight color={palette.oxide} size={18} strokeWidth={2.3} style={detailOpen ? styles.chevronOpen : undefined} />
       </Pressable>
       {detailOpen ? <View style={styles.mealDetail}>
         {meal.items.map((item) => {
           const servingGrams = numeric(item.serving_size_g) || 100;
           const multiplier = numeric(item.quantity) / servingGrams;
           return <View key={item.id} style={styles.detailItem}>
-            <View><Text style={styles.detailItemName}>{item.name}</Text><Text style={styles.detailItemMeta}>{formatNumber(numeric(item.quantity))}g · {item.calories_kcal} kcal</Text></View>
-            <Text style={styles.detailItemMacro}>{formatNumber(numeric(item.protein_g) * multiplier)}p · {formatNumber(numeric(item.carbs_g) * multiplier)}c · {formatNumber(numeric(item.fat_g) * multiplier)}f</Text>
+            <View style={styles.detailItemCopy}><Text style={styles.detailItemName}>{item.name}</Text><Text style={styles.detailItemMeta}>{formatNumber(numeric(item.quantity))}g · {item.calories_kcal} kcal</Text><Text style={styles.detailItemMacro}>{formatNumber(numeric(item.protein_g) * multiplier)}p · {formatNumber(numeric(item.carbs_g) * multiplier)}c · {formatNumber(numeric(item.fat_g) * multiplier)}f</Text></View>
+            <View style={styles.detailItemActions}>
+              <Pressable accessibilityRole="button" accessibilityLabel={`Edit ${item.name}`} disabled={saving} onPress={() => openMealEditor(item)} hitSlop={9} style={styles.detailIconButton}><Pencil color={palette.oxide} size={17} strokeWidth={2.3} /></Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel={`Delete ${item.name}`} disabled={saving} onPress={() => deleteLoggedFood(item)} hitSlop={9} style={styles.detailIconButton}><Trash2 color={palette.destructive} size={17} strokeWidth={2.3} /></Pressable>
+            </View>
           </View>;
         })}
         {meal.items.find((item) => item.imageUrl)?.imageUrl ? <Image accessibilityLabel={`${titleCase(meal.mealType)} meal photo`} source={{ uri: meal.items.find((item) => item.imageUrl)?.imageUrl ?? undefined }} style={styles.mealImage} /> : null}
@@ -488,8 +577,8 @@ export function NutritionContent({
 
     {view === "foods" ? <View style={[styles.focusedView, isDesktop && styles.focusedViewDesktop]}>
       <Text style={styles.sectionLabel}>FOODS</Text>
-      <View style={styles.searchField}><Search color="#655D57" size={18} strokeWidth={2.2} /><TextInput value={foodQuery} onChangeText={(value) => { setFoodQuery(value); setFoodLimit(8); }} accessibilityLabel="Search saved foods" placeholder="Search your foods…" placeholderTextColor="#81776D" style={styles.searchInput} /></View>
-      <View style={styles.secondaryActions}><Pressable accessibilityRole="button" onPress={() => { resetFoodForm(); setNewFoodForMeal(false); setNewFoodOpen(true); }} style={styles.secondaryAction}><Plus color="#101015" size={17} strokeWidth={2.6} /><Text style={styles.secondaryActionText}>New food</Text></Pressable><Pressable accessibilityRole="button" onPress={() => { resetFoodForm(); setNewFoodForMeal(false); setNewFoodOpen(true); void openBarcodeScanner(); }} style={styles.secondaryAction}><Camera color="#101015" size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan barcode</Text></Pressable><Pressable accessibilityRole="button" onPress={() => { resetFoodForm(); setNewFoodForMeal(false); setNewFoodOpen(true); void readNutritionLabel(); }} style={styles.secondaryAction}><ImagePlus color="#101015" size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan label</Text></Pressable></View>
+      <View style={styles.searchField}><Search color={palette.muted} size={18} strokeWidth={2.2} /><TextInput value={foodQuery} onChangeText={(value) => { setFoodQuery(value); setFoodLimit(8); }} accessibilityLabel="Search saved foods" placeholder="Search your foods…" placeholderTextColor={palette.mutedSoft} style={styles.searchInput} /></View>
+      <View style={styles.secondaryActions}><Pressable accessibilityRole="button" onPress={() => { resetFoodForm(); setNewFoodForMeal(false); setNewFoodOpen(true); }} style={styles.secondaryAction}><Plus color={palette.ink} size={17} strokeWidth={2.6} /><Text style={styles.secondaryActionText}>New food</Text></Pressable><Pressable accessibilityRole="button" onPress={() => { resetFoodForm(); setNewFoodForMeal(false); setNewFoodOpen(true); void openBarcodeScanner(); }} style={styles.secondaryAction}><Camera color={palette.ink} size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan barcode</Text></Pressable><Pressable accessibilityRole="button" onPress={() => { resetFoodForm(); setNewFoodForMeal(false); setNewFoodOpen(true); void readNutritionLabel(); }} style={styles.secondaryAction}><ImagePlus color={palette.ink} size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan label</Text></Pressable></View>
       <Text style={styles.listLabel}>{foodQuery ? "RESULTS" : "SAVED FOODS"}</Text>
       <View style={styles.ledger}>{visibleFoods.map((food) => <View key={food.id} style={styles.foodRow}><View style={styles.foodCopy}><Text style={styles.foodName}>{food.name}</Text><Text style={styles.foodMeta}>{numeric(food.serving_size_g) || 100}g serving · {food.calories_kcal} kcal</Text></View><Pressable accessibilityRole="button" accessibilityLabel={`Add ${food.name} to meal`} onPress={() => openBuilder(food.id)} hitSlop={8}><Text style={styles.addText}>Add</Text></Pressable></View>)}{visibleFoods.length === 0 ? <View style={styles.emptyState}><Text style={styles.emptyText}>{foodQuery ? "No saved foods match this search." : "Create your first food, or scan a barcode or label."}</Text></View> : null}</View>
       {!foodQuery && visibleFoods.length < record.nutrition.foods.length ? <Pressable accessibilityRole="button" onPress={() => setFoodLimit((limit) => limit + 8)} style={styles.showMore}><Text style={styles.showMoreText}>Show more foods</Text></Pressable> : null}
@@ -497,35 +586,72 @@ export function NutritionContent({
 
     {view === "history" ? <View style={[styles.focusedView, isDesktop && styles.focusedViewDesktop]}>
       <View style={styles.historyHeader}><Text style={styles.sectionLabel}>HISTORY</Text><View style={styles.historyFilters}>{(["7", "30", "custom"] as const).map((item) => <Pressable key={item} accessibilityRole="button" accessibilityState={{ selected: historyRange === item }} onPress={() => { setHistoryRange(item); setHistoryDayLimit(7); }}><Text style={[styles.historyFilterText, historyRange === item && styles.historyFilterTextActive]}>{item === "custom" ? "Custom" : `${item} days`}</Text></Pressable>)}</View></View>
-      {historyRange === "custom" ? <TextInput value={customHistoryStart} onChangeText={setCustomHistoryStart} placeholder="Start date (YYYY-MM-DD)" placeholderTextColor="#81776D" keyboardType="numbers-and-punctuation" style={styles.dateInput} /> : null}
+      {historyRange === "custom" ? <TextInput value={customHistoryStart} onChangeText={setCustomHistoryStart} placeholder="Start date (YYYY-MM-DD)" placeholderTextColor={palette.mutedSoft} keyboardType="numbers-and-punctuation" style={styles.dateInput} /> : null}
       <View style={styles.historyList}>{historyByDay.slice(0, historyDayLimit).map(([day, meals]) => { const totals = meals.reduce((sum, meal) => sum + mealTotals(meal).calories, 0); return <View key={day} style={styles.historyDay}><View style={styles.historyDayHeader}><Text style={styles.historyDayTitle}>{formatDay(day)}</Text><Text style={styles.historyDayMeta}>{totals.toLocaleString()} kcal · {meals.length} {meals.length === 1 ? "meal" : "meals"}</Text></View><View style={styles.ledger}>{meals.map(renderMealRow)}</View></View>; })}{historyByDay.length === 0 ? <View style={styles.emptyState}><Text style={styles.emptyText}>No meals in this period.</Text></View> : null}</View>
       {historyByDay.length > historyDayLimit ? <Pressable accessibilityRole="button" onPress={() => setHistoryDayLimit((limit) => limit + 7)} style={styles.showMore}><Text style={styles.showMoreText}>Show more days</Text></Pressable> : null}
     </View> : null}
 
     {notice ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}
 
-    <Modal animationType="slide" visible={builderOpen} onRequestClose={() => !saving && setBuilderOpen(false)}><View style={styles.modalPage}><View style={[styles.modalHeader, { paddingTop: Math.max(insets.top, 18) }]}><View><Text style={styles.sectionLabel}>LOG A MEAL</Text><Text style={styles.modalTitle}>Build the meal.</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Close meal builder" disabled={saving} onPress={() => setBuilderOpen(false)} style={styles.closeButton}><X color="#642D2A" size={21} strokeWidth={2.5} /></Pressable></View><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.modalScroll, { paddingBottom: 116 + insets.bottom }]}>
-      <Pressable accessibilityRole="button" accessibilityLabel="Create a new food" onPress={() => { resetFoodForm(); setNewFoodForMeal(true); setBuilderOpen(false); setNewFoodOpen(true); }} style={[styles.secondaryAction, styles.builderFirstAction]}><Plus color="#101015" size={17} strokeWidth={2.6} /><Text style={styles.secondaryActionText}>New food</Text></Pressable>
+    <Modal animationType="slide" visible={builderOpen} onRequestClose={() => !saving && setBuilderOpen(false)}><View style={styles.modalPage}><View style={[styles.modalHeader, { paddingTop: Math.max(insets.top, 18) }]}><View><Text style={styles.sectionLabel}>LOG A MEAL</Text><Text style={styles.modalTitle}>Build the meal.</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Close meal builder" disabled={saving} onPress={() => setBuilderOpen(false)} style={styles.closeButton}><X color={palette.oxide} size={21} strokeWidth={2.5} /></Pressable></View><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.modalScroll, { paddingBottom: 116 + insets.bottom }]}>
+      <Pressable accessibilityRole="button" accessibilityLabel="Create a new food" onPress={() => { resetFoodForm(); setNewFoodForMeal(true); setBuilderOpen(false); setNewFoodOpen(true); }} style={[styles.secondaryAction, styles.builderFirstAction]}><Plus color={palette.ink} size={17} strokeWidth={2.6} /><Text style={styles.secondaryActionText}>New food</Text></Pressable>
       <Text style={styles.sectionLabel}>MEAL TYPE</Text><View style={styles.mealTypeRow}>{mealTypes.map((item) => <Pressable key={item} accessibilityRole="button" accessibilityState={{ selected: mealType === item }} onPress={() => setMealType(item)} style={[styles.mealTypeButton, mealType === item && styles.mealTypeButtonActive]}><Text style={[styles.mealTypeText, mealType === item && styles.mealTypeTextActive]}>{item}</Text></Pressable>)}</View>
-      <TextInput value={consumedAt} onChangeText={setConsumedAt} placeholder="Date/time (optional)" placeholderTextColor="#81776D" style={styles.dateInput} />
+      <TextInput value={consumedAt} onChangeText={setConsumedAt} placeholder="Date/time (optional)" placeholderTextColor={palette.mutedSoft} style={styles.dateInput} />
       <Text style={styles.inputHint}>Use a date and time such as Jul 27, 2026 6:30 PM, or leave blank for now.</Text>
-      <Text style={[styles.sectionLabel, styles.modalSection]}>SELECT A SAVED FOOD</Text><Pressable accessibilityRole="button" accessibilityState={{ expanded: foodPickerOpen }} accessibilityLabel="Select a saved food" onPress={() => setFoodPickerOpen((open) => !open)} style={styles.foodSelectTrigger}><Text style={styles.foodSelectPlaceholder}>Choose a saved food</Text><ChevronDown color="#642D2A" size={20} strokeWidth={2.4} /></Pressable>
-      {foodPickerOpen ? <View style={styles.foodSelectPanel}><View style={styles.searchField}><Search color="#655D57" size={18} strokeWidth={2.2} /><TextInput value={foodQuery} onChangeText={setFoodQuery} accessibilityLabel="Search saved foods to add" placeholder="Search saved foods…" placeholderTextColor="#81776D" style={styles.searchInput} /></View><ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled" style={styles.foodSelectList}>{matchingSavedFoods.map((food) => <View key={food.id} style={styles.foodRow}><View style={styles.foodCopy}><Text style={styles.foodName}>{food.name}</Text><Text style={styles.foodMeta}>{numeric(food.serving_size_g) || 100}g serving · {food.calories_kcal} kcal</Text></View><Pressable accessibilityRole="button" onPress={() => { addFood(food.id); setFoodPickerOpen(false); setFoodQuery(""); }} hitSlop={8}><Text style={styles.addText}>{selectedFoods.some((item) => item.foodId === food.id) ? "Added" : "Add"}</Text></Pressable></View>)}{matchingSavedFoods.length === 0 ? <View style={styles.foodSelectEmpty}><Text style={styles.emptyText}>No saved foods match this search.</Text></View> : null}</ScrollView></View> : null}
+      <Text style={[styles.sectionLabel, styles.modalSection]}>SELECT A SAVED FOOD</Text><Pressable accessibilityRole="button" accessibilityState={{ expanded: foodPickerOpen }} accessibilityLabel="Select a saved food" onPress={() => setFoodPickerOpen((open) => !open)} style={styles.foodSelectTrigger}><Text style={styles.foodSelectPlaceholder}>Choose a saved food</Text><ChevronDown color={palette.oxide} size={20} strokeWidth={2.4} /></Pressable>
+      {foodPickerOpen ? <View style={styles.foodSelectPanel}><View style={styles.searchField}><Search color={palette.muted} size={18} strokeWidth={2.2} /><TextInput value={foodQuery} onChangeText={setFoodQuery} accessibilityLabel="Search saved foods to add" placeholder="Search saved foods…" placeholderTextColor={palette.mutedSoft} style={styles.searchInput} /></View><ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled" style={styles.foodSelectList}>{matchingSavedFoods.map((food) => <View key={food.id} style={styles.foodRow}><View style={styles.foodCopy}><Text style={styles.foodName}>{food.name}</Text><Text style={styles.foodMeta}>{numeric(food.serving_size_g) || 100}g serving · {food.calories_kcal} kcal</Text></View><Pressable accessibilityRole="button" onPress={() => { addFood(food.id); setFoodPickerOpen(false); setFoodQuery(""); }} hitSlop={8}><Text style={styles.addText}>{selectedFoods.some((item) => item.foodId === food.id) ? "Added" : "Add"}</Text></Pressable></View>)}{matchingSavedFoods.length === 0 ? <View style={styles.foodSelectEmpty}><Text style={styles.emptyText}>No saved foods match this search.</Text></View> : null}</ScrollView></View> : null}
       <View style={styles.selectedHeader}><Text style={styles.sectionLabel}>SELECTED</Text></View>
-      {selectedSummaries.length ? <View style={styles.ledger}>{selectedSummaries.map((item, index) => <View key={item.foodId} style={styles.selectedRow}><View style={styles.selectedRowTop}><View style={styles.foodCopy}><Text style={styles.foodName}>{item.food?.name ?? "Unavailable food"}</Text><Text style={styles.foodMeta}>{item.totals ? `${item.totals.calories} kcal · ${item.totals.protein}g protein · ${item.totals.carbs}g carbs · ${item.totals.fat}g fat` : "Enter a valid amount"}</Text></View><Pressable accessibilityRole="button" accessibilityLabel={`Remove ${item.food?.name ?? "food"}`} disabled={saving} onPress={() => setSelectedFoods((items) => items.filter((_, itemIndex) => itemIndex !== index))}><Text style={styles.removeText}>Remove</Text></Pressable></View><View style={styles.amountRow}><TextInput value={String(item.grams)} onChangeText={(grams) => setSelectedFoods((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, grams } : row))} accessibilityLabel={`${item.food?.name ?? "Food"} grams`} keyboardType="decimal-pad" placeholder="Amount" placeholderTextColor="#81776D" style={styles.amountInput} /><Text style={styles.amountUnit}>g</Text></View></View>)}</View> : <View style={styles.emptyState}><Text style={styles.emptyText}>Search and add foods to build this meal.</Text></View>}
+      {selectedSummaries.length ? <View style={styles.ledger}>{selectedSummaries.map((item, index) => <View key={item.foodId} style={styles.selectedRow}><View style={styles.selectedRowTop}><View style={styles.foodCopy}><Text style={styles.foodName}>{item.food?.name ?? "Unavailable food"}</Text><Text style={styles.foodMeta}>{item.totals ? `${item.totals.calories} kcal · ${item.totals.protein}g protein · ${item.totals.carbs}g carbs · ${item.totals.fat}g fat` : "Enter a valid amount"}</Text></View><Pressable accessibilityRole="button" accessibilityLabel={`Remove ${item.food?.name ?? "food"}`} disabled={saving} onPress={() => setSelectedFoods((items) => items.filter((_, itemIndex) => itemIndex !== index))}><Text style={styles.removeText}>Remove</Text></Pressable></View><View style={styles.amountRow}><TextInput value={String(item.grams)} onChangeText={(grams) => setSelectedFoods((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, grams } : row))} accessibilityLabel={`${item.food?.name ?? "Food"} grams`} keyboardType="decimal-pad" placeholder="Amount" placeholderTextColor={palette.mutedSoft} style={styles.amountInput} /><Text style={styles.amountUnit}>g</Text></View></View>)}</View> : <View style={styles.emptyState}><Text style={styles.emptyText}>Search and add foods to build this meal.</Text></View>}
       <View style={styles.photoAction}><Pressable accessibilityRole="button" onPress={() => void chooseMealPhoto()}><Text style={styles.addText}>{mealPhoto ? "Replace meal photo" : "Add meal photo"}</Text></Pressable>{mealPhoto ? <Pressable accessibilityRole="button" onPress={() => setMealPhoto(null)}><Text style={styles.removeText}>Remove</Text></Pressable> : null}</View>{mealPhoto ? <Image accessibilityLabel="Selected meal photo" source={{ uri: mealPhoto.uri }} style={styles.photoPreview} /> : null}
     </ScrollView><View style={[styles.stickyAction, { paddingBottom: Math.max(insets.bottom, 16) }]}><View><Text style={styles.stickyTotalLabel}>TOTAL</Text><Text style={styles.stickyTotal}>{selectedTotals.calories.toLocaleString()} kcal · {formatNumber(selectedTotals.protein)}p · {formatNumber(selectedTotals.carbs)}c · {formatNumber(selectedTotals.fat)}f</Text></View><Pressable accessibilityRole="button" disabled={saving || !selectedFoods.length} onPress={() => void saveMeal()} style={[styles.stickyButton, (saving || !selectedFoods.length) && styles.disabled]}><Text style={styles.stickyButtonText}>{saving ? "Logging…" : "Log meal"}</Text></Pressable></View></View></Modal>
 
-    <Modal animationType="slide" visible={newFoodOpen} onRequestClose={() => !saving && closeNewFood()}><View style={styles.modalPage}><View style={[styles.modalHeader, { paddingTop: Math.max(insets.top, 18) }]}><View><Text style={styles.sectionLabel}>NEW FOOD</Text><Text style={styles.modalTitle}>Add to the library.</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Close new food" disabled={saving} onPress={closeNewFood} style={styles.closeButton}><X color="#642D2A" size={21} strokeWidth={2.5} /></Pressable></View><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.modalScroll, { paddingBottom: 40 + insets.bottom }]}>
-      {scannerOpen ? <View style={styles.scanner}><View style={styles.scannerViewport}><CameraView facing="back" barcodeScannerSettings={{ barcodeTypes: ["ean13", "ean8", "upc_a", "upc_e", "code128"] }} onCameraReady={() => setScannerReady(true)} onMountError={({ message }) => { setScannerReady(false); setScannerOpen(false); setNotice(message || "The camera preview could not start. Enter the barcode manually instead."); }} onBarcodeScanned={({ data }) => { if (!data || saving) return; setBarcode(data); setScannerReady(false); setScannerOpen(false); void lookupFoodBarcode(data); }} style={styles.scannerCamera} />{!scannerReady ? <View pointerEvents="none" style={styles.scannerLoading}><ActivityIndicator color="#F4EFE7" /><Text style={styles.scannerLoadingText}>Opening rear camera…</Text></View> : null}</View><Pressable accessibilityRole="button" onPress={() => { setScannerReady(false); setScannerOpen(false); }} style={styles.scannerClose}><Text style={styles.scannerCloseText}>Close scanner</Text></Pressable></View> : null}
-      <View style={styles.barcodeField}><TextInput value={barcode} onChangeText={setBarcode} keyboardType="number-pad" placeholder="Barcode (optional)" placeholderTextColor="#81776D" style={styles.barcodeInput} onSubmitEditing={() => void lookupFoodBarcode()} /><Pressable accessibilityRole="button" disabled={saving} onPress={() => void lookupFoodBarcode()}><Text style={styles.addText}>Look up</Text></Pressable></View><View style={styles.secondaryActions}><Pressable accessibilityRole="button" disabled={saving} onPress={() => void openBarcodeScanner()} style={styles.secondaryAction}><Camera color="#101015" size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan barcode</Text></Pressable><Pressable accessibilityRole="button" disabled={saving} onPress={() => void readNutritionLabel()} style={styles.secondaryAction}><ImagePlus color="#101015" size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan label</Text></Pressable></View>
-      <TextInput value={name} onChangeText={setName} placeholder="Food name" placeholderTextColor="#81776D" style={styles.formInput} returnKeyType="next" /><TextInput value={servingSizeG} onChangeText={setServingSizeG} keyboardType="decimal-pad" placeholder="g" placeholderTextColor="#81776D" style={styles.formInput} returnKeyType="next" /><TextInput value={calories} onChangeText={setCalories} keyboardType="number-pad" placeholder="Calories per reference amount" placeholderTextColor="#81776D" style={styles.formInput} returnKeyType="next" /><View style={styles.macroFields}><TextInput value={protein} onChangeText={setProtein} keyboardType="decimal-pad" placeholder="Protein g" placeholderTextColor="#81776D" style={[styles.formInput, styles.macroInput]} /><TextInput value={carbs} onChangeText={setCarbs} keyboardType="decimal-pad" placeholder="Carbs g" placeholderTextColor="#81776D" style={[styles.formInput, styles.macroInput]} /><TextInput value={fat} onChangeText={setFat} keyboardType="decimal-pad" placeholder="Fat g" placeholderTextColor="#81776D" style={[styles.formInput, styles.macroInput]} /></View>
+    <Modal animationType="slide" visible={newFoodOpen} onRequestClose={() => !saving && closeNewFood()}><View style={styles.modalPage}><View style={[styles.modalHeader, { paddingTop: Math.max(insets.top, 18) }]}><View><Text style={styles.sectionLabel}>NEW FOOD</Text><Text style={styles.modalTitle}>Add to the library.</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Close new food" disabled={saving} onPress={closeNewFood} style={styles.closeButton}><X color={palette.oxide} size={21} strokeWidth={2.5} /></Pressable></View><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.modalScroll, { paddingBottom: 40 + insets.bottom }]}>
+      {scannerOpen ? <View style={styles.scanner}><View style={styles.scannerViewport}><CameraView facing="back" barcodeScannerSettings={{ barcodeTypes: ["ean13", "ean8", "upc_a", "upc_e", "code128"] }} onCameraReady={() => setScannerReady(true)} onMountError={({ message }) => { setScannerReady(false); setScannerOpen(false); setNotice(message || "The camera preview could not start. Enter the barcode manually instead."); }} onBarcodeScanned={({ data }) => { if (!data || saving) return; setBarcode(data); setScannerReady(false); setScannerOpen(false); void lookupFoodBarcode(data); }} style={styles.scannerCamera} />{!scannerReady ? <View pointerEvents="none" style={styles.scannerLoading}><ActivityIndicator color={palette.surface} /><Text style={styles.scannerLoadingText}>Opening rear camera…</Text></View> : null}</View><Pressable accessibilityRole="button" onPress={() => { setScannerReady(false); setScannerOpen(false); }} style={styles.scannerClose}><Text style={styles.scannerCloseText}>Close scanner</Text></Pressable></View> : null}
+      <View style={styles.barcodeField}><TextInput value={barcode} onChangeText={setBarcode} keyboardType="number-pad" placeholder="Barcode (optional)" placeholderTextColor={palette.mutedSoft} style={styles.barcodeInput} onSubmitEditing={() => void lookupFoodBarcode()} /><Pressable accessibilityRole="button" disabled={saving} onPress={() => void lookupFoodBarcode()}><Text style={styles.addText}>Look up</Text></Pressable></View><View style={styles.secondaryActions}><Pressable accessibilityRole="button" disabled={saving} onPress={() => void openBarcodeScanner()} style={styles.secondaryAction}><Camera color={palette.ink} size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan barcode</Text></Pressable><Pressable accessibilityRole="button" disabled={saving} onPress={() => void readNutritionLabel()} style={styles.secondaryAction}><ImagePlus color={palette.ink} size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan label</Text></Pressable></View>
+      <TextInput value={name} onChangeText={setName} placeholder="Food name" placeholderTextColor={palette.mutedSoft} style={styles.formInput} returnKeyType="next" /><TextInput value={servingSizeG} onChangeText={setServingSizeG} keyboardType="decimal-pad" placeholder="g" placeholderTextColor={palette.mutedSoft} style={styles.formInput} returnKeyType="next" /><TextInput value={calories} onChangeText={setCalories} keyboardType="number-pad" placeholder="Calories per reference amount" placeholderTextColor={palette.mutedSoft} style={styles.formInput} returnKeyType="next" /><View style={[styles.macroFields, !isDesktop && styles.macroFieldsMobile]}><TextInput value={protein} onChangeText={setProtein} keyboardType="decimal-pad" placeholder="Protein g" placeholderTextColor={palette.mutedSoft} style={[styles.formInput, styles.macroInput, !isDesktop && styles.macroInputMobile]} /><TextInput value={carbs} onChangeText={setCarbs} keyboardType="decimal-pad" placeholder="Carbs g" placeholderTextColor={palette.mutedSoft} style={[styles.formInput, styles.macroInput, !isDesktop && styles.macroInputMobile]} /><TextInput value={fat} onChangeText={setFat} keyboardType="decimal-pad" placeholder="Fat g" placeholderTextColor={palette.mutedSoft} style={[styles.formInput, styles.macroInput, !isDesktop && styles.macroInputMobile]} /></View>
       {notice ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}<Pressable accessibilityRole="button" disabled={saving} onPress={() => void saveFood()} style={[styles.primaryAction, saving && styles.disabled]}><Text style={styles.primaryActionText}>{saving ? "Saving…" : "Save food"}</Text></Pressable>
     </ScrollView></View></Modal>
+
+    <Modal animationType="slide" visible={Boolean(editingMeal)} onRequestClose={closeMealEditor}>
+      <View style={styles.modalPage}>
+        <View style={[styles.modalHeader, { paddingTop: Math.max(insets.top, 18) }]}>
+          <View>
+            <Text style={styles.sectionLabel}>EDIT LOGGED FOOD</Text>
+            <Text style={styles.modalTitle} numberOfLines={2}>{editingMeal?.name ?? "Logged food"}</Text>
+          </View>
+          <Pressable accessibilityRole="button" accessibilityLabel="Close logged food editor" disabled={saving} onPress={closeMealEditor} style={styles.closeButton}>
+            <X color={palette.oxide} size={21} strokeWidth={2.5} />
+          </Pressable>
+        </View>
+        <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.modalScroll, { paddingBottom: 40 + insets.bottom }]}>
+          <Text style={styles.inputLabel}>MEAL TYPE</Text>
+          <View style={styles.mealTypeRow}>
+            {mealTypes.map((item) => (
+              <Pressable key={item} accessibilityRole="button" accessibilityState={{ selected: editMealType === item }} onPress={() => setEditMealType(item)} style={[styles.mealTypeButton, editMealType === item && styles.mealTypeButtonActive]}>
+                <Text style={[styles.mealTypeText, editMealType === item && styles.mealTypeTextActive]}>{item}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <Text style={[styles.inputLabel, styles.editorFieldLabel]}>AMOUNT (GRAMS)</Text>
+          <TextInput value={editMealGrams} onChangeText={setEditMealGrams} accessibilityLabel="Logged food amount in grams" keyboardType="decimal-pad" placeholder="Amount in grams" placeholderTextColor={palette.mutedSoft} style={styles.formInput} />
+          <Text style={[styles.inputLabel, styles.editorFieldLabel]}>WHEN</Text>
+          <TextInput value={editConsumedAt} onChangeText={setEditConsumedAt} accessibilityLabel="Logged food date and time" placeholder="Jul 27, 2026 6:30 PM" placeholderTextColor={palette.mutedSoft} style={styles.formInput} />
+          <Text style={styles.inputHint}>Use a date and time such as Jul 27, 2026 6:30 PM.</Text>
+          {notice ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}
+          <Pressable accessibilityRole="button" disabled={saving} onPress={() => void saveMealEdit()} style={[styles.primaryAction, saving && styles.disabled]}>
+            <Text style={styles.primaryActionText}>{saving ? "Saving…" : "Save changes"}</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" disabled={saving} onPress={() => editingMeal && deleteLoggedFood(editingMeal)} style={[styles.destructiveAction, saving && styles.disabled]}>
+            <Trash2 color={palette.destructive} size={18} strokeWidth={2.3} />
+            <Text style={styles.destructiveActionText}>Delete logged food</Text>
+          </Pressable>
+        </ScrollView>
+      </View>
+    </Modal>
   </>;
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
   eyebrow: { color: "#642D2A", fontFamily: "Courier", fontSize: 12, fontWeight: "800", letterSpacing: 1.5 },
   title: { color: "#101015", fontSize: 42, fontWeight: "900", letterSpacing: -1.8, marginTop: 7 },
   tabs: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, flexDirection: "row", marginTop: 26 },
@@ -560,6 +686,9 @@ const styles = StyleSheet.create({
   chevronOpen: { transform: [{ rotate: "90deg" }] },
   mealDetail: { borderLeftColor: "#D4C9B9", borderLeftWidth: 1, gap: 2, marginBottom: 15, marginLeft: 4, paddingLeft: 14 },
   detailItem: { alignItems: "flex-start", flexDirection: "row", justifyContent: "space-between", paddingVertical: 10 },
+  detailItemCopy: { flex: 1, minWidth: 0 },
+  detailItemActions: { flexDirection: "row", gap: 2, marginLeft: 10 },
+  detailIconButton: { alignItems: "center", height: 36, justifyContent: "center", width: 36 },
   detailItemName: { color: "#101015", fontSize: 14, fontWeight: "800" },
   detailItemMeta: { color: "#655D57", fontSize: 12, marginTop: 3 },
   detailItemMacro: { color: "#655D57", fontSize: 11, marginTop: 2 },
@@ -592,6 +721,8 @@ const styles = StyleSheet.create({
   historyFilterText: { color: "#655D57", fontSize: 13, fontWeight: "800" },
   historyFilterTextActive: { color: "#642D2A", textDecorationColor: "#A95B5B", textDecorationLine: "underline" },
   dateInput: { borderBottomColor: "#6A7CA0", borderBottomWidth: 1, color: "#101015", fontSize: 14, marginTop: 17, minHeight: 45, paddingVertical: 8 },
+  inputLabel: { color: "#642D2A", fontFamily: "Courier", fontSize: 12, fontWeight: "800", letterSpacing: 1.35 },
+  editorFieldLabel: { marginTop: 28 },
   historyList: { marginTop: 12 },
   historyDay: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, paddingVertical: 21 },
   historyDayHeader: { alignItems: "baseline", flexDirection: "row", gap: 13, justifyContent: "space-between" },
@@ -602,6 +733,8 @@ const styles = StyleSheet.create({
   modalHeader: { alignItems: "flex-start", borderBottomColor: "#D4C9B9", borderBottomWidth: 1, flexDirection: "row", justifyContent: "space-between", paddingBottom: 17, paddingHorizontal: 20 },
   modalTitle: { color: "#101015", fontSize: 30, fontWeight: "900", letterSpacing: -1.1, marginTop: 6 },
   closeButton: { alignItems: "center", height: 44, justifyContent: "center", width: 44 },
+  destructiveAction: { alignItems: "center", alignSelf: "flex-start", flexDirection: "row", gap: 8, marginTop: 22, minHeight: 44, paddingHorizontal: 4 },
+  destructiveActionText: { color: "#A33B36", fontSize: 14, fontWeight: "900", textDecorationLine: "underline" },
   modalScroll: { paddingHorizontal: 20, paddingTop: 22 },
   mealTypeRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 },
   mealTypeButton: { borderColor: "#D4C9B9", borderWidth: 1, minHeight: 44, paddingHorizontal: 13, justifyContent: "center" },
@@ -636,5 +769,7 @@ const styles = StyleSheet.create({
   barcodeInput: { color: "#101015", flex: 1, fontSize: 16, paddingVertical: 9 },
   formInput: { borderBottomColor: "#6A7CA0", borderBottomWidth: 1, color: "#101015", fontSize: 16, marginTop: 19, minHeight: 48, paddingVertical: 9 },
   macroFields: { flexDirection: "row", gap: 10 },
+  macroFieldsMobile: { flexDirection: "column", gap: 0 },
   macroInput: { flex: 1 },
+  macroInputMobile: { flex: 0, width: "100%" },
 });

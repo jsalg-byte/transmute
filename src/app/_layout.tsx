@@ -1,16 +1,29 @@
 import { Stack } from 'expo-router';
 import Head from 'expo-router/head';
 import { StatusBar } from 'expo-status-bar';
+import { useEffect, useState } from 'react';
 
-export default function RootLayout() {
+import { TransmuteThemeProvider, useTransmuteTheme } from '../theme/transmute-theme';
+
+function RootNavigator() {
+  const { mode, theme } = useTransmuteTheme();
+  const currentThemeKey = `theme-${theme}-${mode}`;
+  const [stackThemeKey, setStackThemeKey] = useState(currentThemeKey);
+
+  useEffect(() => {
+    if (stackThemeKey === currentThemeKey) return;
+    const timeout = setTimeout(() => setStackThemeKey(currentThemeKey), 270);
+    return () => clearTimeout(timeout);
+  }, [currentThemeKey, stackThemeKey]);
+
   return (
     <>
       <Head>
         <title>TRANSMUTE</title>
         <meta name="application-name" content="TRANSMUTE" />
       </Head>
-      <StatusBar style="dark" />
-      <Stack screenOptions={{ headerShown: false, animation: 'fade' }}>
+      <StatusBar style={mode === 'dark' ? 'light' : 'dark'} />
+      <Stack key={stackThemeKey} screenOptions={{ headerShown: false, animation: 'fade' }}>
         <Stack.Screen name="index" />
         <Stack.Screen name="sign-in" />
         <Stack.Screen name="sign-up" />
@@ -31,4 +44,8 @@ export default function RootLayout() {
       </Stack>
     </>
   );
+}
+
+export default function RootLayout() {
+  return <TransmuteThemeProvider><RootNavigator /></TransmuteThemeProvider>;
 }

@@ -2,6 +2,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import { bodyBack } from 'react-muscle-highlighter/dist/esm/assets/bodyBack';
 import { bodyFront } from 'react-muscle-highlighter/dist/esm/assets/bodyFront';
+import { type TransmutePalette, useTransmuteStyles, useTransmuteTheme } from '../theme/transmute-theme';
 
 type Region =
   | 'abs' | 'adductors' | 'biceps' | 'calves' | 'chest' | 'deltoids' | 'forearm'
@@ -43,7 +44,7 @@ export function muscleRegionsFor(muscleGroups: string | null) {
   return [...regions];
 }
 
-function AnatomicalBody({ side, active }: { side: 'front' | 'back'; active: Region[] }) {
+function AnatomicalBody({ side, active, palette }: { side: 'front' | 'back'; active: Region[]; palette: TransmutePalette }) {
   const body = (side === 'front' ? bodyFront : bodyBack) as MuscleShape[];
   const viewBox = side === 'front' ? '0 0 724 1448' : '724 0 724 1448';
   return <Svg width={112} height={224} viewBox={viewBox} accessibilityLabel={`${side === 'front' ? 'Front' : 'Back'} muscle emphasis`}>
@@ -53,8 +54,8 @@ function AnatomicalBody({ side, active }: { side: 'front' | 'back'; active: Regi
       return paths.map((d, index) => <Path
         key={`${shape.slug}-${index}`}
         d={d}
-        fill={highlighted ? '#A95B5B' : '#E6DED1'}
-        stroke={highlighted ? '#642D2A' : '#BDB2A2'}
+        fill={highlighted ? palette.oxideMuted : palette.raised}
+        stroke={highlighted ? palette.oxide : palette.divider}
         strokeWidth={4}
       />);
     })}
@@ -70,6 +71,8 @@ export function MuscleHeatMap({
   label?: string;
   legend?: string;
 }) {
+  const styles = useTransmuteStyles(baseStyles);
+  const { palette } = useTransmuteTheme();
   const regions = muscleRegionsFor(muscleGroups);
   const labels = muscleGroups?.split(/\s*,\s*/).filter(Boolean) ?? [];
   // The API provides one ordered `muscle_group` string, not primary/secondary roles.
@@ -83,7 +86,7 @@ export function MuscleHeatMap({
     return lines;
   }, []);
   return <View style={styles.wrap}>
-    <View style={styles.bodies}><AnatomicalBody side="front" active={regions} /><AnatomicalBody side="back" active={regions} /></View>
+    <View style={styles.bodies}><AnatomicalBody side="front" active={regions} palette={palette} /><AnatomicalBody side="back" active={regions} palette={palette} /></View>
     <View style={styles.copy}>
       <Text style={styles.label}>{label}</Text>
       {labels.length ? <View style={styles.targetLines}>{targetLines.map((line) => <Text key={line} style={styles.targets}>{line}</Text>)}</View> : <Text style={styles.empty}>No muscle group is recorded for this movement.</Text>}
@@ -92,7 +95,7 @@ export function MuscleHeatMap({
   </View>;
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
   wrap: { alignItems: 'center', borderTopColor: '#D4C9B9', borderTopWidth: 1, gap: 10, paddingTop: 14 },
   bodies: { flexDirection: 'row', gap: 4 },
   copy: { alignItems: 'center', gap: 4, width: '100%' },

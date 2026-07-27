@@ -6,10 +6,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { AlchemySvg } from '../components/alchemy-svg';
 import { signIn } from '../lib/api';
 import { useAuthRouteGuard } from '../hooks/use-auth-route-guard';
+import { useTransmuteStyles, useTransmuteTheme } from '../theme/transmute-theme';
 
 const ouroboros = require('../../assets/transmute/ouroboros.svg');
 
 export default function SignInScreen() {
+  const styles = useTransmuteStyles(baseStyles);
+  const { mode, palette } = useTransmuteTheme();
   const isCheckingSession = useAuthRouteGuard();
   const passwordInput = useRef<TextInput>(null);
   const [username, setUsername] = useState('');
@@ -43,7 +46,7 @@ export default function SignInScreen() {
         <AlchemySvg source={ouroboros} width={500} height={500} style={styles.backgroundMark} />
         <View style={styles.header}>
           <Pressable accessibilityRole="link" onPress={() => router.replace('/')} style={styles.wordmark}>
-            <AlchemySvg source={ouroboros} width={38} height={38} />
+            <AlchemySvg monochrome={mode === 'dark' ? 'light' : undefined} source={ouroboros} width={38} height={38} />
             <Text style={styles.wordmarkText}>TRANSMUTE</Text>
           </Pressable>
           <Pressable accessibilityRole="link" onPress={() => router.replace('/sign-up')}>
@@ -65,7 +68,7 @@ export default function SignInScreen() {
                 onChangeText={setUsername}
                 onSubmitEditing={() => passwordInput.current?.focus()}
                 placeholder="Your username"
-                placeholderTextColor="rgba(34, 35, 40, 0.55)"
+                placeholderTextColor={palette.mutedSoft}
                 returnKeyType="next"
                 style={styles.input}
                 value={username}
@@ -78,7 +81,7 @@ export default function SignInScreen() {
                 onChangeText={setPassword}
                 onSubmitEditing={attemptSignIn}
                 placeholder="Your password"
-                placeholderTextColor="rgba(34, 35, 40, 0.55)"
+                placeholderTextColor={palette.mutedSoft}
                 ref={passwordInput}
                 returnKeyType="done"
                 secureTextEntry
@@ -97,11 +100,11 @@ export default function SignInScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
   loadingScreen: { backgroundColor: '#F4EFE7', flex: 1 },
   safeArea: { backgroundColor: '#F4EFE7', flex: 1 },
   container: { flex: 1, maxWidth: 680, overflow: 'hidden', paddingBottom: 20, paddingHorizontal: 24, paddingTop: 10, width: '100%', alignSelf: 'center' },
-  backgroundMark: { opacity: 0.12, position: 'absolute', right: -210, top: -105, transform: [{ rotate: '11deg' }] },
+  backgroundMark: { opacity: 0.12, position: 'absolute', right: -212, top: -28, transform: [{ rotate: '8deg' }] },
   header: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   wordmark: { alignItems: 'center', flexDirection: 'row', gap: 10 },
   wordmarkText: { color: '#101015', fontSize: 15, fontWeight: '800', letterSpacing: 2.1 },

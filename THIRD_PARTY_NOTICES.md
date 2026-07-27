@@ -9,5 +9,5 @@ All bundled visual assets below are used in the Transmute mobile introduction.
 - `assets/transmute/water.svg`: [Wikimedia Commons: Alchemical water symbol](https://commons.wikimedia.org/wiki/File:Alchemical_water_symbol.svg), public domain.
 - `assets/transmute/human-body-silhouette.svg`: [Wikimedia Commons: Human body silhouette.svg](https://commons.wikimedia.org/wiki/File:Human_body_silhouette.svg), public domain.
 - `assets/transmute/putrefaction.svg`: [Wikimedia Commons: Noto Sans Alchemical Symbol For Putrefaction](https://commons.wikimedia.org/wiki/File:NotoSans_-_Alchemical_Symbol_For_Putrefaction_-_1F764_-_mCIUZM.svg), Apache License 2.0.
-- `assets/transmute/black-sulfur.svg`: [Wikimedia Commons: Black sulfur symbol](https://commons.wikimedia.org/wiki/File:Black_sulfur_symbol.svg), public domain.
+- `assets/transmute/black-sulfur.svg`: [Wikimedia Commons: Noto Sans Alchemical Symbol For Philosophers Sulfur](https://commons.wikimedia.org/wiki/File:NotoSans_-_Alchemical_Symbol_For_Philosophers_Sulfur_-_1F70E_-_aah2FA.svg), Apache License 2.0.
 - `assets/transmute/purify.svg`: [Wikimedia Commons: Noto Sans Alchemical Symbol For Purify](https://commons.wikimedia.org/wiki/File:NotoSans_-_Alchemical_Symbol_For_Purify_-_1F763_-_EO05wh.svg), Apache License 2.0.

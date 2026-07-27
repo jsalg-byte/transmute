@@ -1,5 +1,4 @@
 import { Asset } from 'expo-asset';
-import { useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { StyleSheet } from 'react-native';
 import type { StyleProp, ViewStyle } from 'react-native';
@@ -8,6 +7,7 @@ type AlchemySvgProps = {
   source: number;
   width: number;
   height: number;
+  monochrome?: "light";
   style?: StyleProp<ViewStyle>;
 };
 
@@ -27,21 +27,10 @@ function toCssTransform(transform: unknown) {
     .join(' ');
 }
 
-/** Browser-only renderer: preserves Wikimedia SVGs as files instead of expanding their XML into React props. */
-export function AlchemySvg({ source, width, height, style }: AlchemySvgProps) {
-  const [uri, setUri] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-
-    Asset.loadAsync(source).then(([asset]) => {
-      if (active) setUri(asset.localUri ?? asset.uri);
-    });
-
-    return () => {
-      active = false;
-    };
-  }, [source]);
+/** Browser-only renderer for bundled SVGs. Asset resolution is synchronous, avoiding a post-render artwork swap. */
+export function AlchemySvg({ source, width, height, monochrome, style }: AlchemySvgProps) {
+  const asset = Asset.fromModule(source);
+  const uri = asset.localUri ?? asset.uri;
 
   const flattened = StyleSheet.flatten(style) ?? {};
   const { transform, ...rest } = flattened;
@@ -50,9 +39,10 @@ export function AlchemySvg({ source, width, height, style }: AlchemySvgProps) {
     width,
     height,
     display: 'block',
+    filter: monochrome === 'light' ? 'brightness(0) invert(1)' : undefined,
     objectFit: 'contain',
     transform: toCssTransform(transform),
   };
 
-  return uri ? <img alt="" src={uri} style={cssStyle as unknown as CSSProperties} /> : <div style={{ width, height }} />;
+  return <img alt="" src={uri} style={cssStyle as unknown as CSSProperties} />;
 }

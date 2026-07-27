@@ -2,10 +2,11 @@ import { router, useLocalSearchParams } from "expo-router";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 import { openBrowserAsync } from "expo-web-browser";
-import { ArrowRight, ChevronLeft, ChevronRight, MoreHorizontal, X } from "lucide-react-native";
+import { ArrowRight, ChevronLeft, ChevronRight, Menu, Moon, MoreHorizontal, Sun, X } from "lucide-react-native";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
   Image,
   Modal,
   Platform,
@@ -23,6 +24,7 @@ import { AlchemySvg } from "./alchemy-svg";
 import { FastingHourglass } from "./fasting-hourglass";
 import { MuscleHeatMap } from "./muscle-heat-map";
 import { NutritionContent as NutritionWorkflow } from "./nutrition-content";
+import { createPaletteProxy, createThemedStyleProxy, transmuteThemeOptions, transmuteThemes, useTransmuteTheme } from "../theme/transmute-theme";
 import { deriveRecovery } from "../lib/recovery";
 import {
   acceptFriendRequest,
@@ -207,12 +209,18 @@ function Card({ title, meta, imageUrl }: { title: string; meta?: string; imageUr
 }
 
 export function RecordScreen({ area }: { area: Area }) {
+  const { mode, toggleMode } = useTransmuteTheme();
+  const [themeTogglePosition] = useState(() => new Animated.Value(mode === "dark" ? 1 : 0));
+  const [isThemeToggleAnimating, setIsThemeToggleAnimating] = useState(false);
   const [record, setRecord] = useState<TransmuteRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const isDesktop = width >= DESKTOP_BREAKPOINT;
+  useEffect(() => {
+    if (!isThemeToggleAnimating) themeTogglePosition.setValue(mode === "dark" ? 1 : 0);
+  }, [isThemeToggleAnimating, mode, themeTogglePosition]);
   useEffect(() => {
     getRecord()
       .then(setRecord)
@@ -227,6 +235,18 @@ export function RecordScreen({ area }: { area: Area }) {
   const leave = async () => {
     await signOut();
     router.replace("/");
+  };
+  const animateThemeToggle = () => {
+    if (isThemeToggleAnimating) return;
+    setIsThemeToggleAnimating(true);
+    Animated.timing(themeTogglePosition, {
+      toValue: mode === "light" ? 1 : 0,
+      duration: 320,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) toggleMode();
+      setIsThemeToggleAnimating(false);
+    });
   };
   const refresh = async () => {
     try {
@@ -250,23 +270,52 @@ export function RecordScreen({ area }: { area: Area }) {
             onPress={() => router.replace("/dashboard")}
             style={styles.wordmark}
           >
-            <AlchemySvg source={ouroboros} width={38} height={38} />
+            <AlchemySvg monochrome={mode === "dark" ? "light" : undefined} source={ouroboros} width={38} height={38} />
             <Text style={styles.wordmarkText}>TRANSMUTE</Text>
           </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ expanded: !isDesktop && moreOpen }}
-            onPress={() => {
-              if (isDesktop) {
-                void leave();
-                return;
-              }
-              setMoreOpen((open) => !open);
-            }}
-            style={styles.headerAccount}
-          >
-            <Text style={styles.signOut}>{isDesktop ? "Sign out" : "Account"}</Text>
-          </Pressable>
+          <View style={styles.headerActions}>
+            <Pressable
+              accessibilityLabel={mode === "dark" ? "Use light mode" : "Use dark mode"}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: mode === "dark" }}
+              disabled={isThemeToggleAnimating}
+              onPress={animateThemeToggle}
+              style={styles.headerThemeToggle}
+            >
+              <Animated.View
+                pointerEvents="none"
+                style={[
+                  styles.headerThemeThumb,
+                  {
+                    transform: [{
+                      translateX: themeTogglePosition.interpolate({ inputRange: [0, 1], outputRange: [0, 33] }),
+                    }],
+                  },
+                ]}
+              />
+              <View pointerEvents="none" style={styles.headerThemeSegment}>
+                <Sun color={mode === "light" ? palette.surface : palette.mutedSoft} size={16} strokeWidth={2.3} />
+              </View>
+              <View pointerEvents="none" style={styles.headerThemeSegment}>
+                <Moon color={mode === "dark" ? palette.surface : palette.mutedSoft} size={16} strokeWidth={2.3} />
+              </View>
+            </Pressable>
+            <Pressable
+              accessibilityLabel={isDesktop ? "Sign out" : "Open navigation menu"}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: !isDesktop && moreOpen }}
+              onPress={() => {
+                if (isDesktop) {
+                  void leave();
+                  return;
+                }
+                setMoreOpen((open) => !open);
+              }}
+              style={styles.headerAccount}
+            >
+              {isDesktop ? <Text style={styles.signOut}>Sign out</Text> : <Menu color={palette.ink} size={26} strokeWidth={2.4} />}
+            </Pressable>
+          </View>
         </View>
         {isDesktop ? (
           <View accessibilityRole="tablist" style={styles.nav}>
@@ -305,7 +354,7 @@ export function RecordScreen({ area }: { area: Area }) {
             </>
           ) : !record ? (
             <View style={styles.loading}>
-              <ActivityIndicator color="#642D2A" />
+              <ActivityIndicator color={palette.oxide} />
               <Text style={styles.body}>Reading your record…</Text>
             </View>
           ) : (
@@ -997,7 +1046,7 @@ function WorkoutPlansContent({
                   }}
                   style={[styles.dayNavigatorButton, !canCycleDays && styles.buttonDisabled]}
                 >
-                  <ChevronLeft color="#642D2A" size={22} strokeWidth={2.5} />
+                  <ChevronLeft color={palette.oxide} size={22} strokeWidth={2.5} />
                 </Pressable>
                 <View style={styles.dayNavigatorCopy}>
                   <Text style={styles.dayNavigatorLabel}>DAY {selectedDayIndex + 1} OF {orderedDays.length}</Text>
@@ -1013,7 +1062,7 @@ function WorkoutPlansContent({
                   }}
                   style={[styles.dayNavigatorButton, !canCycleDays && styles.buttonDisabled]}
                 >
-                  <ChevronRight color="#642D2A" size={22} strokeWidth={2.5} />
+                  <ChevronRight color={palette.oxide} size={22} strokeWidth={2.5} />
                 </Pressable>
               </View>
               {selectedDay ? (
@@ -1101,10 +1150,10 @@ function WorkoutPlansContent({
                 <Text style={styles.modalTitle}>{selectedDay?.name ?? "Workout day"}</Text>
               </View>
               <Pressable accessibilityRole="button" accessibilityLabel="Close exercise browser" onPress={() => setExerciseBrowserOpen(false)} style={styles.modalClose}>
-                <X color="#642D2A" size={19} strokeWidth={2.4} />
+                <X color={palette.oxide} size={19} strokeWidth={2.4} />
               </Pressable>
             </View>
-            <TextInput value={exerciseQuery} onChangeText={setExerciseQuery} placeholder="Search exercises…" placeholderTextColor="#655D57" autoCapitalize="none" style={styles.searchInput} />
+            <TextInput value={exerciseQuery} onChangeText={setExerciseQuery} placeholder="Search exercises…" placeholderTextColor={palette.muted} autoCapitalize="none" style={styles.searchInput} />
             <Text style={styles.editorLabel}>{exerciseQuery.trim() ? "SEARCH RESULTS" : "AVAILABLE EXERCISES"}</Text>
             <ScrollView style={styles.exerciseResults} keyboardShouldPersistTaps="handled">
               {visibleExercises.map((exercise) => (
@@ -1128,9 +1177,9 @@ function WorkoutPlansContent({
               <View style={styles.addExerciseDetails}>
                 <Text style={styles.addExerciseSelected}>{pendingExercise.name}</Text>
                 <View style={styles.macroRow}>
-                  <TextInput value={pendingTargets.sets} onChangeText={(sets) => setPendingTargets((current) => ({ ...current, sets }))} keyboardType="number-pad" placeholder="Sets" placeholderTextColor="#655D57" style={[styles.input, styles.macroInput]} />
-                  <TextInput value={pendingTargets.reps} onChangeText={(reps) => setPendingTargets((current) => ({ ...current, reps }))} keyboardType="number-pad" placeholder="Reps" placeholderTextColor="#655D57" style={[styles.input, styles.macroInput]} />
-                  <TextInput value={pendingTargets.weight} onChangeText={(weight) => setPendingTargets((current) => ({ ...current, weight }))} keyboardType="decimal-pad" placeholder={`Weight (${record.settings.weight_unit})`} placeholderTextColor="#655D57" style={[styles.input, styles.macroInput]} />
+                  <TextInput value={pendingTargets.sets} onChangeText={(sets) => setPendingTargets((current) => ({ ...current, sets }))} keyboardType="number-pad" placeholder="Sets" placeholderTextColor={palette.muted} style={[styles.input, styles.macroInput]} />
+                  <TextInput value={pendingTargets.reps} onChangeText={(reps) => setPendingTargets((current) => ({ ...current, reps }))} keyboardType="number-pad" placeholder="Reps" placeholderTextColor={palette.muted} style={[styles.input, styles.macroInput]} />
+                  <TextInput value={pendingTargets.weight} onChangeText={(weight) => setPendingTargets((current) => ({ ...current, weight }))} keyboardType="decimal-pad" placeholder={`Weight (${record.settings.weight_unit})`} placeholderTextColor={palette.muted} style={[styles.input, styles.macroInput]} />
                 </View>
                 <Pressable disabled={saving} onPress={() => void run(addSelectedExercise, `${pendingExercise.name} added.`)} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}>
                   <Text style={styles.planPrimaryActionText}>Add to {selectedDay?.name}</Text>
@@ -1146,7 +1195,7 @@ function WorkoutPlansContent({
           <View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}>
             <View style={styles.modalHeader}>
               <View><Text style={styles.editorLabel}>PLAN DETAILS</Text><Text style={styles.modalTitle}>{selectedPlan?.name}</Text></View>
-              <Pressable accessibilityRole="button" accessibilityLabel="Close plan details" onPress={() => setDetailsOpen(false)} style={styles.modalClose}><X color="#642D2A" size={19} strokeWidth={2.4} /></Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close plan details" onPress={() => setDetailsOpen(false)} style={styles.modalClose}><X color={palette.oxide} size={19} strokeWidth={2.4} /></Pressable>
             </View>
             {selectedPlan ? (
               <>
@@ -1170,7 +1219,7 @@ function WorkoutPlansContent({
                 <View style={styles.editorRule} />
                 <Text style={styles.editorFieldLabel}>ADD DAY</Text>
                 <View style={styles.addDayRow}>
-                  <TextInput value={dayNames[selectedPlan.id] ?? ""} onChangeText={(value) => setDayNames((current) => ({ ...current, [selectedPlan.id]: value }))} placeholder="Day name" placeholderTextColor="#655D57" style={[styles.input, styles.dayInput]} returnKeyType="done" onSubmitEditing={() => void run(addDay, "Workout day added.")} />
+                  <TextInput value={dayNames[selectedPlan.id] ?? ""} onChangeText={(value) => setDayNames((current) => ({ ...current, [selectedPlan.id]: value }))} placeholder="Day name" placeholderTextColor={palette.muted} style={[styles.input, styles.dayInput]} returnKeyType="done" onSubmitEditing={() => void run(addDay, "Workout day added.")} />
                   <Pressable disabled={saving} onPress={() => void run(addDay, "Workout day added.")} style={[styles.planSecondaryAction, saving && styles.buttonDisabled]}><Text style={styles.planSecondaryActionText}>Add day</Text></Pressable>
                 </View>
                 <View style={styles.editorRule} />
@@ -1206,12 +1255,12 @@ function WorkoutPlansContent({
           <View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}>
             <View style={styles.modalHeader}>
               <View><Text style={styles.editorLabel}>{newPlanMode === "ai" ? "PLAN ASSISTANT" : "NEW PLAN"}</Text><Text style={styles.modalTitle}>{newPlanMode === "ai" ? "Describe the work." : "Build the program."}</Text></View>
-              <Pressable accessibilityRole="button" accessibilityLabel="Close new plan" onPress={() => { setCreatePlanOpen(false); setNewPlanMode("manual"); }} style={styles.modalClose}><X color="#642D2A" size={19} strokeWidth={2.4} /></Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close new plan" onPress={() => { setCreatePlanOpen(false); setNewPlanMode("manual"); }} style={styles.modalClose}><X color={palette.oxide} size={19} strokeWidth={2.4} /></Pressable>
             </View>
             {newPlanMode === "manual" ? (
               <>
-                <TextInput value={planName} onChangeText={setPlanName} placeholder="Plan name" placeholderTextColor="#655D57" style={styles.input} returnKeyType="next" />
-                <TextInput value={description} onChangeText={setDescription} placeholder="Description (optional)" placeholderTextColor="#655D57" style={styles.input} onSubmitEditing={() => void run(createPlan, "Workout plan created.")} returnKeyType="done" />
+                <TextInput value={planName} onChangeText={setPlanName} placeholder="Plan name" placeholderTextColor={palette.muted} style={styles.input} returnKeyType="next" />
+                <TextInput value={description} onChangeText={setDescription} placeholder="Description (optional)" placeholderTextColor={palette.muted} style={styles.input} onSubmitEditing={() => void run(createPlan, "Workout plan created.")} returnKeyType="done" />
                 <Pressable disabled={saving} onPress={() => void run(createPlan, "Workout plan created.")} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>Create plan</Text></Pressable>
                 <View style={styles.editorRule} />
                 <Text style={styles.editorLabel}>PLAN ASSISTANT</Text>
@@ -1223,7 +1272,7 @@ function WorkoutPlansContent({
                 <Text style={styles.editorHint}>Tell it your goal, days available, experience, equipment, and any limits. It can use any suitable Calistree movement, adding anything missing to your library when you import.</Text>
                 {!aiDraft ? (
                   <>
-                    <TextInput value={aiPrompt} onChangeText={setAiPrompt} multiline placeholder="Example: I have three days, dumbbells and a bench. I want to build strength without aggravating my knee." placeholderTextColor="#655D57" style={[styles.input, styles.aiPromptInput]} textAlignVertical="top" />
+                    <TextInput value={aiPrompt} onChangeText={setAiPrompt} multiline placeholder="Example: I have three days, dumbbells and a bench. I want to build strength without aggravating my knee." placeholderTextColor={palette.muted} style={[styles.input, styles.aiPromptInput]} textAlignVertical="top" />
                     <Pressable disabled={generatingPlan} onPress={() => void generateAiPlan()} style={[styles.planPrimaryAction, generatingPlan && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{generatingPlan ? "Building plan…" : "Generate plan"}</Text></Pressable>
                   </>
                 ) : (
@@ -1344,7 +1393,7 @@ function ExercisesContent({
           value={name}
           onChangeText={setName}
           placeholder="Exercise name"
-          placeholderTextColor="#655D57"
+          placeholderTextColor={palette.muted}
           style={styles.input}
           returnKeyType="next"
         />
@@ -1352,7 +1401,7 @@ function ExercisesContent({
           value={muscleGroup}
           onChangeText={setMuscleGroup}
           placeholder="Muscle group (optional)"
-          placeholderTextColor="#655D57"
+          placeholderTextColor={palette.muted}
           style={styles.input}
           returnKeyType="next"
         />
@@ -1403,7 +1452,7 @@ function ExercisesContent({
                   autoCorrect={false}
                   keyboardType="url"
                   placeholder="Public demo URL"
-                  placeholderTextColor="#655D57"
+                  placeholderTextColor={palette.muted}
                   style={styles.input}
                   returnKeyType="next"
                 />
@@ -1411,7 +1460,7 @@ function ExercisesContent({
                   value={demoSourceName}
                   onChangeText={setDemoSourceName}
                   placeholder="Source name (optional)"
-                  placeholderTextColor="#655D57"
+                  placeholderTextColor={palette.muted}
                   style={styles.input}
                   returnKeyType="done"
                   onSubmitEditing={() => void saveDemo(exercise.id)}
@@ -1580,14 +1629,14 @@ function SessionsContent({
               onPress={() => setSessionAction(activeTarget)}
               style={styles.sessionOverflowButton}
             >
-              <MoreHorizontal color="#101015" size={21} strokeWidth={2.4} />
+              <MoreHorizontal color={palette.ink} size={21} strokeWidth={2.4} />
             </Pressable>
           </View>
           <Pressable accessibilityRole="button" onPress={() => router.push(`/sessions/${activeSession.id}`)} style={styles.sessionContinueButton}>
             <Text style={styles.sessionContinueButtonText}>Continue session</Text>
           </Pressable>
           <Pressable accessibilityRole="link" onPress={() => router.push(`/sessions/${activeSession.id}`)} style={styles.sessionDetailsAction}>
-            <View style={styles.sessionLinkContent}><Text style={styles.sessionDetailsActionText}>View session details</Text><ArrowRight color="#642D2A" size={16} strokeWidth={2.4} /></View>
+            <View style={styles.sessionLinkContent}><Text style={styles.sessionDetailsActionText}>View session details</Text><ArrowRight color={palette.oxide} size={16} strokeWidth={2.4} /></View>
           </Pressable>
         </View>
       ) : (
@@ -1609,7 +1658,7 @@ function SessionsContent({
                 <Text style={styles.sessionDayPickerTitle}>Choose a day</Text>
                 <Text style={styles.sessionDayPickerMeta}>{activePlan.name} · {availableDays.length} {availableDays.length === 1 ? "day" : "days"} available</Text>
               </View>
-              <ArrowRight color="#642D2A" size={19} strokeWidth={2.4} />
+              <ArrowRight color={palette.oxide} size={19} strokeWidth={2.4} />
             </Pressable>
           )}
         </View>
@@ -1625,7 +1674,7 @@ function SessionsContent({
                 <Text style={styles.modalPlanName}>{activePlan?.name}</Text>
               </View>
               <Pressable accessibilityRole="button" accessibilityLabel="Close day selection" onPress={() => setDaySelectorOpen(false)} style={styles.modalClose}>
-                <X color="#642D2A" size={19} strokeWidth={2.4} />
+                <X color={palette.oxide} size={19} strokeWidth={2.4} />
               </Pressable>
             </View>
             <ScrollView contentContainerStyle={styles.sessionDaySelectorList} showsVerticalScrollIndicator={false}>
@@ -1644,7 +1693,7 @@ function SessionsContent({
                     <Text style={styles.sessionDayOptionTitle}>{day.name}</Text>
                     <Text style={styles.sessionDayOptionMeta}>{day.exerciseCount} {day.exerciseCount === 1 ? "exercise" : "exercises"}</Text>
                   </View>
-                  <View style={styles.sessionLinkContent}><Text style={styles.sessionDayPickerText}>Start</Text><ArrowRight color="#642D2A" size={16} strokeWidth={2.4} /></View>
+                  <View style={styles.sessionLinkContent}><Text style={styles.sessionDayPickerText}>Start</Text><ArrowRight color={palette.oxide} size={16} strokeWidth={2.4} /></View>
                 </Pressable>
               ))}
             </ScrollView>
@@ -1671,10 +1720,10 @@ function SessionsContent({
                 </Pressable>
                 <View style={styles.sessionHistoryActions}>
                   <Pressable accessibilityRole="link" onPress={() => router.push(`/sessions/${session.id}`)} style={styles.sessionViewAction}>
-                    <View style={styles.sessionLinkContent}><Text style={styles.sessionViewActionText}>View session</Text><ArrowRight color="#642D2A" size={16} strokeWidth={2.4} /></View>
+                    <View style={styles.sessionLinkContent}><Text style={styles.sessionViewActionText}>View session</Text><ArrowRight color={palette.oxide} size={16} strokeWidth={2.4} /></View>
                   </Pressable>
                   <Pressable accessibilityLabel={`Actions for ${target.name}`} accessibilityRole="button" onPress={() => setSessionAction(target)} style={styles.sessionOverflowButton}>
-                    <MoreHorizontal color="#101015" size={21} strokeWidth={2.4} />
+                    <MoreHorizontal color={palette.ink} size={21} strokeWidth={2.4} />
                   </Pressable>
                 </View>
               </View>
@@ -1693,7 +1742,7 @@ function SessionsContent({
           <View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}>
             <View style={styles.modalHeader}>
               <View><Text style={styles.editorLabel}>SESSION ACTIONS</Text><Text style={styles.modalTitle}>{sessionAction?.name}</Text></View>
-              <Pressable accessibilityRole="button" accessibilityLabel="Close session actions" onPress={() => setSessionAction(null)} style={styles.modalClose}><X color="#642D2A" size={19} strokeWidth={2.4} /></Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close session actions" onPress={() => setSessionAction(null)} style={styles.modalClose}><X color={palette.oxide} size={19} strokeWidth={2.4} /></Pressable>
             </View>
             <Pressable accessibilityRole="menuitem" onPress={() => { const target = sessionAction; setSessionAction(null); if (target) router.push(`/sessions/${target.id}`); }} style={styles.sessionMenuItem}>
               <Text style={styles.sessionMenuItemText}>View session</Text>
@@ -1791,7 +1840,7 @@ function AdminContent() {
           value={username}
           onChangeText={setUsername}
           placeholder="Username"
-          placeholderTextColor="#655D57"
+          placeholderTextColor={palette.muted}
           autoCapitalize="none"
           style={styles.input}
           returnKeyType="next"
@@ -1800,7 +1849,7 @@ function AdminContent() {
           value={name}
           onChangeText={setName}
           placeholder="Display name (optional)"
-          placeholderTextColor="#655D57"
+          placeholderTextColor={palette.muted}
           style={styles.input}
           returnKeyType="next"
         />
@@ -1808,7 +1857,7 @@ function AdminContent() {
           value={email}
           onChangeText={setEmail}
           placeholder="Email (optional)"
-          placeholderTextColor="#655D57"
+          placeholderTextColor={palette.muted}
           autoCapitalize="none"
           keyboardType="email-address"
           style={styles.input}
@@ -1818,7 +1867,7 @@ function AdminContent() {
           value={password}
           onChangeText={setPassword}
           placeholder="Password (8 characters minimum)"
-          placeholderTextColor="#655D57"
+          placeholderTextColor={palette.muted}
           secureTextEntry
           style={styles.input}
           returnKeyType="done"
@@ -1905,7 +1954,7 @@ function AdminUserCard({
         value={username}
         onChangeText={setUsername}
         placeholder="Username"
-        placeholderTextColor="#655D57"
+        placeholderTextColor={palette.muted}
         autoCapitalize="none"
         style={styles.input}
       />
@@ -1913,14 +1962,14 @@ function AdminUserCard({
         value={name}
         onChangeText={setName}
         placeholder="Display name"
-        placeholderTextColor="#655D57"
+        placeholderTextColor={palette.muted}
         style={styles.input}
       />
       <TextInput
         value={email}
         onChangeText={setEmail}
         placeholder="Email"
-        placeholderTextColor="#655D57"
+        placeholderTextColor={palette.muted}
         autoCapitalize="none"
         keyboardType="email-address"
         style={styles.input}
@@ -1929,7 +1978,7 @@ function AdminUserCard({
         value={password}
         onChangeText={setPassword}
         placeholder="New password (leave blank to keep)"
-        placeholderTextColor="#655D57"
+        placeholderTextColor={palette.muted}
         secureTextEntry
         style={styles.input}
       />
@@ -2214,7 +2263,7 @@ function ProgressContent({
                         <View style={styles.photoActionsPanel}>
                           <Text style={styles.photoNote}>{selectedPhoto.note ?? "Progress photo"}</Text>
                           {editingPhotoId === selectedPhoto.id ? (
-                            <View style={styles.photoDateEdit}><TextInput value={editingPhotoDate} onChangeText={setEditingPhotoDate} placeholder="YYYY-MM-DD" placeholderTextColor="#655D57" style={[styles.input, styles.photoDateInput]} returnKeyType="done" onSubmitEditing={() => void savePhotoDate(selectedPhoto.id)} /><Pressable disabled={saving} onPress={() => void savePhotoDate(selectedPhoto.id)} style={styles.editorAction}><Text style={styles.editorActionText}>Save</Text></Pressable><Pressable disabled={saving} onPress={() => { setEditingPhotoId(null); setEditingPhotoDate(""); }} style={styles.editorAction}><Text style={styles.editorActionText}>Cancel</Text></Pressable></View>
+                            <View style={styles.photoDateEdit}><TextInput value={editingPhotoDate} onChangeText={setEditingPhotoDate} placeholder="YYYY-MM-DD" placeholderTextColor={palette.muted} style={[styles.input, styles.photoDateInput]} returnKeyType="done" onSubmitEditing={() => void savePhotoDate(selectedPhoto.id)} /><Pressable disabled={saving} onPress={() => void savePhotoDate(selectedPhoto.id)} style={styles.editorAction}><Text style={styles.editorActionText}>Save</Text></Pressable><Pressable disabled={saving} onPress={() => { setEditingPhotoId(null); setEditingPhotoDate(""); }} style={styles.editorAction}><Text style={styles.editorActionText}>Cancel</Text></Pressable></View>
                           ) : (
                             <View style={styles.photoActionRow}><Pressable disabled={saving} onPress={() => { setEditingPhotoId(selectedPhoto.id); setEditingPhotoDate(recordDayKey(selectedPhoto.captured_at)); }} style={styles.editorAction}><Text style={styles.editorActionText}>Edit date</Text></Pressable><Pressable disabled={saving} onPress={() => setRemoveConfirmId(selectedPhoto.id)} style={styles.editorRemove}><Text style={styles.editorRemoveText}>Remove</Text></Pressable></View>
                           )}
@@ -2242,8 +2291,8 @@ function ProgressContent({
         </View>
       )}
 
-      <Modal animationType="fade" transparent visible={addOpen} onRequestClose={() => setAddOpen(false)}><View style={styles.modalBackdrop}><View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}><View style={styles.modalHeader}><View><Text style={styles.editorLabel}>ADD CHECK-IN</Text><Text style={styles.modalTitle}>Record the evidence.</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Close add check-in" onPress={() => setAddOpen(false)} style={styles.modalClose}><X color="#642D2A" size={19} strokeWidth={2.4} /></Pressable></View><TextInput value={capturedAt} onChangeText={setCapturedAt} placeholder="Photo date (YYYY-MM-DD)" placeholderTextColor="#655D57" style={styles.input} /><TextInput value={note} onChangeText={setNote} placeholder="Note (optional)" placeholderTextColor="#655D57" style={styles.input} returnKeyType="done" onSubmitEditing={() => void choosePhoto()} /><Pressable accessibilityRole="button" disabled={saving} onPress={() => void choosePhoto()} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{saving ? "Recording…" : "Choose progress photo"}</Text></Pressable></View></View></Modal>
-      <Modal animationType="fade" transparent visible={Boolean(viewedPhoto)} onRequestClose={() => setViewingPhotoId(null)}><View style={styles.photoViewerBackdrop}><View style={styles.photoViewer}><View style={styles.modalHeader}><Text style={styles.editorLabel}>PROGRESS PHOTO</Text><Pressable accessibilityRole="button" accessibilityLabel="Close progress photo" onPress={() => setViewingPhotoId(null)} style={styles.modalClose}><X color="#642D2A" size={19} strokeWidth={2.4} /></Pressable></View>{viewedPhoto?.imageUrl ? <Image accessibilityLabel={`Progress photo from ${recordDayKey(viewedPhoto.captured_at)}`} source={{ uri: viewedPhoto.imageUrl }} resizeMode="contain" style={styles.photoViewerImage} /> : <View style={styles.progressImageUnavailable}><Text style={styles.cardMeta}>Photo preview unavailable.</Text></View>}<Text style={styles.photoViewerNote}>{viewedPhoto?.note ?? "Progress photo"}</Text></View></View></Modal>
+      <Modal animationType="fade" transparent visible={addOpen} onRequestClose={() => setAddOpen(false)}><View style={styles.modalBackdrop}><View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}><View style={styles.modalHeader}><View><Text style={styles.editorLabel}>ADD CHECK-IN</Text><Text style={styles.modalTitle}>Record the evidence.</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Close add check-in" onPress={() => setAddOpen(false)} style={styles.modalClose}><X color={palette.oxide} size={19} strokeWidth={2.4} /></Pressable></View><TextInput value={capturedAt} onChangeText={setCapturedAt} placeholder="Photo date (YYYY-MM-DD)" placeholderTextColor={palette.muted} style={styles.input} /><TextInput value={note} onChangeText={setNote} placeholder="Note (optional)" placeholderTextColor={palette.muted} style={styles.input} returnKeyType="done" onSubmitEditing={() => void choosePhoto()} /><Pressable accessibilityRole="button" disabled={saving} onPress={() => void choosePhoto()} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{saving ? "Recording…" : "Choose progress photo"}</Text></Pressable></View></View></Modal>
+      <Modal animationType="fade" transparent visible={Boolean(viewedPhoto)} onRequestClose={() => setViewingPhotoId(null)}><View style={styles.photoViewerBackdrop}><View style={styles.photoViewer}><View style={styles.modalHeader}><Text style={styles.editorLabel}>PROGRESS PHOTO</Text><Pressable accessibilityRole="button" accessibilityLabel="Close progress photo" onPress={() => setViewingPhotoId(null)} style={styles.modalClose}><X color={palette.oxide} size={19} strokeWidth={2.4} /></Pressable></View>{viewedPhoto?.imageUrl ? <Image accessibilityLabel={`Progress photo from ${recordDayKey(viewedPhoto.captured_at)}`} source={{ uri: viewedPhoto.imageUrl }} resizeMode="contain" style={styles.photoViewerImage} /> : <View style={styles.progressImageUnavailable}><Text style={styles.cardMeta}>Photo preview unavailable.</Text></View>}<Text style={styles.photoViewerNote}>{viewedPhoto?.note ?? "Progress photo"}</Text></View></View></Modal>
     </>
   );
 }
@@ -2412,7 +2461,7 @@ export function LegacyNutritionContent({
           value={name}
           onChangeText={setName}
           placeholder="Food name"
-          placeholderTextColor="#655D57"
+          placeholderTextColor={palette.muted}
           style={styles.input}
           returnKeyType="next"
         />
@@ -2422,7 +2471,7 @@ export function LegacyNutritionContent({
             onChangeText={setBarcode}
             keyboardType="number-pad"
             placeholder="Barcode (optional)"
-            placeholderTextColor="#655D57"
+            placeholderTextColor={palette.muted}
             style={[styles.input, styles.barcodeInput]}
             returnKeyType="done"
             onSubmitEditing={() => void searchBarcode()}
@@ -2461,7 +2510,7 @@ export function LegacyNutritionContent({
           onChangeText={setServingSizeG}
           keyboardType="decimal-pad"
           placeholder="Nutrition reference grams (usually 100)"
-          placeholderTextColor="#655D57"
+          placeholderTextColor={palette.muted}
           style={styles.input}
           returnKeyType="next"
         />
@@ -2470,7 +2519,7 @@ export function LegacyNutritionContent({
           onChangeText={setCalories}
           keyboardType="number-pad"
           placeholder="Calories per serving"
-          placeholderTextColor="#655D57"
+          placeholderTextColor={palette.muted}
           style={styles.input}
           returnKeyType="next"
         />
@@ -2480,7 +2529,7 @@ export function LegacyNutritionContent({
             onChangeText={setProtein}
             keyboardType="decimal-pad"
             placeholder="Protein g"
-            placeholderTextColor="#655D57"
+            placeholderTextColor={palette.muted}
             style={[styles.input, styles.macroInput]}
           />
           <TextInput
@@ -2488,7 +2537,7 @@ export function LegacyNutritionContent({
             onChangeText={setCarbs}
             keyboardType="decimal-pad"
             placeholder="Carbs g"
-            placeholderTextColor="#655D57"
+            placeholderTextColor={palette.muted}
             style={[styles.input, styles.macroInput]}
           />
           <TextInput
@@ -2496,7 +2545,7 @@ export function LegacyNutritionContent({
             onChangeText={setFat}
             keyboardType="decimal-pad"
             placeholder="Fat g"
-            placeholderTextColor="#655D57"
+            placeholderTextColor={palette.muted}
             style={[styles.input, styles.macroInput]}
           />
         </View>
@@ -2565,7 +2614,7 @@ export function LegacyNutritionContent({
           onChangeText={setQuantity}
           keyboardType="decimal-pad"
           placeholder="Grams eaten"
-          placeholderTextColor="#655D57"
+          placeholderTextColor={palette.muted}
           style={styles.input}
         />
         <Pressable disabled={saving || !foodId} onPress={addMealIngredient}>
@@ -2841,7 +2890,7 @@ function FastingContent({
             <Text style={styles.fastProgressLabel}>{Math.round(progress * 100)}% complete · {durationFromMinutes(remainingMinutes ?? 0)} remaining</Text>
           </View> : null}
           <Pressable disabled={saving} onPress={() => setEndConfirmOpen(true)} style={[styles.actionButton, styles.fastEndButton, saving && styles.buttonDisabled]}><Text style={styles.actionButtonText}>End Fast</Text></Pressable>
-          {noteOpen ? <View style={styles.fastNoteEditor}><TextInput value={note} onChangeText={setNote} placeholder="Add a note" placeholderTextColor="#655D57" style={styles.input} returnKeyType="done" /><Pressable onPress={() => setNoteOpen(false)}><Text style={styles.editorRemoveText}>Hide note</Text></Pressable></View> : <Pressable onPress={revealNote} style={styles.fastNoteAction}><Text style={styles.editorRemoveText}>{active.note ? "Edit Note" : "+ Add a Note"}</Text></Pressable>}
+          {noteOpen ? <View style={styles.fastNoteEditor}><TextInput value={note} onChangeText={setNote} placeholder="Add a note" placeholderTextColor={palette.muted} style={styles.input} returnKeyType="done" /><Pressable onPress={() => setNoteOpen(false)}><Text style={styles.editorRemoveText}>Hide note</Text></Pressable></View> : <Pressable onPress={revealNote} style={styles.fastNoteAction}><Text style={styles.editorRemoveText}>{active.note ? "Edit Note" : "+ Add a Note"}</Text></Pressable>}
         </View>
       ) : (
         <View style={styles.fastStart}>
@@ -2852,8 +2901,8 @@ function FastingContent({
             <Pressable onPress={() => setCustomTargetOpen(true)} style={[styles.fastTargetOption, customTargetOpen && styles.fastTargetOptionActive]}><Text style={[styles.fastTargetOptionText, customTargetOpen && styles.fastTargetOptionTextActive]}>Custom</Text></Pressable>
             <Pressable onPress={() => { setTargetMinutes(null); setCustomTargetOpen(false); }} style={[styles.fastTargetOption, !customTargetOpen && targetMinutes === null && styles.fastTargetOptionActive]}><Text style={[styles.fastTargetOptionText, !customTargetOpen && targetMinutes === null && styles.fastTargetOptionTextActive]}>Untimed</Text></Pressable>
           </View>
-          {customTargetOpen ? <TextInput value={customTargetHours} onChangeText={setCustomTargetHours} keyboardType="decimal-pad" placeholder="Target hours" placeholderTextColor="#655D57" style={styles.input} /> : null}
-          {noteOpen ? <View style={styles.fastNoteEditor}><TextInput value={note} onChangeText={setNote} placeholder="Add a note" placeholderTextColor="#655D57" style={styles.input} /><Pressable onPress={() => setNoteOpen(false)}><Text style={styles.editorRemoveText}>Hide note</Text></Pressable></View> : <Pressable onPress={revealNote} style={styles.fastNoteAction}><Text style={styles.editorRemoveText}>+ Add a Note</Text></Pressable>}
+          {customTargetOpen ? <TextInput value={customTargetHours} onChangeText={setCustomTargetHours} keyboardType="decimal-pad" placeholder="Target hours" placeholderTextColor={palette.muted} style={styles.input} /> : null}
+          {noteOpen ? <View style={styles.fastNoteEditor}><TextInput value={note} onChangeText={setNote} placeholder="Add a note" placeholderTextColor={palette.muted} style={styles.input} /><Pressable onPress={() => setNoteOpen(false)}><Text style={styles.editorRemoveText}>Hide note</Text></Pressable></View> : <Pressable onPress={revealNote} style={styles.fastNoteAction}><Text style={styles.editorRemoveText}>+ Add a Note</Text></Pressable>}
           <Pressable disabled={saving} onPress={() => void startFast()} style={[styles.actionButton, styles.fastEndButton, saving && styles.buttonDisabled]}><Text style={styles.actionButtonText}>Start Fast</Text></Pressable>
         </View>
       )}
@@ -2918,7 +2967,7 @@ function FriendsContent({
           onChangeText={setUsername}
           autoCapitalize="none"
           placeholder="Friend username"
-          placeholderTextColor="#655D57"
+          placeholderTextColor={palette.muted}
           style={styles.input}
           onSubmitEditing={() =>
             void run(async () => {
@@ -3051,6 +3100,7 @@ function SettingsContent({
   record: TransmuteRecord;
   refresh: () => Promise<void>;
 }) {
+  const { mode, theme, setTheme } = useTransmuteTheme();
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const chooseUnit = async (weightUnit: "kg" | "lbs") => {
@@ -3107,12 +3157,39 @@ function SettingsContent({
             : "No active workout plan selected."}
         </Text>
       </View>
+      <View style={styles.formCard}>
+        <Text style={styles.cardTitle}>Color theme</Text>
+        <Text style={styles.cardMeta}>Choose the palette for your record. Light and dark modes stay available for each theme.</Text>
+        <View style={styles.themeChoices}>
+          {transmuteThemeOptions.map((option) => {
+            const preview = transmuteThemes[option.id][mode];
+            const selected = theme === option.id;
+            return (
+              <Pressable
+                accessibilityRole="radio"
+                accessibilityState={{ selected }}
+                key={option.id}
+                onPress={() => setTheme(option.id)}
+                style={[styles.themeChoice, selected && styles.themeChoiceSelected]}
+              >
+                <View style={styles.themeSwatches}>
+                  <View style={[styles.themeSwatch, { backgroundColor: preview.surface, borderColor: preview.divider }]} />
+                  <View style={[styles.themeSwatch, { backgroundColor: preview.ink, borderColor: preview.ink }]} />
+                  <View style={[styles.themeSwatch, { backgroundColor: preview.steel, borderColor: preview.steel }]} />
+                  <View style={[styles.themeSwatch, { backgroundColor: preview.gold, borderColor: preview.gold }]} />
+                </View>
+                <Text style={styles.themeChoiceName}>{option.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
       {notice ? <Text style={styles.notice}>{notice}</Text> : null}
     </>
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
   safeArea: { backgroundColor: "#F4EFE7", flex: 1 },
   wrap: {
     flex: 1,
@@ -3128,7 +3205,11 @@ const styles = StyleSheet.create({
     paddingTop: 10,
   },
   wordmark: { alignItems: "center", flexDirection: "row", gap: 10 },
+  headerActions: { alignItems: "center", flexDirection: "row", gap: 10 },
   headerAccount: { alignItems: "center", justifyContent: "center", minHeight: 44, minWidth: 44 },
+  headerThemeToggle: { borderColor: "#101015", borderWidth: 1, flexDirection: "row", height: 36, overflow: "hidden", padding: 2, position: "relative", width: 72 },
+  headerThemeSegment: { alignItems: "center", flex: 1, justifyContent: "center" },
+  headerThemeThumb: { backgroundColor: "#101015", bottom: 2, left: 2, position: "absolute", top: 2, width: 33 },
   wordmarkText: {
     color: "#101015",
     fontSize: 15,
@@ -3329,6 +3410,19 @@ const styles = StyleSheet.create({
     marginTop: 22,
     padding: 16,
   },
+  themeChoices: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 16 },
+  themeChoice: {
+    borderColor: "#D4C9B9",
+    borderWidth: 1,
+    flexGrow: 1,
+    gap: 10,
+    minWidth: 180,
+    padding: 12,
+  },
+  themeChoiceSelected: { borderColor: "#101015", borderWidth: 2, padding: 11 },
+  themeChoiceName: { color: "#101015", fontSize: 14, fontWeight: "800" },
+  themeSwatches: { flexDirection: "row", gap: 5 },
+  themeSwatch: { borderWidth: 1, height: 14, width: 28 },
   fastHero: { alignItems: "center", gap: 9, marginTop: 18, maxWidth: 460, paddingBottom: 8 },
   fastElapsed: { color: "#101015", fontSize: 42, fontWeight: "900", letterSpacing: -1.9, lineHeight: 46, marginTop: 2 },
   fastElapsedLabel: { color: "#642D2A", fontFamily: "Courier", fontSize: 11, fontWeight: "800", letterSpacing: 1.8 },
@@ -3740,3 +3834,6 @@ const styles = StyleSheet.create({
   cardMeta: { color: "#655D57", fontSize: 14, lineHeight: 21, marginTop: 5 },
   section: { marginTop: 22 },
 });
+
+const styles = createThemedStyleProxy(baseStyles);
+const palette = createPaletteProxy();

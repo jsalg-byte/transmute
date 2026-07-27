@@ -1,4 +1,5 @@
 import { getStoredSession, removeStoredSession, setStoredSession } from './session-store';
+import { notifySessionChanged } from './auth-session-events';
 
 const SESSION_STORAGE_KEY = 'transmute.mobile-session.v1';
 
@@ -14,6 +15,11 @@ export type MobileSession = {
   accessTokenExpiresInSeconds: number;
   refreshTokenExpiresAt: string;
   user: MobileUser;
+};
+
+export type ThemePreference = {
+  theme: 'transmute' | 'flame-alchemist' | 'hawkeye' | 'automail-mechanic' | 'avarice' | 'scarred-man' | 'armor-bound-soul';
+  mode: 'light' | 'dark';
 };
 
 export type AiWorkoutPlanDraft = {
@@ -194,6 +200,7 @@ async function authenticatedRequest<T>(path: string, init: RequestInit = {}) {
 
 export async function saveSession(session: MobileSession) {
   await setStoredSession(SESSION_STORAGE_KEY, JSON.stringify(session));
+  notifySessionChanged(session.user.id);
 }
 
 export async function readSession() {
@@ -242,6 +249,7 @@ export async function resumeSession() {
 
 export async function clearSession() {
   await removeStoredSession(SESSION_STORAGE_KEY);
+  notifySessionChanged(null);
 }
 
 export async function register(payload: { username: string; name?: string; password: string }) {
@@ -515,6 +523,18 @@ export async function createMealLog(payload: {
   return authenticatedRequest<{ meals: { id: string; consumedAt: string }[] }>('/v1/meals', { method: 'POST', body: JSON.stringify(payload) });
 }
 
+export async function updateMealLog(mealId: string, payload: {
+  mealType: 'breakfast' | 'lunch' | 'dinner' | 'snack';
+  consumedAt: string;
+  grams: number;
+}) {
+  return authenticatedRequest<{ meal: { id: string } }>(`/v1/meals/${mealId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+}
+
+export async function deleteMealLog(mealId: string) {
+  return authenticatedRequest(`/v1/meals/${mealId}`, { method: 'DELETE' });
+}
+
 export async function uploadMealPhoto(mealId: string, payload: {
   uri: string;
   fileName: string;
@@ -573,6 +593,17 @@ export async function removeFriend(userId: string) {
 
 export async function updateWeightUnit(weightUnit: 'kg' | 'lbs') {
   return authenticatedRequest('/v1/preferences/weight-unit', { method: 'PUT', body: JSON.stringify({ weightUnit }) });
+}
+
+export async function getThemePreference() {
+  return authenticatedRequest<{ preference: ThemePreference | null }>('/v1/preferences/theme');
+}
+
+export async function updateThemePreference(preference: ThemePreference) {
+  return authenticatedRequest<{ preference: ThemePreference }>('/v1/preferences/theme', {
+    method: 'PUT',
+    body: JSON.stringify(preference),
+  });
 }
 
 export async function getAdminUsers() {

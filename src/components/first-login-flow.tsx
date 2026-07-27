@@ -11,6 +11,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AlchemySvg } from './alchemy-svg';
+import { createThemedStyleProxy, useTransmuteTheme } from '../theme/transmute-theme';
 
 const { width: viewportWidth } = Dimensions.get('window');
 const FADE_DURATION_MS = 180;
@@ -158,6 +159,7 @@ function FirstLoginVisual({ visual }: { visual: Visual }) {
 }
 
 export function FirstLoginFlow() {
+  useTransmuteTheme();
   const [step, setStep] = useState(0);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [fade] = useState(() => new Animated.Value(1));
@@ -224,7 +226,7 @@ export function FirstLoginFlow() {
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#F4EFE7' },
   container: { flex: 1, width: '100%', maxWidth: 680, alignSelf: 'center', paddingHorizontal: 24, paddingBottom: 20 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 10 },
@@ -289,3 +291,5 @@ const styles = StyleSheet.create({
   guideWater: { bottom: '4%', left: '7%', opacity: 0.5, position: 'absolute' },
   guideFire: { opacity: 0.5, position: 'absolute', right: '8%', top: '8%' },
 });
+
+const styles = createThemedStyleProxy(baseStyles);

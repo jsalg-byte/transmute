@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { createThemedStyleProxy, useTransmuteTheme } from '../theme/transmute-theme';
 import { AlchemySvg } from './alchemy-svg';
 
 const FADE_DURATION_MS = 180;
@@ -10,7 +11,7 @@ const FADE_DURATION_MS = 180;
 const assets = {
   ouroboros: require('../../assets/transmute/ouroboros.svg'),
   putrefaction: require('../../assets/transmute/putrefaction.svg'),
-  blackSulfur: require('../../assets/transmute/black-sulfur.svg'),
+  philosophersSulfur: require('../../assets/transmute/black-sulfur.svg'),
   purify: require('../../assets/transmute/purify.svg'),
   water: require('../../assets/transmute/water.svg'),
 } as const;
@@ -46,7 +47,7 @@ function TransmutationMotif({ stage }: { stage: number }) {
         <View style={styles.nigredoCutTwo} />
         <View style={styles.nigredoCorner} />
         <AlchemySvg source={assets.putrefaction} width={190} height={190} style={styles.putrefaction} />
-        <AlchemySvg source={assets.blackSulfur} width={116} height={116} style={styles.blackSulfur} />
+        <AlchemySvg source={assets.philosophersSulfur} width={116} height={116} style={styles.blackSulfur} />
       </View>
     );
   }
@@ -72,6 +73,7 @@ function TransmutationMotif({ stage }: { stage: number }) {
 }
 
 export function OnboardingFlow() {
+  useTransmuteTheme();
   const [step, setStep] = useState(0);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [fade] = useState(() => new Animated.Value(1));
@@ -135,7 +137,7 @@ export function OnboardingFlow() {
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
   safeArea: { backgroundColor: '#F4EFE7', flex: 1 },
   container: { flex: 1, maxWidth: 680, overflow: 'hidden', paddingBottom: 20, paddingHorizontal: 24, paddingTop: 10, width: '100%', alignSelf: 'center' },
   header: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
@@ -172,3 +174,5 @@ const styles = StyleSheet.create({
   accountPromptSpacer: { height: 17, marginTop: 16 },
   accountLink: { fontWeight: '800', textDecorationColor: '#A95B5B', textDecorationLine: 'underline' },
 });
+
+const styles = createThemedStyleProxy(baseStyles);

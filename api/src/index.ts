@@ -178,6 +178,11 @@ const mealSchema = z.object({
     grams: z.number().positive().max(5000),
   })).min(1).max(20),
 });
+const mealUpdateSchema = z.object({
+  mealType: z.enum(['breakfast', 'lunch', 'dinner', 'snack']),
+  consumedAt: z.string().datetime(),
+  grams: z.number().positive().max(5000),
+});
 const fastSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('start'), note: z.string().trim().max(240).optional(), targetMinutes: z.number().int().min(1).max(60 * 24 * 7).optional() }),
   z.object({ action: z.literal('end'), note: z.string().trim().max(240).optional() }),
@@ -186,6 +191,10 @@ const friendUsernameSchema = z.object({
   username: z.string().trim().min(3).max(64).regex(/^[^\s]+$/).transform((value) => value.toLowerCase()),
 });
 const weightUnitSchema = z.object({ weightUnit: z.enum(['kg', 'lbs']) });
+const themePreferenceSchema = z.object({
+  theme: z.enum(['transmute', 'flame-alchemist', 'hawkeye', 'automail-mechanic', 'avarice', 'scarred-man', 'armor-bound-soul']),
+  mode: z.enum(['light', 'dark']),
+});
 const progressPresignSchema = z.object({
   fileName: z.string().min(1).max(255),
   contentType: z.string().min(3).max(128),
@@ -1630,6 +1639,50 @@ app.post('/v1/meals', async (request, reply) => {
   return reply.code(201).send({ meals: meals.map((meal) => ({ id: meal.id, consumedAt: meal.consumed_at })) });
 });
 
+app.patch('/v1/meals/:id', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = mealUpdateSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid meal update payload.' });
+
+  const [meal] = await sql<{ id: string }[]>`
+    UPDATE meal_logs
+    SET quantity = ${parsed.data.grams.toString()}, meal_type = ${parsed.data.mealType}, consumed_at = ${new Date(parsed.data.consumedAt)}
+    WHERE id = ${params.data.id} AND user_id = ${userId}
+    RETURNING id
+  `;
+  if (!meal) return reply.code(404).send({ error: 'Logged food not found.' });
+  return reply.send({ meal: { id: meal.id } });
+});
+
+app.delete('/v1/meals/:id', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: 'Invalid logged food id.' });
+
+  const deleted = await sql.begin(async (transaction) => {
+    const [meal] = await transaction<{ id: string }[]>`
+      SELECT id FROM meal_logs WHERE id = ${params.data.id} AND user_id = ${userId} LIMIT 1
+    `;
+    if (!meal) return null;
+    const photos = await transaction<{ object_key: string }[]>`
+      DELETE FROM uploads
+      WHERE user_id = ${userId} AND entity_type = 'meal_log_photo' AND entity_id = ${meal.id}
+      RETURNING object_key
+    `;
+    await transaction`DELETE FROM meal_logs WHERE id = ${meal.id}`;
+    return photos;
+  });
+  if (!deleted) return reply.code(404).send({ error: 'Logged food not found.' });
+
+  await Promise.all(
+    deleted.map((photo) => storage.send(new DeleteObjectCommand({ Bucket: env.S3_BUCKET, Key: photo.object_key })).catch(() => undefined)),
+  );
+  return reply.code(204).send();
+});
+
 app.post('/v1/meals/:id/photo/presign', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
@@ -1807,6 +1860,32 @@ app.put('/v1/preferences/weight-unit', async (request, reply) => {
     ON CONFLICT (user_id) DO UPDATE SET weight_unit = EXCLUDED.weight_unit, updated_at = now()
   `;
   return reply.send({ weightUnit: parsed.data.weightUnit });
+});
+
+app.get('/v1/preferences/theme', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const [preferences] = await sql<{ theme_overrides: Record<string, unknown> }[]>`
+    SELECT theme_overrides FROM user_preferences WHERE user_id = ${userId} LIMIT 1
+  `;
+  const mobileTheme = preferences?.theme_overrides?.mobileTheme;
+  const parsed = themePreferenceSchema.safeParse(mobileTheme);
+  return reply.send({ preference: parsed.success ? parsed.data : null });
+});
+
+app.put('/v1/preferences/theme', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = themePreferenceSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid theme preference.' });
+  await sql`
+    INSERT INTO user_preferences (user_id, weight_unit, theme_overrides, updated_at)
+    VALUES (${userId}, 'lbs', ${JSON.stringify({ mobileTheme: parsed.data })}::jsonb, now())
+    ON CONFLICT (user_id) DO UPDATE
+    SET theme_overrides = user_preferences.theme_overrides || EXCLUDED.theme_overrides,
+        updated_at = now()
+  `;
+  return reply.send({ preference: parsed.data });
 });
 
 app.get('/v1/admin/users', async (request, reply) => {

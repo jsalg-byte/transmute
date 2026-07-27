@@ -5,6 +5,7 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, useWindowDimensions, Vi
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { getWorkoutSession, type WorkoutSessionDetail } from '../../../lib/api';
+import { useTransmuteStyles, useTransmuteTheme } from '../../../theme/transmute-theme';
 
 type SetRecord = WorkoutSessionDetail['sets'][number];
 
@@ -38,6 +39,8 @@ function summarizeSets(sets: SetRecord[], unit: WorkoutSessionDetail['session'][
 }
 
 export default function WorkoutShareScreen() {
+  const styles = useTransmuteStyles(baseStyles);
+  const { palette } = useTransmuteTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
   const { height, width } = useWindowDimensions();
   const [detail, setDetail] = useState<WorkoutSessionDetail | null>(null);
@@ -94,7 +97,7 @@ export default function WorkoutShareScreen() {
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
       {!detail && !error ? (
-        <View style={styles.loading}><ActivityIndicator color="#642D2A" /><Text style={styles.loadingText}>Preparing workout record…</Text></View>
+        <View style={styles.loading}><ActivityIndicator color={palette.oxide} /><Text style={styles.loadingText}>Preparing workout record…</Text></View>
       ) : null}
       {error ? (
         <View style={styles.errorWrap}>
@@ -138,7 +141,7 @@ export default function WorkoutShareScreen() {
           <View style={styles.footer}>
             <Text style={styles.footerLine}>Nothing changes without an exchange.</Text>
             <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.backButton}>
-              <View style={styles.backButtonContent}><ArrowLeft color="#101015" size={16} strokeWidth={2.4} /><Text style={styles.backButtonText}>Back to session</Text></View>
+              <View style={styles.backButtonContent}><ArrowLeft color={palette.ink} size={16} strokeWidth={2.4} /><Text style={styles.backButtonText}>Back to session</Text></View>
             </Pressable>
           </View>
         </View>
@@ -147,7 +150,7 @@ export default function WorkoutShareScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
   safeArea: { backgroundColor: '#F4EFE7', flex: 1 },
   loading: { alignItems: 'center', flex: 1, gap: 12, justifyContent: 'center', padding: 24 },
   loadingText: { color: '#2C2C31', fontSize: 15 },
