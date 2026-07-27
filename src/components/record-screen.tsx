@@ -2257,7 +2257,7 @@ export function LegacyNutritionContent({
 }) {
   const [name, setName] = useState("");
   const [barcode, setBarcode] = useState("");
-  const [servingSizeG, setServingSizeG] = useState("100");
+  const [servingSizeG, setServingSizeG] = useState("");
   const [scannerOpen, setScannerOpen] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [calories, setCalories] = useState("");
@@ -2310,7 +2310,7 @@ export function LegacyNutritionContent({
       const { food } = result;
       setName(food.name);
       setBarcode(food.barcodeUpc ?? code);
-      setServingSizeG(String(food.servingSizeG));
+      setServingSizeG(food.servingSizeG ? String(food.servingSizeG) : "");
       setCalories(String(food.caloriesKcal));
       setProtein(String(food.proteinG));
       setCarbs(String(food.carbsG));
@@ -2525,7 +2525,7 @@ export function LegacyNutritionContent({
               });
               setName("");
               setBarcode("");
-              setServingSizeG("100");
+              setServingSizeG("");
               setCalories("");
               setProtein("");
               setCarbs("");

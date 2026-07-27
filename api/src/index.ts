@@ -349,6 +349,13 @@ function numericValue(value: unknown, fallback = 0) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function gramsFromServingSize(value: string | undefined) {
+  const match = value?.match(/(\d+(?:[.,]\d+)?)\s*g\b/i);
+  if (!match) return null;
+  const grams = Number(match[1].replace(',', '.'));
+  return Number.isFinite(grams) && grams > 0 ? grams : null;
+}
+
 async function lookupOpenFoodFacts(code: string) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8_000);
@@ -362,7 +369,7 @@ async function lookupOpenFoodFacts(code: string) {
       status?: number;
       product?: {
         product_name?: string;
-        serving_quantity?: number;
+        serving_size?: string;
         nutriments?: {
           'energy-kcal_100g'?: number;
           proteins_100g?: number;
@@ -379,9 +386,9 @@ async function lookupOpenFoodFacts(code: string) {
         id: null,
         name: payload.product.product_name ?? `UPC ${code}`,
         barcodeUpc: code,
-        // Open Food Facts values below are the _100g fields, so the paired
-        // serving value must also be 100g for meal calculations to remain true.
-        servingSizeG: 100,
+        // Nutrition values are per 100g. That is not necessarily the food's
+        // serving size, so only prefill a serving when the provider states one.
+        servingSizeG: gramsFromServingSize(payload.product.serving_size),
         caloriesKcal: numericValue(payload.product.nutriments?.['energy-kcal_100g']),
         proteinG: numericValue(payload.product.nutriments?.proteins_100g),
         carbsG: numericValue(payload.product.nutriments?.carbohydrates_100g),
@@ -1441,7 +1448,7 @@ app.get('/v1/barcodes/:code', async (request, reply) => {
         id: localFood.id,
         name: localFood.name,
         barcodeUpc: localFood.barcode_upc,
-        servingSizeG: numericValue(localFood.serving_size_g, 100),
+        servingSizeG: localFood.serving_size_g ? numericValue(localFood.serving_size_g) : null,
         caloriesKcal: localFood.calories_kcal,
         proteinG: numericValue(localFood.protein_g),
         carbsG: numericValue(localFood.carbs_g),

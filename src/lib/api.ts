@@ -473,7 +473,7 @@ export type BarcodeLookup = {
     id: string | null;
     name: string;
     barcodeUpc: string | null;
-    servingSizeG: number;
+    servingSizeG: number | null;
     caloriesKcal: number;
     proteinG: number;
     carbsG: number;

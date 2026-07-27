@@ -126,7 +126,7 @@ export function NutritionContent({
   const [notice, setNotice] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [barcode, setBarcode] = useState("");
-  const [servingSizeG, setServingSizeG] = useState("100");
+  const [servingSizeG, setServingSizeG] = useState("");
   const [calories, setCalories] = useState("");
   const [protein, setProtein] = useState("");
   const [carbs, setCarbs] = useState("");
@@ -201,7 +201,7 @@ export function NutritionContent({
   const resetFoodForm = () => {
     setName("");
     setBarcode("");
-    setServingSizeG("100");
+    setServingSizeG("");
     setCalories("");
     setProtein("");
     setCarbs("");
@@ -226,7 +226,7 @@ export function NutritionContent({
       return;
     }
     const food = foodsById.get(foodId);
-    setSelectedFoods((items) => [...items, { foodId, grams: String(grams ?? (numeric(food?.serving_size_g) || 100)) }]);
+    setSelectedFoods((items) => [...items, { foodId, grams: grams !== undefined ? String(grams) : food?.serving_size_g ? String(food.serving_size_g) : "" }]);
     setNotice(null);
   };
   const lookupFoodBarcode = async (candidate = barcode) => {
@@ -252,7 +252,7 @@ export function NutritionContent({
       }
       setName(food.name);
       setBarcode(food.barcodeUpc ?? code);
-      setServingSizeG(String(food.servingSizeG));
+      setServingSizeG(food.servingSizeG ? String(food.servingSizeG) : "");
       setCalories(String(food.caloriesKcal));
       setProtein(String(food.proteinG));
       setCarbs(String(food.carbsG));
@@ -466,7 +466,7 @@ export function NutritionContent({
     <Modal animationType="slide" visible={newFoodOpen} onRequestClose={() => !saving && setNewFoodOpen(false)}><View style={styles.modalPage}><View style={[styles.modalHeader, { paddingTop: Math.max(insets.top, 18) }]}><View><Text style={styles.sectionLabel}>NEW FOOD</Text><Text style={styles.modalTitle}>Add to the library.</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Close new food" disabled={saving} onPress={() => setNewFoodOpen(false)} style={styles.closeButton}><X color="#642D2A" size={21} strokeWidth={2.5} /></Pressable></View><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.modalScroll, { paddingBottom: 40 + insets.bottom }]}>
       {scannerOpen ? <View style={styles.scanner}><View style={styles.scannerViewport}><CameraView facing="back" barcodeScannerSettings={{ barcodeTypes: ["ean13", "ean8", "upc_a", "upc_e", "code128"] }} onCameraReady={() => setScannerReady(true)} onMountError={({ message }) => { setScannerReady(false); setScannerOpen(false); setNotice(message || "The camera preview could not start. Enter the barcode manually instead."); }} onBarcodeScanned={({ data }) => { if (!data || saving) return; setBarcode(data); setScannerReady(false); setScannerOpen(false); void lookupFoodBarcode(data); }} style={styles.scannerCamera} />{!scannerReady ? <View pointerEvents="none" style={styles.scannerLoading}><ActivityIndicator color="#F4EFE7" /><Text style={styles.scannerLoadingText}>Opening rear camera…</Text></View> : null}</View><Pressable accessibilityRole="button" onPress={() => { setScannerReady(false); setScannerOpen(false); }} style={styles.scannerClose}><Text style={styles.scannerCloseText}>Close scanner</Text></Pressable></View> : null}
       <View style={styles.barcodeField}><TextInput value={barcode} onChangeText={setBarcode} keyboardType="number-pad" placeholder="Barcode (optional)" placeholderTextColor="#81776D" style={styles.barcodeInput} onSubmitEditing={() => void lookupFoodBarcode()} /><Pressable accessibilityRole="button" disabled={saving} onPress={() => void lookupFoodBarcode()}><Text style={styles.addText}>Look up</Text></Pressable></View><View style={styles.secondaryActions}><Pressable accessibilityRole="button" disabled={saving} onPress={() => void openBarcodeScanner()} style={styles.secondaryAction}><Camera color="#101015" size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan barcode</Text></Pressable><Pressable accessibilityRole="button" disabled={saving} onPress={() => void readNutritionLabel()} style={styles.secondaryAction}><ImagePlus color="#101015" size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan label</Text></Pressable></View>
-      <TextInput value={name} onChangeText={setName} placeholder="Food name" placeholderTextColor="#81776D" style={styles.formInput} returnKeyType="next" /><TextInput value={servingSizeG} onChangeText={setServingSizeG} keyboardType="decimal-pad" placeholder="Reference grams" placeholderTextColor="#81776D" style={styles.formInput} returnKeyType="next" /><TextInput value={calories} onChangeText={setCalories} keyboardType="number-pad" placeholder="Calories per reference amount" placeholderTextColor="#81776D" style={styles.formInput} returnKeyType="next" /><View style={styles.macroFields}><TextInput value={protein} onChangeText={setProtein} keyboardType="decimal-pad" placeholder="Protein g" placeholderTextColor="#81776D" style={[styles.formInput, styles.macroInput]} /><TextInput value={carbs} onChangeText={setCarbs} keyboardType="decimal-pad" placeholder="Carbs g" placeholderTextColor="#81776D" style={[styles.formInput, styles.macroInput]} /><TextInput value={fat} onChangeText={setFat} keyboardType="decimal-pad" placeholder="Fat g" placeholderTextColor="#81776D" style={[styles.formInput, styles.macroInput]} /></View>
+      <TextInput value={name} onChangeText={setName} placeholder="Food name" placeholderTextColor="#81776D" style={styles.formInput} returnKeyType="next" /><TextInput value={servingSizeG} onChangeText={setServingSizeG} keyboardType="decimal-pad" placeholder="g" placeholderTextColor="#81776D" style={styles.formInput} returnKeyType="next" /><TextInput value={calories} onChangeText={setCalories} keyboardType="number-pad" placeholder="Calories per reference amount" placeholderTextColor="#81776D" style={styles.formInput} returnKeyType="next" /><View style={styles.macroFields}><TextInput value={protein} onChangeText={setProtein} keyboardType="decimal-pad" placeholder="Protein g" placeholderTextColor="#81776D" style={[styles.formInput, styles.macroInput]} /><TextInput value={carbs} onChangeText={setCarbs} keyboardType="decimal-pad" placeholder="Carbs g" placeholderTextColor="#81776D" style={[styles.formInput, styles.macroInput]} /><TextInput value={fat} onChangeText={setFat} keyboardType="decimal-pad" placeholder="Fat g" placeholderTextColor="#81776D" style={[styles.formInput, styles.macroInput]} /></View>
       {notice ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}<Pressable accessibilityRole="button" disabled={saving} onPress={() => void saveFood()} style={[styles.primaryAction, saving && styles.disabled]}><Text style={styles.primaryActionText}>{saving ? "Saving…" : "Save food"}</Text></Pressable>
     </ScrollView></View></Modal>
   </>;
