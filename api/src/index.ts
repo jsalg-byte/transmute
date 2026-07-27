@@ -1527,8 +1527,13 @@ app.post('/v1/fasting', async (request, reply) => {
   const [active] = await sql<{ id: string; started_at: Date; note: string | null }[]>`SELECT id, started_at, note FROM active_fasts WHERE user_id = ${userId} LIMIT 1`;
   if (!active) return reply.code(404).send({ error: 'No active fast to end.' });
   const endedAt = new Date();
-  const durationMinutes = Math.round((endedAt.getTime() - active.started_at.getTime()) / 60000);
-  if (durationMinutes <= 0 || durationMinutes > 60 * 24 * 7) return reply.code(400).send({ error: 'Fast duration must be between 1 minute and 7 days.' });
+  const durationMilliseconds = endedAt.getTime() - active.started_at.getTime();
+  if (durationMilliseconds < 5 * 60_000) {
+    await sql`DELETE FROM active_fasts WHERE id = ${active.id}`;
+    return reply.send({ discarded: true });
+  }
+  const durationMinutes = Math.round(durationMilliseconds / 60_000);
+  if (durationMinutes > 60 * 24 * 7) return reply.code(400).send({ error: 'Fast duration must be no more than 7 days.' });
   const [fast] = await sql<{ id: string }[]>`
     INSERT INTO fasting_logs (id, user_id, started_at, ended_at, duration_minutes, note, created_at)
     VALUES (${randomUUID()}, ${userId}, ${active.started_at}, ${endedAt}, ${durationMinutes}, ${parsed.data.note ?? active.note}, now()) RETURNING id
