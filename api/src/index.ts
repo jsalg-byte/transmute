@@ -161,7 +161,7 @@ const mealSchema = z.object({
   })).min(1).max(20),
 });
 const fastSchema = z.discriminatedUnion('action', [
-  z.object({ action: z.literal('start'), note: z.string().trim().max(240).optional() }),
+  z.object({ action: z.literal('start'), note: z.string().trim().max(240).optional(), targetMinutes: z.number().int().min(1).max(60 * 24 * 7).optional() }),
   z.object({ action: z.literal('end'), note: z.string().trim().max(240).optional() }),
 ]);
 const friendUsernameSchema = z.object({
@@ -1516,15 +1516,15 @@ app.post('/v1/fasting', async (request, reply) => {
   const parsed = fastSchema.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: 'Invalid fasting payload.' });
   if (parsed.data.action === 'start') {
-    const [active] = await sql<{ id: string; started_at: Date; note: string | null }[]>`
-      INSERT INTO active_fasts (id, user_id, started_at, note, created_at, updated_at)
-      VALUES (${randomUUID()}, ${userId}, now(), ${parsed.data.note ?? null}, now(), now())
-      ON CONFLICT (user_id) DO UPDATE SET started_at = now(), note = EXCLUDED.note, updated_at = now()
-      RETURNING id, started_at, note
+    const [active] = await sql<{ id: string; started_at: Date; note: string | null; target_minutes: number | null }[]>`
+      INSERT INTO active_fasts (id, user_id, started_at, note, target_minutes, created_at, updated_at)
+      VALUES (${randomUUID()}, ${userId}, now(), ${parsed.data.note ?? null}, ${parsed.data.targetMinutes ?? null}, now(), now())
+      ON CONFLICT (user_id) DO UPDATE SET started_at = now(), note = EXCLUDED.note, target_minutes = EXCLUDED.target_minutes, updated_at = now()
+      RETURNING id, started_at, note, target_minutes
     `;
-    return reply.send({ active: { id: active.id, startedAt: active.started_at, note: active.note } });
+    return reply.send({ active: { id: active.id, startedAt: active.started_at, note: active.note, targetMinutes: active.target_minutes } });
   }
-  const [active] = await sql<{ id: string; started_at: Date; note: string | null }[]>`SELECT id, started_at, note FROM active_fasts WHERE user_id = ${userId} LIMIT 1`;
+  const [active] = await sql<{ id: string; started_at: Date; note: string | null; target_minutes: number | null }[]>`SELECT id, started_at, note, target_minutes FROM active_fasts WHERE user_id = ${userId} LIMIT 1`;
   if (!active) return reply.code(404).send({ error: 'No active fast to end.' });
   const endedAt = new Date();
   const durationMilliseconds = endedAt.getTime() - active.started_at.getTime();
@@ -1535,11 +1535,23 @@ app.post('/v1/fasting', async (request, reply) => {
   const durationMinutes = Math.round(durationMilliseconds / 60_000);
   if (durationMinutes > 60 * 24 * 7) return reply.code(400).send({ error: 'Fast duration must be no more than 7 days.' });
   const [fast] = await sql<{ id: string }[]>`
-    INSERT INTO fasting_logs (id, user_id, started_at, ended_at, duration_minutes, note, created_at)
-    VALUES (${randomUUID()}, ${userId}, ${active.started_at}, ${endedAt}, ${durationMinutes}, ${parsed.data.note ?? active.note}, now()) RETURNING id
+    INSERT INTO fasting_logs (id, user_id, started_at, ended_at, duration_minutes, target_minutes, note, created_at)
+    VALUES (${randomUUID()}, ${userId}, ${active.started_at}, ${endedAt}, ${durationMinutes}, ${active.target_minutes}, ${parsed.data.note ?? active.note}, now()) RETURNING id
   `;
   await sql`DELETE FROM active_fasts WHERE id = ${active.id}`;
   return reply.send({ fast: { id: fast.id, durationMinutes } });
+});
+
+app.delete('/v1/fasting/:id', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = idParamsSchema.safeParse(request.params);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid fasting record.' });
+  const [removed] = await sql<{ id: string }[]>`
+    DELETE FROM fasting_logs WHERE id = ${parsed.data.id} AND user_id = ${userId} RETURNING id
+  `;
+  if (!removed) return reply.code(404).send({ error: 'Fasting record not found.' });
+  return reply.code(204).send();
 });
 
 app.post('/v1/friends', async (request, reply) => {
@@ -1844,8 +1856,8 @@ app.get('/v1/record', async (request, reply) => {
       FROM meal_logs ml INNER JOIN foods f ON f.id = ml.food_id
       WHERE ml.user_id = ${userId} ORDER BY ml.consumed_at DESC LIMIT 100
     `,
-    sql`SELECT id, started_at, note FROM active_fasts WHERE user_id = ${userId} LIMIT 1`,
-    sql`SELECT id, started_at, ended_at, duration_minutes, note FROM fasting_logs WHERE user_id = ${userId} ORDER BY ended_at DESC LIMIT 100`,
+    sql`SELECT id, started_at, note, target_minutes FROM active_fasts WHERE user_id = ${userId} LIMIT 1`,
+    sql`SELECT id, started_at, ended_at, duration_minutes, target_minutes, note FROM fasting_logs WHERE user_id = ${userId} ORDER BY ended_at DESC LIMIT 100`,
     sql<ProgressPhotoRow[]>`SELECT id, object_key, mime_type, size_bytes, note, captured_at FROM uploads WHERE user_id = ${userId} AND entity_type = 'progress_photo' ORDER BY captured_at DESC LIMIT 100`,
     sql`
       SELECT fr.id, fr.status, fr.created_at, u.id AS user_id, u.username, u.name

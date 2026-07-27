@@ -123,7 +123,7 @@ export type TransmuteRecord = {
       imageUrl: string | null;
     }[];
   };
-  fasting: { active: { id: string; started_at: string; note: string | null } | null; logs: { id: string; started_at: string; ended_at: string; duration_minutes: number; note: string | null }[] };
+  fasting: { active: { id: string; started_at: string; target_minutes: number | null; note: string | null } | null; logs: { id: string; started_at: string; ended_at: string; duration_minutes: number; target_minutes: number | null; note: string | null }[] };
   progress: {
     id: string;
     captured_at: string;
@@ -545,8 +545,12 @@ export async function uploadMealPhoto(mealId: string, payload: {
   });
 }
 
-export async function updateFasting(payload: { action: 'start' | 'end'; note?: string }) {
-  return authenticatedRequest('/v1/fasting', { method: 'POST', body: JSON.stringify(payload) });
+export async function updateFasting(payload: { action: 'start' | 'end'; note?: string; targetMinutes?: number }) {
+  return authenticatedRequest<{ discarded?: boolean }>('/v1/fasting', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function deleteFastingLog(fastId: string) {
+  return authenticatedRequest(`/v1/fasting/${fastId}`, { method: 'DELETE' });
 }
 
 export async function sendFriendRequest(username: string) {

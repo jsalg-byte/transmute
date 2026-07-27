@@ -673,18 +673,19 @@ function SetLedger({ exercise, sets, previousSets, weightUnit, saving, editableS
 }) {
   const workingSets = useMemo(() => sets.filter((set) => !set.isWarmup).sort((a, b) => a.createdAt.localeCompare(b.createdAt)), [sets]);
   const targetCount = expectedWorkingSets(exercise, sets);
-  const makeDraft = (ordinal: number, isWarmup: boolean) => {
-    const previous = previousSets[Math.min(ordinal - 1, Math.max(0, previousSets.length - 1))];
-    return { id: `${isWarmup ? 'warmup' : 'working'}-${ordinal}-${Math.random().toString(36).slice(2)}`, isWarmup, reps: previous ? String(previous.reps) : (exercise.targetReps ? String(exercise.targetReps) : ''), weight: previous?.weight !== null && previous?.weight !== undefined ? String(previous.weight) : (exercise.targetWeight ?? '') };
-  };
+  const makeDraft = (ordinal: number, isWarmup: boolean) => ({
+    id: `${isWarmup ? 'warmup' : 'working'}-${ordinal}-${Math.random().toString(36).slice(2)}`,
+    isWarmup,
+    reps: '',
+    weight: '',
+  });
   const [drafts, setDrafts] = useState<LedgerDraft[]>(() => Array.from({ length: Math.max(0, targetCount - workingSets.length) }, (_item, index) => makeDraft(workingSets.length + index + 1, false)));
 
   const updateDraft = (id: string, field: 'reps' | 'weight', value: string) => setDrafts((current) => current.map((draft) => draft.id === id ? { ...draft, [field]: value } : draft));
   const addDraft = () => setDrafts((current) => {
     const workingDrafts = current.filter((draft) => !draft.isWarmup);
-    const last = workingDrafts.at(-1);
     const ordinal = workingSets.length + workingDrafts.length + 1;
-    return [...current, { ...makeDraft(ordinal, false), ...(last ? { reps: last.reps, weight: last.weight } : {}) }];
+    return [...current, makeDraft(ordinal, false)];
   });
   const logDraft = async (draft: LedgerDraft) => {
     await onLog({ exerciseId: exercise.id, reps: draft.reps, weight: draft.weight, isWarmup: draft.isWarmup });
@@ -694,8 +695,15 @@ function SetLedger({ exercise, sets, previousSets, weightUnit, saving, editableS
     <View style={styles.ledgerHeader}><Text style={styles.panelLabel}>SETS</Text><Text style={styles.sectionCount}>{workingSets.length}/{targetCount}</Text></View>
     {workingSets.map((set, index) => editableSetId === set.id ? <View key={set.id} style={styles.ledgerEditRow}><Text style={styles.ledgerSetNumber}>{String(index + 1).padStart(2, '0')}</Text><View style={styles.ledgerField}><TextInput accessibilityLabel={`${weightUnit} for set ${index + 1}`} value={editWeight} onChangeText={onChangeWeight} keyboardType="decimal-pad" placeholder={weightUnit} placeholderTextColor="#81776D" style={styles.ledgerInput} /></View><View style={styles.ledgerField}><TextInput accessibilityLabel={`Reps for set ${index + 1}`} value={editReps} onChangeText={onChangeReps} keyboardType="number-pad" placeholder="reps" placeholderTextColor="#81776D" style={styles.ledgerInput} /></View><View style={styles.ledgerRowActions}><Pressable disabled={saving} onPress={onSave}><Text style={styles.textActionText}>Save</Text></Pressable><Pressable disabled={saving} onPress={onCancelEdit}><Text style={styles.discardText}>Cancel</Text></Pressable></View></View> : <View key={set.id} style={styles.ledgerSavedRow}><Text style={styles.ledgerSetNumber}>{String(index + 1).padStart(2, '0')}</Text><Text style={styles.ledgerSavedValue}>{set.weight === null ? 'Bodyweight' : `${set.weight} ${weightUnit}`}</Text><Text style={styles.ledgerSavedValue}>{set.reps} reps</Text><View style={styles.ledgerRowActions}><Pressable disabled={saving || editableSetId !== null} onPress={() => onEdit(set)}><Text style={styles.textActionText}>Edit</Text></Pressable><Pressable disabled={saving || editableSetId !== null} onPress={() => onRemove(set.id)}><Text style={styles.discardText}>Remove</Text></Pressable></View></View>)}
     {drafts.filter((draft) => !draft.isWarmup).map((draft, index) => {
-      const ordinal = workingSets.length + index + 1; const previous = previousSets[Math.min(ordinal - 1, Math.max(0, previousSets.length - 1))];
-      return <View key={draft.id} style={styles.ledgerDraftBlock}><View style={styles.ledgerDraftRow}><Text style={styles.ledgerSetNumber}>{String(ordinal).padStart(2, '0')}</Text><View style={styles.ledgerField}><TextInput accessibilityLabel={`${weightUnit} for set ${ordinal}`} value={draft.weight} onChangeText={(value) => updateDraft(draft.id, 'weight', value)} keyboardType="decimal-pad" placeholder={weightUnit} placeholderTextColor="#81776D" style={styles.ledgerInput} /></View><View style={styles.ledgerField}><TextInput accessibilityLabel={`Reps for set ${ordinal}`} value={draft.reps} onChangeText={(value) => updateDraft(draft.id, 'reps', value)} keyboardType="number-pad" placeholder="reps" placeholderTextColor="#81776D" style={styles.ledgerInput} returnKeyType="done" onSubmitEditing={() => void logDraft(draft)} /></View><Pressable accessibilityRole="button" disabled={saving} onPress={() => void logDraft(draft)} style={[styles.ledgerLogButton, saving && styles.buttonDisabled]}><Text style={styles.ledgerLogButtonText}>{saving ? '…' : 'Log'}</Text></Pressable></View>{previous ? <Text style={styles.previousValue}>Last {formatPreviousValue(previous, weightUnit)}</Text> : null}</View>;
+      const ordinal = workingSets.length + index + 1;
+      const previous = previousSets[Math.min(ordinal - 1, Math.max(0, previousSets.length - 1))];
+      const weightPlaceholder = previous?.weight !== null && previous?.weight !== undefined
+        ? String(previous.weight)
+        : exercise.targetWeight !== null && exercise.targetWeight !== undefined
+          ? String(exercise.targetWeight)
+          : weightUnit;
+      const repsPlaceholder = previous ? String(previous.reps) : exercise.targetReps ? String(exercise.targetReps) : 'reps';
+      return <View key={draft.id} style={styles.ledgerDraftBlock}><View style={styles.ledgerDraftRow}><Text style={styles.ledgerSetNumber}>{String(ordinal).padStart(2, '0')}</Text><View style={styles.ledgerField}><TextInput accessibilityLabel={`${weightUnit} for set ${ordinal}`} value={draft.weight} onChangeText={(value) => updateDraft(draft.id, 'weight', value)} keyboardType="decimal-pad" placeholder={weightPlaceholder} placeholderTextColor="#81776D" style={styles.ledgerInput} /></View><View style={styles.ledgerField}><TextInput accessibilityLabel={`Reps for set ${ordinal}`} value={draft.reps} onChangeText={(value) => updateDraft(draft.id, 'reps', value)} keyboardType="number-pad" placeholder={repsPlaceholder} placeholderTextColor="#81776D" style={styles.ledgerInput} returnKeyType="done" onSubmitEditing={() => void logDraft(draft)} /></View><Pressable accessibilityRole="button" disabled={saving} onPress={() => void logDraft(draft)} style={[styles.ledgerLogButton, saving && styles.buttonDisabled]}><Text style={styles.ledgerLogButtonText}>{saving ? '…' : 'Log'}</Text></Pressable></View>{previous ? <Text style={styles.previousValue}>Last {formatPreviousValue(previous, weightUnit)}</Text> : null}</View>;
     })}
     <View style={styles.ledgerAddActions}><Pressable accessibilityRole="button" onPress={addDraft}><Text style={styles.textActionText}>+ Add set</Text></Pressable></View>
   </View>;

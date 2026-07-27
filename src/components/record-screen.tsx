@@ -2,7 +2,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 import { openBrowserAsync } from "expo-web-browser";
-import { ArrowRight, MoreHorizontal, X } from "lucide-react-native";
+import { ArrowRight, ChevronLeft, ChevronRight, MoreHorizontal, X } from "lucide-react-native";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -20,6 +20,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AlchemySvg } from "./alchemy-svg";
+import { FastingHourglass } from "./fasting-hourglass";
 import { MuscleHeatMap } from "./muscle-heat-map";
 import { NutritionContent as NutritionWorkflow } from "./nutrition-content";
 import { deriveRecovery } from "../lib/recovery";
@@ -32,6 +33,7 @@ import {
   createFood,
   createMealLog,
   createWorkoutPlan,
+  deleteFastingLog,
   deleteWorkoutPlan,
   deleteWorkoutPlanDay,
   deleteAdminUser,
@@ -71,13 +73,13 @@ const BOTTOM_NAV_HEIGHT = 64;
 
 const nav = [
   ["dashboard", "Dashboard"],
-  ["workout-plans", "Workout plans"],
-  ["exercises", "Exercise library"],
+  ["workout-plans", "Workout Plans"],
+  ["exercises", "Exercise Library"],
   ["sessions", "Sessions"],
   ["nutrition", "Nutrition"],
   ["fasting", "Fasting"],
   ["progress", "Progress"],
-  ["friends", "Friend"],
+  ["friends", "Friends"],
   ["settings", "Settings"],
   ["admin", "Admin"],
 ] as const;
@@ -90,10 +92,10 @@ const primaryNav = [
 ] as const;
 
 const moreNav = [
-  ["workout-plans", "Workout plans"],
-  ["exercises", "Exercise library"],
+  ["workout-plans", "Workout Plans"],
+  ["exercises", "Exercise Library"],
   ["fasting", "Fasting"],
-  ["friends", "Friend"],
+  ["friends", "Friends"],
   ["settings", "Settings"],
   ["admin", "Admin"],
 ] as const;
@@ -343,7 +345,7 @@ export function RecordScreen({ area }: { area: Area }) {
                   </Pressable>
                 ))}
               <Pressable accessibilityRole="menuitem" onPress={() => void leave()} style={styles.moreItem}>
-                <Text style={styles.moreSignOut}>Sign out</Text>
+                <Text style={styles.moreSignOut}>Sign Out</Text>
               </Pressable>
             </View>
           ) : null}
@@ -671,8 +673,9 @@ function WorkoutPlansContent({
   const [selectedExerciseId, setSelectedExerciseId] = useState<string | null>(null);
   const [exerciseBrowserOpen, setExerciseBrowserOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<{ kind: "day" | "plan"; id: string; name: string } | null>(null);
   const [createPlanOpen, setCreatePlanOpen] = useState(false);
-  const [aiPlanOpen, setAiPlanOpen] = useState(false);
+  const [newPlanMode, setNewPlanMode] = useState<"manual" | "ai">("manual");
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiDraft, setAiDraft] = useState<AiWorkoutPlanDraft | null>(null);
   const [generatingPlan, setGeneratingPlan] = useState(false);
@@ -692,6 +695,14 @@ function WorkoutPlansContent({
     : [];
   const selectedDay =
     orderedDays.find((day) => day.id === selectedDayId) ?? orderedDays[0] ?? null;
+  const selectedDayIndex = Math.max(0, orderedDays.findIndex((day) => day.id === selectedDay?.id));
+  const previousDay = orderedDays.length
+    ? orderedDays[(selectedDayIndex - 1 + orderedDays.length) % orderedDays.length]
+    : null;
+  const nextDay = orderedDays.length
+    ? orderedDays[(selectedDayIndex + 1) % orderedDays.length]
+    : null;
+  const canCycleDays = orderedDays.length > 1;
   const orderedExercises = selectedDay
     ? [...selectedDay.exercises].sort((left, right) => left.sortOrder - right.sortOrder)
     : [];
@@ -734,6 +745,7 @@ function WorkoutPlansContent({
     setSelectedPlanId(result.plan.id);
     setPlanName("");
     setDescription("");
+    setNewPlanMode("manual");
     setCreatePlanOpen(false);
   };
 
@@ -763,7 +775,8 @@ function WorkoutPlansContent({
       setSelectedDayId(result.plan.days[0]?.id ?? null);
       setAiDraft(null);
       setAiPrompt("");
-      setAiPlanOpen(false);
+      setNewPlanMode("manual");
+      setCreatePlanOpen(false);
       setNotice("AI workout plan added. Review it before your first session.");
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : "Unable to add this workout plan.");
@@ -779,6 +792,31 @@ function WorkoutPlansContent({
     const result = await addWorkoutPlanDay(selectedPlan.id, { dayName });
     setDayNames((current) => ({ ...current, [selectedPlan.id]: "" }));
     setSelectedDayId(result.day.id);
+  };
+
+  const confirmRemoval = async () => {
+    if (!removeTarget) return;
+    setSaving(true);
+    setNotice(null);
+    try {
+      if (removeTarget.kind === "day") {
+        await deleteWorkoutPlanDay(removeTarget.id);
+        setSelectedDayId(null);
+        setNotice("Workout day removed.");
+      } else {
+        await deleteWorkoutPlan(removeTarget.id);
+        setSelectedPlanId(null);
+        setSelectedDayId(null);
+        setDetailsOpen(false);
+        setNotice("Workout plan removed.");
+      }
+      await refresh();
+      setRemoveTarget(null);
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "Unable to remove this workout plan.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const addSelectedExercise = async () => {
@@ -907,25 +945,24 @@ function WorkoutPlansContent({
       {record.workoutPlans.length ? (
         <>
           <View style={styles.planSwitcher}>
-            {record.workoutPlans.map((plan) => (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ selected: selectedPlan?.id === plan.id }}
-                key={plan.id}
-                onPress={() => {
-                  setSelectedPlanId(plan.id);
-                  setSelectedExerciseId(null);
-                }}
-                style={[styles.planSwitchItem, selectedPlan?.id === plan.id && styles.planSwitchItemActive]}
-              >
-                <Text style={[styles.planSwitchText, selectedPlan?.id === plan.id && styles.planSwitchTextActive]}>{plan.name}</Text>
-              </Pressable>
-            ))}
-            <Pressable accessibilityRole="button" onPress={() => setCreatePlanOpen(true)} style={styles.planSwitchAdd}>
-              <Text style={styles.planSwitchAddText}>+ New plan</Text>
-            </Pressable>
-            <Pressable accessibilityRole="button" onPress={() => setAiPlanOpen(true)} style={styles.planSwitchAdd}>
-              <Text style={styles.planSwitchAddText}>Plan with AI</Text>
+            <View style={styles.planSwitcherTabs}>
+              {record.workoutPlans.map((plan) => (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: selectedPlan?.id === plan.id }}
+                  key={plan.id}
+                  onPress={() => {
+                    setSelectedPlanId(plan.id);
+                    setSelectedExerciseId(null);
+                  }}
+                  style={[styles.planSwitchItem, selectedPlan?.id === plan.id && styles.planSwitchItemActive]}
+                >
+                  <Text style={[styles.planSwitchText, selectedPlan?.id === plan.id && styles.planSwitchTextActive]}>{plan.name}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <Pressable accessibilityRole="button" onPress={() => { setNewPlanMode("manual"); setCreatePlanOpen(true); }} style={styles.planSwitchAdd}>
+              <Text style={styles.planSwitchAddText}>+ New Plan</Text>
             </Pressable>
           </View>
           {selectedPlan ? (
@@ -939,29 +976,43 @@ function WorkoutPlansContent({
                   {selectedPlan.description ? <Text style={styles.planDescription}>{selectedPlan.description}</Text> : null}
                 </View>
                 <View style={styles.planHeaderActions}>
-                  <Pressable disabled={saving || !selectedDay} onPress={() => void startSelectedDay()} style={[styles.planPrimaryAction, (saving || !selectedDay) && styles.buttonDisabled]}>
-                    <Text style={styles.planPrimaryActionText}>Start workout</Text>
+                  <Pressable disabled={saving || !selectedDay} onPress={() => void startSelectedDay()} style={[styles.planPrimaryAction, styles.planHeaderAction, (saving || !selectedDay) && styles.buttonDisabled]}>
+                    <Text style={styles.planPrimaryActionText}>START WORKOUT</Text>
                   </Pressable>
-                  <Pressable accessibilityRole="button" onPress={() => setDetailsOpen(true)} style={styles.planSecondaryAction}>
-                    <Text style={styles.planSecondaryActionText}>Edit details</Text>
+                  <Pressable accessibilityRole="button" onPress={() => setDetailsOpen(true)} style={[styles.planSecondaryAction, styles.planHeaderAction]}>
+                    <Text style={styles.planSecondaryActionText}>EDIT DETAILS</Text>
                   </Pressable>
                 </View>
               </View>
-              <View style={styles.dayTabs}>
-                {orderedDays.map((day) => (
-                  <Pressable
-                    accessibilityRole="tab"
-                    accessibilityState={{ selected: selectedDay?.id === day.id }}
-                    key={day.id}
-                    onPress={() => {
-                      setSelectedDayId(day.id);
-                      setSelectedExerciseId(null);
-                    }}
-                    style={[styles.dayTab, selectedDay?.id === day.id && styles.dayTabActive]}
-                  >
-                    <Text style={[styles.dayTabText, selectedDay?.id === day.id && styles.dayTabTextActive]}>{day.name}</Text>
-                  </Pressable>
-                ))}
+              <View style={styles.dayNavigator}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Previous workout day"
+                  disabled={!canCycleDays}
+                  onPress={() => {
+                    setSelectedDayId(previousDay?.id ?? null);
+                    setSelectedExerciseId(null);
+                  }}
+                  style={[styles.dayNavigatorButton, !canCycleDays && styles.buttonDisabled]}
+                >
+                  <ChevronLeft color="#642D2A" size={22} strokeWidth={2.5} />
+                </Pressable>
+                <View style={styles.dayNavigatorCopy}>
+                  <Text style={styles.dayNavigatorLabel}>DAY {selectedDayIndex + 1} OF {orderedDays.length}</Text>
+                  <Text style={styles.dayNavigatorTitle}>{selectedDay?.name ?? "Workout Day"}</Text>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Next workout day"
+                  disabled={!canCycleDays}
+                  onPress={() => {
+                    setSelectedDayId(nextDay?.id ?? null);
+                    setSelectedExerciseId(null);
+                  }}
+                  style={[styles.dayNavigatorButton, !canCycleDays && styles.buttonDisabled]}
+                >
+                  <ChevronRight color="#642D2A" size={22} strokeWidth={2.5} />
+                </Pressable>
               </View>
               {selectedDay ? (
                 <View style={[styles.planWorkspace, isDesktop && styles.planWorkspaceDesktop]}>
@@ -983,7 +1034,6 @@ function WorkoutPlansContent({
                           }
                         />
                       </View>
-                      <Text style={styles.ledgerCount}>{orderedExercises.length} movements</Text>
                     </View>
                     <View style={styles.ledgerList}>
                       {orderedExercises.length ? orderedExercises.map((entry, index) => (
@@ -1034,11 +1084,8 @@ function WorkoutPlansContent({
         <View style={styles.planEmptyState}>
           <Text style={styles.title}>Build your first plan.</Text>
           <Text style={styles.body}>A plan keeps the training days, movements, and evidence in one working record.</Text>
-          <Pressable onPress={() => setCreatePlanOpen(true)} style={styles.planPrimaryAction}>
-            <Text style={styles.planPrimaryActionText}>Create plan</Text>
-          </Pressable>
-          <Pressable onPress={() => setAiPlanOpen(true)} style={styles.planSecondaryAction}>
-            <Text style={styles.planSecondaryActionText}>Plan with AI</Text>
+          <Pressable onPress={() => { setNewPlanMode("manual"); setCreatePlanOpen(true); }} style={styles.planPrimaryAction}>
+            <Text style={styles.planPrimaryActionText}>+ New Plan</Text>
           </Pressable>
         </View>
       )}
@@ -1126,58 +1173,78 @@ function WorkoutPlansContent({
                 </View>
                 <View style={styles.editorRule} />
                 <Pressable disabled={saving || activePlanId === selectedPlan.id} onPress={() => void run(() => setActiveWorkoutPlan(selectedPlan.id), "Active workout plan updated.")} style={[styles.editorAction, (saving || activePlanId === selectedPlan.id) && styles.buttonDisabled]}><Text style={styles.editorActionText}>{activePlanId === selectedPlan.id ? "Active plan" : "Set as active"}</Text></Pressable>
-                {selectedDay ? <Pressable disabled={saving} onPress={() => void run(() => deleteWorkoutPlanDay(selectedDay.id), "Workout day removed.")} style={[styles.editorRemove, saving && styles.buttonDisabled]}><Text style={styles.editorRemoveText}>Remove selected day</Text></Pressable> : null}
-                <Pressable disabled={saving} onPress={() => void run(async () => {
-                  await deleteWorkoutPlan(selectedPlan.id);
-                  setSelectedPlanId(null);
-                  setDetailsOpen(false);
-                }, "Workout plan removed.")} style={[styles.editorRemove, saving && styles.buttonDisabled]}><Text style={styles.editorRemoveText}>Remove plan</Text></Pressable>
+                {selectedDay ? <Pressable disabled={saving} onPress={() => setRemoveTarget({ kind: "day", id: selectedDay.id, name: selectedDay.name })} style={[styles.editorRemove, saving && styles.buttonDisabled]}><Text style={styles.editorRemoveText}>Remove selected day</Text></Pressable> : null}
+                <Pressable disabled={saving} onPress={() => setRemoveTarget({ kind: "plan", id: selectedPlan.id, name: selectedPlan.name })} style={[styles.editorRemove, saving && styles.buttonDisabled]}><Text style={styles.editorRemoveText}>Remove plan</Text></Pressable>
               </>
             ) : null}
           </View>
         </View>
       </Modal>
 
-      <Modal animationType="fade" transparent visible={createPlanOpen} onRequestClose={() => setCreatePlanOpen(false)}>
+      <Modal animationType="fade" transparent visible={removeTarget !== null} onRequestClose={() => setRemoveTarget(null)}>
         <View style={styles.modalBackdrop}>
-          <View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}>
-            <View style={styles.modalHeader}><View><Text style={styles.editorLabel}>NEW PLAN</Text><Text style={styles.modalTitle}>Build the program.</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Close new plan" onPress={() => setCreatePlanOpen(false)} style={styles.modalClose}><X color="#642D2A" size={19} strokeWidth={2.4} /></Pressable></View>
-            <TextInput value={planName} onChangeText={setPlanName} placeholder="Plan name" placeholderTextColor="#655D57" style={styles.input} returnKeyType="next" />
-            <TextInput value={description} onChangeText={setDescription} placeholder="Description (optional)" placeholderTextColor="#655D57" style={styles.input} onSubmitEditing={() => void run(createPlan, "Workout plan created.")} returnKeyType="done" />
-            <Pressable disabled={saving} onPress={() => void run(createPlan, "Workout plan created.")} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>Create plan</Text></Pressable>
+          <View style={[styles.modalPanel, styles.confirmRemovalPanel, isDesktop && styles.modalPanelDesktop]}>
+            <Text style={styles.editorLabel}>{removeTarget?.kind === "plan" ? "REMOVE PLAN" : "REMOVE DAY"}</Text>
+            <Text style={styles.modalTitle}>Remove {removeTarget?.name}?</Text>
+            <Text style={styles.editorHint}>
+              {removeTarget?.kind === "plan"
+                ? "This permanently removes the plan and every day and exercise inside it."
+                : "This permanently removes the day and every exercise inside it."}
+            </Text>
+            <View style={styles.confirmRemovalActions}>
+              <Pressable disabled={saving} onPress={() => setRemoveTarget(null)} style={[styles.planSecondaryAction, saving && styles.buttonDisabled]}><Text style={styles.planSecondaryActionText}>Cancel</Text></Pressable>
+              <Pressable disabled={saving} onPress={() => void confirmRemoval()} style={[styles.confirmRemovalAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{saving ? "Removing…" : "Remove"}</Text></Pressable>
+            </View>
           </View>
         </View>
       </Modal>
 
-      <Modal animationType="fade" transparent visible={aiPlanOpen} onRequestClose={() => setAiPlanOpen(false)}>
+      <Modal animationType="fade" transparent visible={createPlanOpen} onRequestClose={() => { setCreatePlanOpen(false); setNewPlanMode("manual"); }}>
         <View style={styles.modalBackdrop}>
           <View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}>
             <View style={styles.modalHeader}>
-              <View><Text style={styles.editorLabel}>PLAN ASSISTANT</Text><Text style={styles.modalTitle}>Describe the work.</Text></View>
-              <Pressable accessibilityRole="button" accessibilityLabel="Close plan assistant" onPress={() => setAiPlanOpen(false)} style={styles.modalClose}><X color="#642D2A" size={19} strokeWidth={2.4} /></Pressable>
+              <View><Text style={styles.editorLabel}>{newPlanMode === "ai" ? "PLAN ASSISTANT" : "NEW PLAN"}</Text><Text style={styles.modalTitle}>{newPlanMode === "ai" ? "Describe the work." : "Build the program."}</Text></View>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close new plan" onPress={() => { setCreatePlanOpen(false); setNewPlanMode("manual"); }} style={styles.modalClose}><X color="#642D2A" size={19} strokeWidth={2.4} /></Pressable>
             </View>
-            <Text style={styles.editorHint}>Tell it your goal, days available, experience, equipment, and any limits. It will build from your saved exercise library.</Text>
-            <TextInput value={aiPrompt} onChangeText={setAiPrompt} multiline placeholder="Example: I have three days, dumbbells and a bench. I want to build strength without aggravating my knee." placeholderTextColor="#655D57" style={[styles.input, styles.aiPromptInput]} textAlignVertical="top" />
-            {!aiDraft ? (
-              <Pressable disabled={generatingPlan} onPress={() => void generateAiPlan()} style={[styles.planPrimaryAction, generatingPlan && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{generatingPlan ? "Building plan…" : "Generate plan"}</Text></Pressable>
+            {newPlanMode === "manual" ? (
+              <>
+                <TextInput value={planName} onChangeText={setPlanName} placeholder="Plan name" placeholderTextColor="#655D57" style={styles.input} returnKeyType="next" />
+                <TextInput value={description} onChangeText={setDescription} placeholder="Description (optional)" placeholderTextColor="#655D57" style={styles.input} onSubmitEditing={() => void run(createPlan, "Workout plan created.")} returnKeyType="done" />
+                <Pressable disabled={saving} onPress={() => void run(createPlan, "Workout plan created.")} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>Create plan</Text></Pressable>
+                <View style={styles.editorRule} />
+                <Text style={styles.editorLabel}>PLAN ASSISTANT</Text>
+                <Text style={styles.editorHint}>Describe the training you want, and build it from your saved exercise library.</Text>
+                <Pressable onPress={() => setNewPlanMode("ai")} style={styles.planSecondaryAction}><Text style={styles.planSecondaryActionText}>Plan with AI</Text></Pressable>
+              </>
             ) : (
-              <ScrollView style={styles.aiDraftScroll} contentContainerStyle={styles.aiDraft}>
-                <Text style={styles.editorLabel}>DRAFT PLAN</Text>
-                <Text style={styles.aiDraftTitle}>{aiDraft.name}</Text>
-                {aiDraft.description ? <Text style={styles.editorHint}>{aiDraft.description}</Text> : null}
-                {aiDraft.days.map((day) => (
-                  <View key={day.name} style={styles.aiDraftDay}>
-                    <Text style={styles.aiDraftDayTitle}>{day.name}</Text>
-                    {day.exercises.map((exercise, index) => {
-                      const catalogExercise = record.exercises.find((candidate) => candidate.id === exercise.exerciseId);
-                      const prescription = exercise.targetReps ? `${exercise.targetSets} × ${exercise.targetReps}` : `${exercise.targetSets} sets`;
-                      return <Text key={`${day.name}-${exercise.exerciseId}-${index}`} style={styles.aiDraftExercise}>{catalogExercise?.name ?? "Saved exercise"} · {prescription}{exercise.targetWeight ? ` · ${exercise.targetWeight} ${record.settings.weight_unit}` : ""}</Text>;
-                    })}
-                  </View>
-                ))}
-                <Pressable disabled={saving} onPress={() => void importAiPlan()} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{saving ? "Adding plan…" : "Add this plan"}</Text></Pressable>
-                <Pressable disabled={saving || generatingPlan} onPress={() => { setAiDraft(null); }} style={styles.planSecondaryAction}><Text style={styles.planSecondaryActionText}>Start over</Text></Pressable>
-              </ScrollView>
+              <>
+                <Text style={styles.editorHint}>Tell it your goal, days available, experience, equipment, and any limits. It will build from your saved exercise library.</Text>
+                {!aiDraft ? (
+                  <>
+                    <TextInput value={aiPrompt} onChangeText={setAiPrompt} multiline placeholder="Example: I have three days, dumbbells and a bench. I want to build strength without aggravating my knee." placeholderTextColor="#655D57" style={[styles.input, styles.aiPromptInput]} textAlignVertical="top" />
+                    <Pressable disabled={generatingPlan} onPress={() => void generateAiPlan()} style={[styles.planPrimaryAction, generatingPlan && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{generatingPlan ? "Building plan…" : "Generate plan"}</Text></Pressable>
+                  </>
+                ) : (
+                  <ScrollView style={styles.aiDraftScroll} contentContainerStyle={styles.aiDraft}>
+                    <Text style={styles.editorLabel}>DRAFT PLAN</Text>
+                    <Text style={styles.aiDraftTitle}>{aiDraft.name}</Text>
+                    {aiDraft.description ? <Text style={styles.editorHint}>{aiDraft.description}</Text> : null}
+                    {aiDraft.days.map((day) => (
+                      <View key={day.name} style={styles.aiDraftDay}>
+                        <Text style={styles.aiDraftDayTitle}>{day.name}</Text>
+                        {day.exercises.map((exercise, index) => {
+                          const catalogExercise = record.exercises.find((candidate) => candidate.id === exercise.exerciseId);
+                          const prescription = exercise.targetReps ? `${exercise.targetSets} × ${exercise.targetReps}` : `${exercise.targetSets} sets`;
+                          return <Text key={`${day.name}-${exercise.exerciseId}-${index}`} style={styles.aiDraftExercise}>{catalogExercise?.name ?? "Saved exercise"} · {prescription}{exercise.targetWeight ? ` · ${exercise.targetWeight} ${record.settings.weight_unit}` : ""}</Text>;
+                        })}
+                      </View>
+                    ))}
+                    <Pressable disabled={saving} onPress={() => void importAiPlan()} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{saving ? "Adding plan…" : "Add this plan"}</Text></Pressable>
+                    <Pressable disabled={saving || generatingPlan} onPress={() => setAiDraft(null)} style={styles.planSecondaryAction}><Text style={styles.planSecondaryActionText}>Start over</Text></Pressable>
+                  </ScrollView>
+                )}
+                <Pressable disabled={saving || generatingPlan} onPress={() => setNewPlanMode("manual")} style={styles.planSecondaryAction}><Text style={styles.planSecondaryActionText}>Build manually</Text></Pressable>
+              </>
             )}
           </View>
         </View>
@@ -2640,6 +2707,27 @@ export function LegacyNutritionContent({
   );
 }
 
+function fastElapsed(minutes: number) {
+  const days = Math.floor(minutes / (60 * 24));
+  const hours = Math.floor((minutes % (60 * 24)) / 60);
+  const remainder = Math.max(0, minutes % 60);
+  return days ? `${days}d ${String(hours).padStart(2, "0")}:${String(remainder).padStart(2, "0")}` : `${String(hours).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+}
+
+function fastTime(value: string) {
+  return new Date(value).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+function fastStartLabel(value: string) {
+  const started = new Date(value);
+  const today = new Date();
+  const midnight = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const difference = Math.round((midnight(today) - midnight(started)) / 86_400_000);
+  if (difference === 0) return `Started today at ${fastTime(value)}`;
+  if (difference === 1) return `Started yesterday at ${fastTime(value)}`;
+  return `Started ${started.toLocaleDateString(undefined, { month: "short", day: "numeric" })} at ${fastTime(value)}`;
+}
+
 function FastingContent({
   record,
   refresh,
@@ -2648,86 +2736,133 @@ function FastingContent({
   refresh: () => Promise<void>;
 }) {
   const [note, setNote] = useState("");
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [customTargetOpen, setCustomTargetOpen] = useState(false);
+  const [customTargetHours, setCustomTargetHours] = useState("");
+  const [targetMinutes, setTargetMinutes] = useState<number | null>(16 * 60);
+  const [endConfirmOpen, setEndConfirmOpen] = useState(false);
+  const [fastDeleteTarget, setFastDeleteTarget] = useState<TransmuteRecord["fasting"]["logs"][number] | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!record.fasting.active) return;
-    const interval = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(interval);
-  }, [record.fasting.active]);
-  const activeMinutes = record.fasting.active
-    ? Math.max(0, Math.floor((now - new Date(record.fasting.active.started_at).getTime()) / 60_000))
+  const { width } = useWindowDimensions();
+  const active = record.fasting.active;
+  const activeMinutes = active
+    ? Math.max(0, Math.floor((now - new Date(active.started_at).getTime()) / 60_000))
     : 0;
-  const toggle = async () => {
+  const activeTargetMinutes = active?.target_minutes ?? null;
+  const progress = activeTargetMinutes ? Math.min(1, activeMinutes / activeTargetMinutes) : null;
+  const endAt = active && activeTargetMinutes ? new Date(new Date(active.started_at).getTime() + activeTargetMinutes * 60_000) : null;
+  const remainingMinutes = activeTargetMinutes ? Math.max(0, activeTargetMinutes - activeMinutes) : null;
+
+  useEffect(() => {
+    if (!active) return;
+    const interval = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(interval);
+  }, [active]);
+
+  const revealNote = () => {
+    setNote((current) => current || active?.note || "");
+    setNoteOpen(true);
+  };
+
+  const startFast = async () => {
+    const customHours = Number(customTargetHours);
+    const resolvedTarget = customTargetOpen
+      ? Number.isFinite(customHours) && customHours > 0 ? Math.round(customHours * 60) : null
+      : targetMinutes;
+    if (customTargetOpen && (!resolvedTarget || resolvedTarget > 60 * 24 * 7)) {
+      setNotice("Enter a target between 1 minute and 7 days.");
+      return;
+    }
     setSaving(true);
     setNotice(null);
     try {
-      await updateFasting({
-        action: record.fasting.active ? "end" : "start",
-        note: note.trim() || undefined,
-      });
+      await updateFasting({ action: "start", note: note.trim() || undefined, targetMinutes: resolvedTarget ?? undefined });
       setNote("");
+      setNoteOpen(false);
       await refresh();
-      setNotice(
-        record.fasting.active ? "Fast ended and saved." : "Fast started.",
-      );
+      setNotice("Fast started.");
     } catch (reason) {
-      setNotice(
-        reason instanceof Error ? reason.message : "Unable to update the fast.",
-      );
+      setNotice(reason instanceof Error ? reason.message : "Unable to start the fast.");
     } finally {
       setSaving(false);
     }
   };
+
+  const endFast = async () => {
+    setSaving(true);
+    setNotice(null);
+    try {
+      const result = await updateFasting({ action: "end", note: note.trim() || undefined });
+      setNote("");
+      setNoteOpen(false);
+      setEndConfirmOpen(false);
+      await refresh();
+      setNotice(result.discarded ? "Fast under 5 minutes discarded." : "Fast ended and saved.");
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "Unable to end the fast.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteFast = async () => {
+    if (!fastDeleteTarget) return;
+    setSaving(true);
+    setNotice(null);
+    try {
+      await deleteFastingLog(fastDeleteTarget.id);
+      await refresh();
+      setFastDeleteTarget(null);
+      setNotice("Fast removed.");
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "Unable to remove the fast.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <>
       <Text style={styles.eyebrow}>THE INTERVAL</Text>
       <Text style={styles.title}>Fasting</Text>
-      <Text style={styles.body}>
-        {record.fasting.active
-          ? `${durationFromMinutes(activeMinutes)} elapsed · active since ${date(record.fasting.active.started_at)}.`
-          : "No active fast."}
-      </Text>
-      <View style={styles.formCard}>
-        <Text style={styles.cardTitle}>
-          {record.fasting.active ? "End active fast" : "Start a fast"}
-        </Text>
-        <TextInput
-          value={note}
-          onChangeText={setNote}
-          placeholder="Note (optional)"
-          placeholderTextColor="#655D57"
-          style={styles.input}
-          onSubmitEditing={() => void toggle()}
-          returnKeyType="done"
-        />
-        <Pressable
-          disabled={saving}
-          onPress={() => void toggle()}
-          style={[styles.actionButton, saving && styles.buttonDisabled]}
-        >
-          <Text style={styles.actionButtonText}>
-            {record.fasting.active ? "End fast" : "Start fast"}
-          </Text>
-        </Pressable>
-      </View>
+      {active ? (
+        <View style={styles.fastHero}>
+          <FastingHourglass progress={progress} size={Math.min(166, Math.max(128, width - 190))} />
+          <Text style={styles.fastElapsed}>{fastElapsed(activeMinutes)}</Text>
+          <Text style={styles.fastElapsedLabel}>{activeTargetMinutes ? "ELAPSED" : "OPEN-ENDED FAST"}</Text>
+          <Text style={styles.fastTimestamp}>{fastStartLabel(active.started_at)}</Text>
+          {activeTargetMinutes && endAt && progress !== null ? <View style={styles.fastTarget}>
+            <Text style={styles.fastTargetTitle}>Target {durationFromMinutes(activeTargetMinutes)}</Text>
+            <Text style={styles.fastTargetMeta}>Ends {fastStartLabel(endAt.toISOString()).replace("Started ", "")}</Text>
+            <View style={styles.fastProgressTrack}><View style={[styles.fastProgressFill, { width: `${Math.round(progress * 100)}%` }]} /></View>
+            <Text style={styles.fastProgressLabel}>{Math.round(progress * 100)}% complete · {durationFromMinutes(remainingMinutes ?? 0)} remaining</Text>
+          </View> : null}
+          <Pressable disabled={saving} onPress={() => setEndConfirmOpen(true)} style={[styles.actionButton, styles.fastEndButton, saving && styles.buttonDisabled]}><Text style={styles.actionButtonText}>End Fast</Text></Pressable>
+          {noteOpen ? <View style={styles.fastNoteEditor}><TextInput value={note} onChangeText={setNote} placeholder="Add a note" placeholderTextColor="#655D57" style={styles.input} returnKeyType="done" /><Pressable onPress={() => setNoteOpen(false)}><Text style={styles.editorRemoveText}>Hide note</Text></Pressable></View> : <Pressable onPress={revealNote} style={styles.fastNoteAction}><Text style={styles.editorRemoveText}>{active.note ? "Edit Note" : "+ Add a Note"}</Text></Pressable>}
+        </View>
+      ) : (
+        <View style={styles.fastStart}>
+          <Text style={styles.fastStartTitle}>Begin an interval.</Text>
+          <Text style={styles.editorHint}>Choose a target or keep this fast open-ended.</Text>
+          <View style={styles.fastTargets}>
+            {[12, 14, 16, 18].map((hours) => <Pressable key={hours} onPress={() => { setTargetMinutes(hours * 60); setCustomTargetOpen(false); }} style={[styles.fastTargetOption, !customTargetOpen && targetMinutes === hours * 60 && styles.fastTargetOptionActive]}><Text style={[styles.fastTargetOptionText, !customTargetOpen && targetMinutes === hours * 60 && styles.fastTargetOptionTextActive]}>{hours}h</Text></Pressable>)}
+            <Pressable onPress={() => { setTargetMinutes(null); setCustomTargetOpen(false); }} style={[styles.fastTargetOption, !customTargetOpen && targetMinutes === null && styles.fastTargetOptionActive]}><Text style={[styles.fastTargetOptionText, !customTargetOpen && targetMinutes === null && styles.fastTargetOptionTextActive]}>Open-ended</Text></Pressable>
+            <Pressable onPress={() => setCustomTargetOpen(true)} style={[styles.fastTargetOption, customTargetOpen && styles.fastTargetOptionActive]}><Text style={[styles.fastTargetOptionText, customTargetOpen && styles.fastTargetOptionTextActive]}>Custom</Text></Pressable>
+          </View>
+          {customTargetOpen ? <TextInput value={customTargetHours} onChangeText={setCustomTargetHours} keyboardType="decimal-pad" placeholder="Target hours" placeholderTextColor="#655D57" style={styles.input} /> : null}
+          {noteOpen ? <View style={styles.fastNoteEditor}><TextInput value={note} onChangeText={setNote} placeholder="Add a note" placeholderTextColor="#655D57" style={styles.input} /><Pressable onPress={() => setNoteOpen(false)}><Text style={styles.editorRemoveText}>Hide note</Text></Pressable></View> : <Pressable onPress={revealNote} style={styles.fastNoteAction}><Text style={styles.editorRemoveText}>+ Add a Note</Text></Pressable>}
+          <Pressable disabled={saving} onPress={() => void startFast()} style={[styles.actionButton, styles.fastEndButton, saving && styles.buttonDisabled]}><Text style={styles.actionButtonText}>Start Fast</Text></Pressable>
+        </View>
+      )}
       {notice ? <Text style={styles.notice}>{notice}</Text> : null}
       <Text style={[styles.eyebrow, styles.section]}>FAST HISTORY</Text>
-      {record.fasting.logs.length ? (
-        record.fasting.logs.map((fast) => (
-          <Card
-            key={fast.id}
-            title={`${fast.duration_minutes} minutes`}
-            meta={`${date(fast.ended_at)}${fast.note ? ` · ${fast.note}` : ""}`}
-          />
-        ))
-      ) : (
-        <Card
-          title="No fasting history"
-          meta="Completed fasts will appear here."
-        />
-      )}
+      {record.fasting.logs.length ? <View style={styles.fastHistory}>
+        {record.fasting.logs.map((fast) => <View key={fast.id} style={styles.fastHistoryRow}><Text style={styles.fastHistoryDate}>{new Date(fast.ended_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }).toUpperCase()}</Text><View style={styles.fastHistoryCopy}><Text style={styles.fastHistoryDuration}>{durationFromMinutes(fast.duration_minutes)}</Text><Text style={styles.fastHistoryMeta}>{fastTime(fast.started_at)} — {fastTime(fast.ended_at)}</Text>{fast.note ? <Text numberOfLines={1} style={styles.fastHistoryNote}>{fast.note}</Text> : null}</View><Pressable accessibilityRole="button" accessibilityLabel={`Remove fast from ${date(fast.ended_at)}`} disabled={saving} onPress={() => setFastDeleteTarget(fast)} style={styles.fastHistoryRemove}><Text style={styles.editorRemoveText}>Remove</Text></Pressable></View>)}
+      </View> : <View style={styles.fastEmptyHistory}><Text style={styles.fastEmptyTitle}>No completed fasts yet.</Text><Text style={styles.editorHint}>Your finished intervals will appear here.</Text></View>}
+      <Modal animationType="fade" transparent visible={endConfirmOpen} onRequestClose={() => setEndConfirmOpen(false)}><View style={styles.modalBackdrop}><View style={[styles.modalPanel, styles.confirmRemovalPanel]}><Text style={styles.editorLabel}>END THIS FAST?</Text><Text style={styles.modalTitle}>{fastElapsed(activeMinutes)} elapsed</Text><Text style={styles.editorHint}>Your interval will be saved to the fast history. Fasts under five minutes are discarded.</Text><View style={styles.confirmRemovalActions}><Pressable disabled={saving} onPress={() => setEndConfirmOpen(false)} style={[styles.planSecondaryAction, saving && styles.buttonDisabled]}><Text style={styles.planSecondaryActionText}>Keep Fasting</Text></Pressable><Pressable disabled={saving} onPress={() => void endFast()} style={[styles.confirmRemovalAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{saving ? "Ending…" : "End Fast"}</Text></Pressable></View></View></View></Modal>
+      <Modal animationType="fade" transparent visible={fastDeleteTarget !== null} onRequestClose={() => setFastDeleteTarget(null)}><View style={styles.modalBackdrop}><View style={[styles.modalPanel, styles.confirmRemovalPanel]}><Text style={styles.editorLabel}>REMOVE FAST</Text><Text style={styles.modalTitle}>Remove this record?</Text><Text style={styles.editorHint}>{fastDeleteTarget ? `${durationFromMinutes(fastDeleteTarget.duration_minutes)} completed on ${date(fastDeleteTarget.ended_at)} will be permanently removed.` : ""}</Text><View style={styles.confirmRemovalActions}><Pressable disabled={saving} onPress={() => setFastDeleteTarget(null)} style={[styles.planSecondaryAction, saving && styles.buttonDisabled]}><Text style={styles.planSecondaryActionText}>Cancel</Text></Pressable><Pressable disabled={saving} onPress={() => void deleteFast()} style={[styles.confirmRemovalAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{saving ? "Removing…" : "Remove Fast"}</Text></Pressable></View></View></View></Modal>
     </>
   );
 }
@@ -3193,6 +3328,36 @@ const styles = StyleSheet.create({
     marginTop: 22,
     padding: 16,
   },
+  fastHero: { alignItems: "center", gap: 9, marginTop: 18, maxWidth: 460, paddingBottom: 8 },
+  fastElapsed: { color: "#101015", fontSize: 42, fontWeight: "900", letterSpacing: -1.9, lineHeight: 46, marginTop: 2 },
+  fastElapsedLabel: { color: "#642D2A", fontFamily: "Courier", fontSize: 11, fontWeight: "800", letterSpacing: 1.8 },
+  fastTimestamp: { color: "#655D57", fontSize: 14, marginTop: 2 },
+  fastTarget: { alignSelf: "stretch", gap: 5, marginTop: 12 },
+  fastTargetTitle: { color: "#101015", fontSize: 16, fontWeight: "800", textAlign: "center" },
+  fastTargetMeta: { color: "#655D57", fontSize: 13, textAlign: "center" },
+  fastProgressTrack: { backgroundColor: "#D4C9B9", height: 3, marginTop: 8, overflow: "hidden" },
+  fastProgressFill: { backgroundColor: "#742F2A", height: "100%" },
+  fastProgressLabel: { color: "#642D2A", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 0.7, textAlign: "center" },
+  fastEndButton: { alignSelf: "stretch", marginTop: 14, maxWidth: 360 },
+  fastNoteAction: { alignSelf: "center", minHeight: 32, justifyContent: "center" },
+  fastNoteEditor: { alignSelf: "stretch", gap: 8, marginTop: 4, maxWidth: 360 },
+  fastStart: { gap: 12, marginTop: 22, maxWidth: 520 },
+  fastStartTitle: { color: "#101015", fontSize: 25, fontWeight: "900", letterSpacing: -1 },
+  fastTargets: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  fastTargetOption: { borderColor: "#101015", borderWidth: 1, minHeight: 42, justifyContent: "center", paddingHorizontal: 12 },
+  fastTargetOptionActive: { backgroundColor: "#101015" },
+  fastTargetOptionText: { color: "#101015", fontSize: 13, fontWeight: "800" },
+  fastTargetOptionTextActive: { color: "#F4EFE7" },
+  fastHistory: { borderTopColor: "#D4C9B9", borderTopWidth: 1, marginTop: 10 },
+  fastHistoryRow: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, flexDirection: "row", gap: 14, paddingVertical: 14 },
+  fastHistoryDate: { color: "#642D2A", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.1, paddingTop: 4, width: 58 },
+  fastHistoryCopy: { flex: 1, gap: 3 },
+  fastHistoryRemove: { alignSelf: "flex-start", minHeight: 34, justifyContent: "center", paddingLeft: 8 },
+  fastHistoryDuration: { color: "#101015", fontSize: 19, fontWeight: "900" },
+  fastHistoryMeta: { color: "#655D57", fontSize: 13 },
+  fastHistoryNote: { color: "#655D57", fontSize: 13, fontStyle: "italic", marginTop: 2 },
+  fastEmptyHistory: { gap: 6, marginTop: 12, paddingVertical: 12 },
+  fastEmptyTitle: { color: "#101015", fontSize: 18, fontWeight: "900" },
   planCard: {
     borderColor: "#101015",
     borderWidth: 1,
@@ -3202,20 +3367,19 @@ const styles = StyleSheet.create({
   },
   activePlanCard: { borderColor: "#642D2A", borderWidth: 2 },
   planSwitcher: {
-    alignItems: "center",
+    alignItems: "flex-start",
     borderBottomColor: "#D4C9B9",
     borderBottomWidth: 1,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
+    gap: 12,
     marginTop: 18,
     paddingBottom: 12,
   },
+  planSwitcherTabs: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: 8 },
   planSwitchItem: { minHeight: 40, justifyContent: "center", paddingHorizontal: 10 },
   planSwitchItemActive: { backgroundColor: "#101015" },
   planSwitchText: { color: "#655D57", fontSize: 13, fontWeight: "800" },
   planSwitchTextActive: { color: "#F4EFE7" },
-  planSwitchAdd: { minHeight: 40, justifyContent: "center", marginLeft: "auto", paddingHorizontal: 8 },
+  planSwitchAdd: { minHeight: 40, justifyContent: "center", paddingHorizontal: 8 },
   planSwitchAddText: { color: "#642D2A", fontSize: 13, fontWeight: "800", textDecorationColor: "#A95B5B", textDecorationLine: "underline" },
   planHeader: {
     borderBottomColor: "#101015",
@@ -3229,21 +3393,21 @@ const styles = StyleSheet.create({
   planHeaderMeta: { color: "#642D2A", fontFamily: "Courier", fontSize: 12, fontWeight: "800", letterSpacing: 1, marginTop: 8 },
   planDescription: { color: "#655D57", fontSize: 15, lineHeight: 22, marginTop: 9 },
   planHeaderActions: { alignItems: "flex-start", flexDirection: "row", flexWrap: "wrap", gap: 9 },
+  planHeaderAction: { height: 46, minHeight: 46, width: 164 },
   planPrimaryAction: { alignItems: "center", backgroundColor: "#101015", justifyContent: "center", minHeight: 46, paddingHorizontal: 16 },
   planPrimaryActionText: { color: "#F4EFE7", fontSize: 14, fontWeight: "800" },
-  planSecondaryAction: { alignItems: "center", borderColor: "#101015", borderWidth: 1, justifyContent: "center", minHeight: 42, paddingHorizontal: 13 },
+  planSecondaryAction: { alignItems: "center", borderColor: "#101015", borderWidth: 1, justifyContent: "center", minHeight: 46, paddingHorizontal: 13 },
   planSecondaryActionText: { color: "#101015", fontSize: 13, fontWeight: "800" },
-  dayTabs: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 16 },
-  dayTab: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, minHeight: 40, justifyContent: "center", paddingHorizontal: 8 },
-  dayTabActive: { borderBottomColor: "#642D2A", borderBottomWidth: 3 },
-  dayTabText: { color: "#655D57", fontSize: 14, fontWeight: "700" },
-  dayTabTextActive: { color: "#101015", fontWeight: "900" },
+  dayNavigator: { alignItems: "center", borderBottomColor: "#D4C9B9", borderBottomWidth: 1, borderTopColor: "#101015", borderTopWidth: 1, flexDirection: "row", justifyContent: "space-between", marginTop: 16, minHeight: 68 },
+  dayNavigatorButton: { alignItems: "center", height: 48, justifyContent: "center", width: 48 },
+  dayNavigatorCopy: { alignItems: "center", flex: 1, gap: 3, paddingHorizontal: 10 },
+  dayNavigatorLabel: { color: "#642D2A", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },
+  dayNavigatorTitle: { color: "#101015", fontSize: 17, fontWeight: "900" },
   planWorkspace: { borderTopColor: "#101015", borderTopWidth: 1, marginTop: 12 },
   planWorkspaceDesktop: { flexDirection: "row" },
   exerciseLedger: { flex: 1, paddingTop: 18 },
   ledgerHeader: { alignItems: "flex-start", flexDirection: "row", gap: 12, justifyContent: "space-between", paddingBottom: 10 },
   ledgerDayName: { fontSize: 23, fontWeight: "900", letterSpacing: -1, minWidth: 180, paddingBottom: 5, paddingTop: 0 },
-  ledgerCount: { color: "#655D57", fontSize: 13, paddingTop: 18 },
   ledgerList: { borderTopColor: "#D4C9B9", borderTopWidth: 1 },
   ledgerRow: { alignItems: "center", borderBottomColor: "#D4C9B9", borderBottomWidth: 1, flexDirection: "row", gap: 10, minHeight: 60, paddingHorizontal: 4, paddingVertical: 9 },
   ledgerRowActive: { backgroundColor: "#E8DED2" },
@@ -3284,6 +3448,9 @@ const styles = StyleSheet.create({
   modalTitle: { color: "#101015", fontSize: 25, fontWeight: "900", letterSpacing: -1, marginTop: 6 },
   modalPlanName: { color: "#655D57", fontSize: 14, marginTop: 5 },
   modalClose: { minHeight: 40, justifyContent: "center", paddingHorizontal: 4 },
+  confirmRemovalPanel: { maxWidth: 500 },
+  confirmRemovalActions: { flexDirection: "row", flexWrap: "wrap", gap: 10, justifyContent: "flex-end", marginTop: 4 },
+  confirmRemovalAction: { alignItems: "center", backgroundColor: "#A95B5B", justifyContent: "center", minHeight: 42, paddingHorizontal: 16 },
   aiPromptInput: { minHeight: 128, paddingTop: 12 },
   aiDraftScroll: { maxHeight: 480 },
   aiDraft: { gap: 12, paddingBottom: 4 },
