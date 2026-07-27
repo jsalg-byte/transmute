@@ -137,13 +137,17 @@ function apiBaseUrl() {
 }
 
 async function request<T>(path: string, init: RequestInit = {}) {
+  const headers: Record<string, string> = {
+    accept: 'application/json',
+    ...(init.headers as Record<string, string> | undefined),
+  };
+  if (init.body !== undefined && !Object.keys(headers).some((header) => header.toLowerCase() === 'content-type')) {
+    headers['content-type'] = 'application/json';
+  }
+
   const response = await fetch(`${apiBaseUrl()}${path}`, {
     ...init,
-    headers: {
-      accept: 'application/json',
-      'content-type': 'application/json',
-      ...init.headers,
-    },
+    headers,
   });
 
   const payload = (await response.json().catch(() => null)) as T | ApiErrorPayload | null;
