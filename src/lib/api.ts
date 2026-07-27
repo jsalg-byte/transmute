@@ -44,6 +44,11 @@ export type TransmuteRecord = {
       dayName: string;
       exerciseCount: number;
     } | null;
+    recoverySessions: {
+      endedAt: string;
+      muscleGroup: string | null;
+      workingSetCount: number;
+    }[];
   };
   workoutPlans: {
     id: string;
@@ -91,11 +96,16 @@ export type TransmuteRecord = {
     }[];
     meals: {
       id: string;
+      food_id: string;
       name: string;
       meal_type: string;
       quantity: string;
       consumed_at: string;
       calories_kcal: number;
+      protein_g: string;
+      carbs_g: string;
+      fat_g: string;
+      serving_size_g: string | null;
       imageUrl: string | null;
     }[];
   };
@@ -340,9 +350,22 @@ export async function startWorkoutSession(payload: { routineDayId: string; start
 
 export type WorkoutSessionDetail = {
   session: { id: string; status: string; startedAt: string; endedAt: string | null; routineName: string | null; dayName: string | null; weightUnit: 'kg' | 'lbs' };
-  exercises: { id: string; name: string; category: string; muscleGroup: string | null; targetReps: number | null; targetWeight: string | null }[];
-  libraryExercises: { id: string; name: string; category: string; muscleGroup: string | null }[];
+  exercises: { id: string; name: string; category: string; muscleGroup: string | null; targetSets: number | null; targetReps: number | null; targetWeight: string | null; demoUrl: string | null; demoSourceName: string | null }[];
+  libraryExercises: { id: string; name: string; category: string; muscleGroup: string | null; demoUrl: string | null; demoSourceName: string | null }[];
   sets: { id: string; exerciseId: string; setOrder: number; reps: number; weight: string | number | null; isWarmup: boolean; createdAt: string }[];
+  previousPerformances: { exerciseId: string; startedAt: string; order: number; reps: number; weight: string | number | null }[];
+};
+
+export type CalistreeExercise = {
+  name: string;
+  slug: string;
+};
+
+export type CalistreeExerciseMetadata = CalistreeExercise & {
+  category: 'strength' | 'cardio' | 'mobility';
+  muscleGroup: string | null;
+  videoUrl: string | null;
+  sourceUrl: string;
 };
 
 export type SharedWorkoutSession = {
@@ -362,6 +385,26 @@ export async function getSharedWorkoutSession(sessionId: string) {
 export async function addExerciseToWorkoutSession(sessionId: string, payload: { exerciseId: string; targetReps?: number; targetWeight?: number }) {
   return authenticatedRequest(`/v1/sessions/${sessionId}/exercises`, {
     method: 'POST', body: JSON.stringify(payload),
+  });
+}
+
+export async function searchCalistreeExercises(query: string) {
+  return authenticatedRequest<{ results: CalistreeExercise[] }>(`/v1/calistree/exercises?q=${encodeURIComponent(query)}`);
+}
+
+export async function getCalistreeExerciseMetadata(payload: { name?: string; slug?: string }) {
+  const query = new URLSearchParams();
+  if (payload.name) query.set('name', payload.name);
+  if (payload.slug) query.set('slug', payload.slug);
+  return authenticatedRequest<{ exercise: CalistreeExerciseMetadata }>(`/v1/calistree/exercise?${query.toString()}`);
+}
+
+export async function importCalistreeExerciseToWorkoutSession(sessionId: string, slug: string) {
+  return authenticatedRequest<{
+    entry: { id: string; exerciseId: string; name: string; category: string; muscleGroup: string | null };
+    exercise: { id: string; name: string; category: string; muscleGroup: string | null; demoUrl: string | null; demoSourceName: string | null };
+  }>(`/v1/sessions/${sessionId}/calistree-exercises`, {
+    method: 'POST', body: JSON.stringify({ slug }),
   });
 }
 

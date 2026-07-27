@@ -46,7 +46,8 @@
         {
           "cameraPermission": "Allow Transmute to scan food barcodes."
         }
-      ]
+      ],
+      "expo-video"
     ],
     "experiments": {
       "typedRoutes": true,

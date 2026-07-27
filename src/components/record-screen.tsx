@@ -1,11 +1,13 @@
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 import { openBrowserAsync } from "expo-web-browser";
+import { ArrowRight, MoreHorizontal, X } from "lucide-react-native";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Image,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -18,6 +20,9 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AlchemySvg } from "./alchemy-svg";
+import { MuscleHeatMap } from "./muscle-heat-map";
+import { NutritionContent as NutritionWorkflow } from "./nutrition-content";
+import { deriveRecovery } from "../lib/recovery";
 import {
   acceptFriendRequest,
   addExerciseToWorkoutPlanDay,
@@ -76,14 +81,14 @@ const nav = [
 
 const primaryNav = [
   ["dashboard", "Home"],
-  ["workout-plans", "Plans"],
   ["sessions", "Train"],
+  ["nutrition", "Nutrition"],
   ["progress", "Progress"],
 ] as const;
 
 const moreNav = [
+  ["workout-plans", "Workout plans"],
   ["exercises", "Exercise library"],
-  ["nutrition", "Nutrition"],
   ["fasting", "Fasting"],
   ["friends", "Friend"],
   ["settings", "Settings"],
@@ -108,6 +113,53 @@ function label(value: string | null | undefined) {
 function date(value: string) {
   return new Date(value).toLocaleDateString();
 }
+const RECORD_TIME_ZONE = "America/New_York";
+const CALENDAR_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function recordDayKey(value: string | Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: RECORD_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(value));
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function dateFromRecordDayKey(key: string) {
+  const [year, month, day] = key.split("-").map(Number);
+  return new Date(year, month - 1, day, 12, 0, 0);
+}
+
+function calendarDayKey(value: Date) {
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+}
+
+function calendarMonthKey(value: Date) {
+  return calendarDayKey(value).slice(0, 7);
+}
+
+function startOfCalendarMonth(value: Date) {
+  return new Date(value.getFullYear(), value.getMonth(), 1, 12, 0, 0);
+}
+
+function addCalendarMonths(value: Date, offset: number) {
+  return new Date(value.getFullYear(), value.getMonth() + offset, 1, 12, 0, 0);
+}
+
+function calendarGrid(month: Date) {
+  const first = startOfCalendarMonth(month);
+  const start = new Date(first);
+  start.setDate(first.getDate() - first.getDay());
+  return Array.from({ length: 42 }, (_, index) => {
+    const value = new Date(start);
+    value.setDate(start.getDate() + index);
+    return value;
+  });
+}
+
 function dayKey(value: string) {
   const source = new Date(value);
   return `${source.getFullYear()}-${String(source.getMonth() + 1).padStart(2, "0")}-${String(source.getDate()).padStart(2, "0")}`;
@@ -235,6 +287,7 @@ export function RecordScreen({ area }: { area: Area }) {
         <ScrollView
           contentContainerStyle={[
             styles.content,
+            area === "workout-plans" && isDesktop && styles.planPageContent,
             !isDesktop && {
               paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 28,
             },
@@ -363,16 +416,15 @@ function DashboardContent({
     const meals = record.nutrition.meals.filter((meal) =>
       isThisWeek(meal.consumed_at),
     );
-    const checkIns = record.progress.filter((checkIn) =>
-      isThisWeek(checkIn.captured_at),
-    );
     return {
-      checkIns: checkIns.length,
       meals: meals.length,
       sessions: sessions.length,
-      sets: sessions.reduce((total, session) => total + session.set_count, 0),
     };
-  }, [record.nutrition.meals, record.progress, record.sessions]);
+  }, [record.nutrition.meals, record.sessions]);
+  const recovery = useMemo(
+    () => deriveRecovery(record.dashboard.recoverySessions ?? []),
+    [record.dashboard.recoverySessions],
+  );
   const recent = useMemo<RecentRecordItem[]>(() => {
     const sessions = record.sessions.map((session) => ({
       id: `session-${session.id}`,
@@ -383,14 +435,14 @@ function DashboardContent({
     }));
     const meals = record.nutrition.meals.map((meal) => ({
       id: `meal-${meal.id}`,
-      title: "Nutrition logged",
+      title: "Meal recorded",
       meta: meal.name,
       timestamp: meal.consumed_at,
     }));
     const checkIns = record.progress.map((checkIn) => ({
       id: `progress-${checkIn.id}`,
-      title: "Progress check-in",
-      meta: checkIn.note?.trim() || "Visual record updated",
+      title: "Progress updated",
+      meta: checkIn.note?.trim() || "Progress photo added",
       timestamp: checkIn.captured_at,
     }));
     return [...sessions, ...meals, ...checkIns]
@@ -488,6 +540,37 @@ function DashboardContent({
         {notice ? <Text accessibilityRole="alert" style={styles.notice}>{notice}</Text> : null}
       </View>
 
+      <View style={[styles.recoveryRecord, isDesktop && styles.recoveryRecordDesktop]}>
+        <View style={styles.recoveryHeading}>
+          <Text style={styles.sectionLabel}>RECOVERY</Text>
+          <Text style={styles.recoveryIntro}>Based on completed working sets from the last 48 hours.</Text>
+        </View>
+        {recovery.hasCompletedWork ? (
+          <>
+            <View style={styles.recoveryMap}>
+              <MuscleHeatMap
+                muscleGroups={recovery.heatmapMuscleGroups}
+                label="RECOVERING NOW"
+                legend="Recovering now"
+              />
+            </View>
+            <View style={styles.recoveryDetails}>
+              <Text style={styles.recoverySubhead}>RECOVERING</Text>
+              {recovery.recovering.length ? recovery.recovering.map((group) => (
+                <View key={group.name} style={styles.recoveryRow}>
+                  <Text style={styles.recoveryGroup}>{group.name}</Text>
+                  <Text style={styles.recoveryEta}>Ready in ~{group.hoursRemaining}h</Text>
+                </View>
+              )) : <Text style={styles.recoveryEmpty}>Everything is ready for another session.</Text>}
+              <Text style={[styles.recoverySubhead, styles.recoveryReadyLabel]}>READY NOW</Text>
+              <Text style={styles.recoveryReady}>{recovery.ready.join(" · ")}</Text>
+            </View>
+          </>
+        ) : (
+          <Text style={styles.recoveryEmpty}>Complete a working set to start a simple recovery readout.</Text>
+        )}
+      </View>
+
       <View style={[styles.dashboardSecondary, isDesktop && styles.dashboardSecondaryDesktop]}>
         <View style={styles.weeklyRecord}>
           <Text style={styles.sectionLabel}>THIS WEEK</Text>
@@ -495,8 +578,8 @@ function DashboardContent({
             {[
               [weekly.sessions, "SESSIONS"],
               [weekly.meals, "MEALS"],
-              [weekly.checkIns, "CHECK-INS"],
-              [weekly.sets, "SETS LOGGED"],
+              [recovery.recovering.length, "RECOVERING"],
+              [recovery.hasCompletedWork ? recovery.ready.length : 0, "READY NOW"],
             ].map(([value, label], index) => (
               <View
                 key={label}
@@ -546,17 +629,17 @@ function AreaContent({
   if (area === "dashboard")
     return <DashboardContent record={r} isDesktop={isDesktop} />;
   if (area === "workout-plans")
-    return <WorkoutPlansContent record={r} refresh={refresh} />;
+    return <WorkoutPlansContent record={r} refresh={refresh} isDesktop={isDesktop} />;
   if (area === "exercises")
     return <ExercisesContent record={r} refresh={refresh} />;
   if (area === "sessions")
-    return <SessionsContent record={r} refresh={refresh} />;
+    return <SessionsContent record={r} refresh={refresh} isDesktop={isDesktop} />;
   if (area === "nutrition")
-    return <NutritionContent record={r} refresh={refresh} />;
+    return <NutritionWorkflow record={r} refresh={refresh} />;
   if (area === "fasting")
     return <FastingContent record={r} refresh={refresh} />;
   if (area === "progress")
-    return <ProgressContent record={r} refresh={refresh} />;
+    return <ProgressContent record={r} refresh={refresh} isDesktop={isDesktop} />;
   if (area === "friends")
     return <FriendsContent record={r} refresh={refresh} />;
   if (area === "settings")
@@ -567,22 +650,56 @@ function AreaContent({
 function WorkoutPlansContent({
   record,
   refresh,
+  isDesktop,
 }: {
   record: TransmuteRecord;
   refresh: () => Promise<void>;
+  isDesktop: boolean;
 }) {
   const [planName, setPlanName] = useState("");
   const [description, setDescription] = useState("");
   const [dayNames, setDayNames] = useState<Record<string, string>>({});
   const [renamedPlanNames, setRenamedPlanNames] = useState<Record<string, string>>({});
   const [renamedDayNames, setRenamedDayNames] = useState<Record<string, string>>({});
-  const [exerciseIds, setExerciseIds] = useState<Record<string, string>>({});
-  const [exerciseTargets, setExerciseTargets] = useState<
-    Record<string, { sets: string; reps: string; weight: string }>
-  >({});
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(
+    record.settings.active_routine_id ?? record.workoutPlans[0]?.id ?? null,
+  );
+  const [selectedDayId, setSelectedDayId] = useState<string | null>(null);
+  const [selectedExerciseId, setSelectedExerciseId] = useState<string | null>(null);
+  const [exerciseBrowserOpen, setExerciseBrowserOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [createPlanOpen, setCreatePlanOpen] = useState(false);
+  const [exerciseQuery, setExerciseQuery] = useState("");
+  const [pendingExerciseId, setPendingExerciseId] = useState<string | null>(null);
+  const [pendingTargets, setPendingTargets] = useState({ sets: "3", reps: "", weight: "" });
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const activePlanId = record.settings.active_routine_id;
+
+  const selectedPlan =
+    record.workoutPlans.find((plan) => plan.id === selectedPlanId) ??
+    record.workoutPlans[0] ??
+    null;
+  const orderedDays = selectedPlan
+    ? [...selectedPlan.days].sort((left, right) => left.sortOrder - right.sortOrder)
+    : [];
+  const selectedDay =
+    orderedDays.find((day) => day.id === selectedDayId) ?? orderedDays[0] ?? null;
+  const orderedExercises = selectedDay
+    ? [...selectedDay.exercises].sort((left, right) => left.sortOrder - right.sortOrder)
+    : [];
+  const selectedExercise =
+    orderedExercises.find((entry) => entry.id === selectedExerciseId) ?? null;
+  const pendingExercise =
+    record.exercises.find((exercise) => exercise.id === pendingExerciseId) ?? null;
+  const visibleExercises = record.exercises
+    .filter((exercise) => exercise.name.toLowerCase().includes(exerciseQuery.trim().toLowerCase()))
+    .slice(0, exerciseQuery.trim() ? 30 : 8);
+  const plannedSetCount = orderedDays.reduce(
+    (total, day) =>
+      total + day.exercises.reduce((dayTotal, entry) => dayTotal + (entry.targetSets ?? 3), 0),
+    0,
+  );
 
   const run = async (operation: () => Promise<unknown>, success: string) => {
     setSaving(true);
@@ -600,416 +717,395 @@ function WorkoutPlansContent({
     }
   };
 
-  return (
-    <>
-      <Text style={styles.eyebrow}>THE PROGRAM</Text>
-      <Text style={styles.title}>Workout plans</Text>
-      <Text style={styles.body}>Build the work before you perform it.</Text>
-      <View style={styles.formCard}>
-        <Text style={styles.cardTitle}>Create a plan</Text>
-        <TextInput
-          value={planName}
-          onChangeText={setPlanName}
-          placeholder="Plan name"
-          placeholderTextColor="#655D57"
-          style={styles.input}
-          returnKeyType="next"
-        />
-        <TextInput
-          value={description}
-          onChangeText={setDescription}
-          placeholder="Description (optional)"
-          placeholderTextColor="#655D57"
-          style={styles.input}
-          onSubmitEditing={() =>
-            void run(async () => {
-              const name = planName.trim();
-              if (name.length < 2)
-                throw new Error(
-                  "Enter a plan name with at least 2 characters.",
-                );
-              await createWorkoutPlan({
-                name,
-                description: description.trim() || undefined,
-              });
-              setPlanName("");
-              setDescription("");
-            }, "Workout plan created.")
-          }
-          returnKeyType="done"
-        />
+  const createPlan = async () => {
+    const name = planName.trim();
+    if (name.length < 2) throw new Error("Enter a plan name with at least 2 characters.");
+    const result = await createWorkoutPlan({
+      name,
+      description: description.trim() || undefined,
+    });
+    setSelectedPlanId(result.plan.id);
+    setPlanName("");
+    setDescription("");
+    setCreatePlanOpen(false);
+  };
+
+  const addDay = async () => {
+    if (!selectedPlan) return;
+    const dayName = (dayNames[selectedPlan.id] ?? "").trim();
+    if (dayName.length < 2) throw new Error("Enter a day name with at least 2 characters.");
+    const result = await addWorkoutPlanDay(selectedPlan.id, { dayName });
+    setDayNames((current) => ({ ...current, [selectedPlan.id]: "" }));
+    setSelectedDayId(result.day.id);
+  };
+
+  const addSelectedExercise = async () => {
+    if (!selectedDay || !pendingExercise) throw new Error("Choose an exercise first.");
+    const targetSets = Number(pendingTargets.sets);
+    const targetReps = pendingTargets.reps.trim() ? Number(pendingTargets.reps) : undefined;
+    const targetWeight = pendingTargets.weight.trim() ? Number(pendingTargets.weight) : undefined;
+    if (!Number.isInteger(targetSets) || targetSets < 1) {
+      throw new Error("Enter at least one target set.");
+    }
+    if (targetReps !== undefined && (!Number.isInteger(targetReps) || targetReps < 1)) {
+      throw new Error("Target reps must be a whole number.");
+    }
+    if (targetWeight !== undefined && (!Number.isFinite(targetWeight) || targetWeight < 0)) {
+      throw new Error("Target weight must be zero or greater.");
+    }
+    await addExerciseToWorkoutPlanDay(selectedDay.id, {
+      exerciseId: pendingExercise.id,
+      targetSets,
+      targetReps,
+      targetWeight,
+    });
+    setPendingExerciseId(null);
+    setPendingTargets({ sets: "3", reps: "", weight: "" });
+    setExerciseQuery("");
+    setExerciseBrowserOpen(false);
+  };
+
+  const startSelectedDay = async () => {
+    if (!selectedDay) return;
+    setSaving(true);
+    setNotice(null);
+    try {
+      const { session } = await startWorkoutSession({ routineDayId: selectedDay.id });
+      router.push(`/sessions/${session.id}`);
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "Unable to start the workout.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const prescriptionFor = (entry: NonNullable<typeof selectedExercise>) => {
+    const base = entry.targetReps ? `${entry.targetSets ?? 3} × ${entry.targetReps}` : `${entry.targetSets ?? 3} sets`;
+    return entry.targetWeight
+      ? `${base} · ${entry.targetWeight} ${record.settings.weight_unit}`
+      : base;
+  };
+
+  const selectedEditor = selectedExercise && selectedDay ? (
+    <View style={styles.exerciseEditor}>
+      <View style={styles.editorHeading}>
+        <View style={styles.editorCopy}>
+          <Text style={styles.editorLabel}>SELECTED EXERCISE</Text>
+          <Text style={styles.editorTitle}>{selectedExercise.name}</Text>
+          <Text style={styles.editorMeta}>
+            {[selectedExercise.muscleGroup, selectedExercise.category].filter(Boolean).join(" · ") || "Exercise"}
+          </Text>
+        </View>
+        {!isDesktop ? (
+          <Pressable accessibilityLabel="Close exercise editor" onPress={() => setSelectedExerciseId(null)} style={styles.editorClose}>
+            <Text style={styles.editorCloseText}>Close</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      <View style={styles.editorRule} />
+      <Text style={styles.editorFieldLabel}>PRESCRIPTION</Text>
+      <Text style={styles.editorValue}>{prescriptionFor(selectedExercise)}</Text>
+      <Text style={styles.editorHint}>
+        Targets are set when the exercise is added. Existing plan entries retain their recorded prescription.
+      </Text>
+      <View style={styles.editorActions}>
         <Pressable
-          disabled={saving}
+          accessibilityRole="button"
+          disabled={saving || selectedExercise.sortOrder === 0}
           onPress={() =>
-            void run(async () => {
-              const name = planName.trim();
-              if (name.length < 2)
-                throw new Error(
-                  "Enter a plan name with at least 2 characters.",
-                );
-              await createWorkoutPlan({
-                name,
-                description: description.trim() || undefined,
-              });
-              setPlanName("");
-              setDescription("");
-            }, "Workout plan created.")
+            void run(
+              () => reorderExerciseInWorkoutPlanDay(selectedExercise.id, "up"),
+              `${selectedExercise.name} moved up.`,
+            )
           }
-          style={({ pressed }) => [
-            styles.actionButton,
-            pressed && styles.buttonPressed,
-            saving && styles.buttonDisabled,
-          ]}
+          style={[styles.editorAction, (saving || selectedExercise.sortOrder === 0) && styles.buttonDisabled]}
         >
-          <Text style={styles.actionButtonText}>Create plan</Text>
+          <Text style={styles.editorActionText}>Move up</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          disabled={saving || selectedExercise.sortOrder === orderedExercises.length - 1}
+          onPress={() =>
+            void run(
+              () => reorderExerciseInWorkoutPlanDay(selectedExercise.id, "down"),
+              `${selectedExercise.name} moved down.`,
+            )
+          }
+          style={[styles.editorAction, (saving || selectedExercise.sortOrder === orderedExercises.length - 1) && styles.buttonDisabled]}
+        >
+          <Text style={styles.editorActionText}>Move down</Text>
         </Pressable>
       </View>
+      <Pressable
+        accessibilityRole="button"
+        disabled={saving}
+        onPress={() =>
+          void run(async () => {
+            await removeExerciseFromWorkoutPlanDay(selectedExercise.id);
+            setSelectedExerciseId(null);
+          }, `${selectedExercise.name} removed.`)
+        }
+        style={[styles.editorRemove, saving && styles.buttonDisabled]}
+      >
+        <Text style={styles.editorRemoveText}>Remove exercise</Text>
+      </Pressable>
+    </View>
+  ) : (
+    <View style={styles.editorEmpty}>
+      <Text style={styles.editorLabel}>SELECTED EXERCISE</Text>
+      <Text style={styles.ledgerEmptyTitle}>Choose a movement.</Text>
+      <Text style={styles.editorHint}>Select an exercise from the ledger to inspect its prescription or change its order.</Text>
+    </View>
+  );
+
+  return (
+    <>
       {notice ? <Text style={styles.notice}>{notice}</Text> : null}
+      <Text style={styles.eyebrow}>THE PLAN</Text>
       {record.workoutPlans.length ? (
-        record.workoutPlans.map((plan) => (
-          <View
-            key={plan.id}
-            style={[
-              styles.planCard,
-              activePlanId === plan.id && styles.activePlanCard,
-            ]}
-          >
-            <View style={styles.planHeading}>
-              <View style={styles.planTitleArea}>
-                <TextInput
-                  value={renamedPlanNames[plan.id] ?? plan.name}
-                  onChangeText={(value) =>
-                    setRenamedPlanNames((current) => ({
-                      ...current,
-                      [plan.id]: value,
-                    }))
-                  }
-                  style={[styles.input, styles.planNameInput]}
-                  returnKeyType="done"
-                  onSubmitEditing={() =>
-                    void run(() => {
-                      const name = (renamedPlanNames[plan.id] ?? plan.name).trim();
-                      if (name.length < 2) {
-                        throw new Error("Enter a workout plan name with at least 2 characters.");
-                      }
-                      return updateWorkoutPlan(plan.id, { name });
-                    }, "Workout plan renamed.")
-                  }
-                />
-                {plan.description ? (
-                  <Text style={styles.cardMeta}>{plan.description}</Text>
-                ) : null}
-              </View>
-              <View style={styles.planActions}>
-                <Pressable
-                  disabled={saving || activePlanId === plan.id}
-                  onPress={() =>
-                    void run(
-                      () => setActiveWorkoutPlan(plan.id),
-                      "Active workout plan updated.",
-                    )
-                  }
-                >
-                  <Text style={styles.inlineAction}>
-                    {activePlanId === plan.id ? "Active" : "Set active"}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  disabled={saving}
-                  onPress={() =>
-                    void run(() => deleteWorkoutPlan(plan.id), "Workout plan removed.")
-                  }
-                >
-                  <Text style={styles.destructiveAction}>Remove plan</Text>
-                </Pressable>
-              </View>
-            </View>
-            {plan.days.length ? (
-              plan.days
-                .sort((a, b) => a.sortOrder - b.sortOrder)
-                .map((day) => (
-                  <View key={day.id} style={styles.dayBlock}>
-                    <View style={styles.dayRow}>
-                      <TextInput
-                        value={renamedDayNames[day.id] ?? day.name}
-                        onChangeText={(value) =>
-                          setRenamedDayNames((current) => ({
-                            ...current,
-                            [day.id]: value,
-                          }))
-                        }
-                        style={[styles.input, styles.dayNameInput]}
-                        returnKeyType="done"
-                        onSubmitEditing={() =>
-                          void run(() => {
-                            const dayName = (renamedDayNames[day.id] ?? day.name).trim();
-                            if (dayName.length < 2) {
-                              throw new Error("Enter a day name with at least 2 characters.");
-                            }
-                            return updateWorkoutPlanDay(day.id, { dayName });
-                          }, "Workout day renamed.")
-                        }
-                      />
-                      <Text style={styles.dayMeta}>
-                        {day.exerciseCount} exercises
-                      </Text>
-                    </View>
-                    {day.exercises.length ? (
-                      <View style={styles.attachedExercises}>
-                        {day.exercises
-                          .sort((a, b) => a.sortOrder - b.sortOrder)
-                          .map((entry) => (
-                            <View key={entry.id} style={styles.attachedExercise}>
-                              <View style={styles.attachedExerciseText}>
-                                <Text style={styles.cardMeta}>{entry.name}</Text>
-                                <Text style={styles.dayMeta}>
-                                  {entry.targetSets ?? 3} sets
-                                  {entry.targetReps ? ` · ${entry.targetReps} reps` : ""}
-                                  {entry.targetWeight ? ` · ${entry.targetWeight} ${record.settings.weight_unit === "kg" ? "kg" : "lbs"}` : ""}
-                                </Text>
-                              </View>
-                              <View style={styles.attachedExerciseActions}>
-                                <Pressable
-                                  disabled={saving || entry.sortOrder === 0}
-                                  onPress={() =>
-                                    void run(
-                                      () => reorderExerciseInWorkoutPlanDay(entry.id, "up"),
-                                      `${entry.name} moved.`,
-                                    )
-                                  }
-                                >
-                                  <Text style={styles.inlineAction}>Up</Text>
-                                </Pressable>
-                                <Pressable
-                                  disabled={saving || entry.sortOrder === day.exercises.length - 1}
-                                  onPress={() =>
-                                    void run(
-                                      () => reorderExerciseInWorkoutPlanDay(entry.id, "down"),
-                                      `${entry.name} moved.`,
-                                    )
-                                  }
-                                >
-                                  <Text style={styles.inlineAction}>Down</Text>
-                                </Pressable>
-                                <Pressable
-                                  disabled={saving}
-                                  onPress={() =>
-                                    void run(
-                                      () => removeExerciseFromWorkoutPlanDay(entry.id),
-                                      `${entry.name} removed.`,
-                                    )
-                                  }
-                                >
-                                  <Text style={styles.destructiveAction}>Remove</Text>
-                                </Pressable>
-                              </View>
-                            </View>
-                          ))}
-                      </View>
-                    ) : null}
-                    {record.exercises.length ? (
-                      <>
-                        <View style={styles.exercisePicker}>
-                          {record.exercises.map((exercise) => (
-                            <Pressable
-                              key={exercise.id}
-                              onPress={() =>
-                                setExerciseIds((current) => ({
-                                  ...current,
-                                  [day.id]: exercise.id,
-                                }))
-                              }
-                              style={[
-                                styles.exerciseOption,
-                                exerciseIds[day.id] === exercise.id &&
-                                  styles.exerciseOptionActive,
-                              ]}
-                            >
-                              <Text
-                                style={[
-                                  styles.exerciseOptionText,
-                                  exerciseIds[day.id] === exercise.id &&
-                                    styles.exerciseOptionTextActive,
-                                ]}
-                              >
-                                {exercise.name}
-                              </Text>
-                            </Pressable>
-                          ))}
-                        </View>
-                        <View style={styles.macroRow}>
-                          <TextInput
-                            value={exerciseTargets[day.id]?.sets ?? "3"}
-                            onChangeText={(value) =>
-                              setExerciseTargets((current) => ({
-                                ...current,
-                                [day.id]: {
-                                  sets: value,
-                                  reps: current[day.id]?.reps ?? "",
-                                  weight: current[day.id]?.weight ?? "",
-                                },
-                              }))
-                            }
-                            keyboardType="number-pad"
-                            placeholder="Sets"
-                            placeholderTextColor="#655D57"
-                            style={[styles.input, styles.macroInput]}
-                          />
-                          <TextInput
-                            value={exerciseTargets[day.id]?.reps ?? ""}
-                            onChangeText={(value) =>
-                              setExerciseTargets((current) => ({
-                                ...current,
-                                [day.id]: {
-                                  sets: current[day.id]?.sets ?? "3",
-                                  reps: value,
-                                  weight: current[day.id]?.weight ?? "",
-                                },
-                              }))
-                            }
-                            keyboardType="number-pad"
-                            placeholder="Reps"
-                            placeholderTextColor="#655D57"
-                            style={[styles.input, styles.macroInput]}
-                          />
-                          <TextInput
-                            value={exerciseTargets[day.id]?.weight ?? ""}
-                            onChangeText={(value) =>
-                              setExerciseTargets((current) => ({
-                                ...current,
-                                [day.id]: {
-                                  sets: current[day.id]?.sets ?? "3",
-                                  reps: current[day.id]?.reps ?? "",
-                                  weight: value,
-                                },
-                              }))
-                            }
-                            keyboardType="decimal-pad"
-                            placeholder="Weight"
-                            placeholderTextColor="#655D57"
-                            style={[styles.input, styles.macroInput]}
-                          />
-                        </View>
-                        <Pressable
-                          disabled={saving || !exerciseIds[day.id]}
-                          onPress={() =>
-                            void run(async () => {
-                              const exerciseId = exerciseIds[day.id];
-                              if (!exerciseId)
-                                throw new Error("Choose an exercise first.");
-                              const targets = exerciseTargets[day.id];
-                              const targetSets = Number(targets?.sets ?? "3");
-                              const targetReps = targets?.reps.trim()
-                                ? Number(targets.reps)
-                                : undefined;
-                              const targetWeight = targets?.weight.trim()
-                                ? Number(targets.weight)
-                                : undefined;
-                              if (!Number.isInteger(targetSets) || targetSets < 1) {
-                                throw new Error("Enter at least one target set.");
-                              }
-                              if (targetReps !== undefined && (!Number.isInteger(targetReps) || targetReps < 1)) {
-                                throw new Error("Target reps must be a whole number.");
-                              }
-                              if (targetWeight !== undefined && (!Number.isFinite(targetWeight) || targetWeight < 0)) {
-                                throw new Error("Target weight must be zero or greater.");
-                              }
-                              await addExerciseToWorkoutPlanDay(day.id, {
-                                exerciseId,
-                                targetSets,
-                                targetReps,
-                                targetWeight,
-                              });
-                              setExerciseIds((current) => ({
-                                ...current,
-                                [day.id]: "",
-                              }));
-                              setExerciseTargets((current) => ({
-                                ...current,
-                                [day.id]: { sets: "3", reps: "", weight: "" },
-                              }));
-                            }, `${day.name} updated.`)
-                          }
-                        >
-                          <Text
-                            style={[
-                              styles.inlineAction,
-                              !exerciseIds[day.id] && styles.buttonDisabled,
-                            ]}
-                          >
-                            Add selected exercise
-                          </Text>
-                        </Pressable>
-                      </>
-                    ) : (
-                      <Text style={styles.cardMeta}>
-                        Create an exercise in Exercise library before attaching
-                        it.
-                      </Text>
-                    )}
-                    <Pressable
-                      disabled={saving}
-                      onPress={() =>
-                        void run(
-                          () => deleteWorkoutPlanDay(day.id),
-                          "Workout day removed.",
-                        )
-                      }
-                    >
-                      <Text style={styles.destructiveAction}>Remove day</Text>
-                    </Pressable>
-                  </View>
-                ))
-            ) : (
-              <Text style={styles.cardMeta}>No days in this plan yet.</Text>
-            )}
-            <View style={styles.addDayRow}>
-              <TextInput
-                value={dayNames[plan.id] ?? ""}
-                onChangeText={(value) =>
-                  setDayNames((current) => ({ ...current, [plan.id]: value }))
-                }
-                placeholder="New day name"
-                placeholderTextColor="#655D57"
-                style={[styles.input, styles.dayInput]}
-                onSubmitEditing={() =>
-                  void run(async () => {
-                    const dayName = (dayNames[plan.id] ?? "").trim();
-                    if (dayName.length < 2)
-                      throw new Error(
-                        "Enter a day name with at least 2 characters.",
-                      );
-                    await addWorkoutPlanDay(plan.id, { dayName });
-                    setDayNames((current) => ({ ...current, [plan.id]: "" }));
-                  }, "Workout day added.")
-                }
-                returnKeyType="done"
-              />
+        <>
+          <View style={styles.planSwitcher}>
+            {record.workoutPlans.map((plan) => (
               <Pressable
-                disabled={saving}
-                onPress={() =>
-                  void run(async () => {
-                    const dayName = (dayNames[plan.id] ?? "").trim();
-                    if (dayName.length < 2)
-                      throw new Error(
-                        "Enter a day name with at least 2 characters.",
-                      );
-                    await addWorkoutPlanDay(plan.id, { dayName });
-                    setDayNames((current) => ({ ...current, [plan.id]: "" }));
-                  }, "Workout day added.")
-                }
+                accessibilityRole="button"
+                accessibilityState={{ selected: selectedPlan?.id === plan.id }}
+                key={plan.id}
+                onPress={() => {
+                  setSelectedPlanId(plan.id);
+                  setSelectedExerciseId(null);
+                }}
+                style={[styles.planSwitchItem, selectedPlan?.id === plan.id && styles.planSwitchItemActive]}
               >
-                <Text style={styles.inlineAction}>Add day</Text>
+                <Text style={[styles.planSwitchText, selectedPlan?.id === plan.id && styles.planSwitchTextActive]}>{plan.name}</Text>
+              </Pressable>
+            ))}
+            <Pressable accessibilityRole="button" onPress={() => setCreatePlanOpen(true)} style={styles.planSwitchAdd}>
+              <Text style={styles.planSwitchAddText}>+ New plan</Text>
+            </Pressable>
+          </View>
+          {selectedPlan ? (
+            <>
+              <View style={styles.planHeader}>
+                <View style={styles.planHeaderCopy}>
+                  <Text style={styles.planHeaderTitle}>{selectedPlan.name}</Text>
+                  <Text style={styles.planHeaderMeta}>
+                    {orderedExercises.length} exercises · {plannedSetCount} working sets
+                  </Text>
+                  {selectedPlan.description ? <Text style={styles.planDescription}>{selectedPlan.description}</Text> : null}
+                </View>
+                <View style={styles.planHeaderActions}>
+                  <Pressable disabled={saving || !selectedDay} onPress={() => void startSelectedDay()} style={[styles.planPrimaryAction, (saving || !selectedDay) && styles.buttonDisabled]}>
+                    <Text style={styles.planPrimaryActionText}>Start workout</Text>
+                  </Pressable>
+                  <Pressable accessibilityRole="button" onPress={() => setDetailsOpen(true)} style={styles.planSecondaryAction}>
+                    <Text style={styles.planSecondaryActionText}>Edit details</Text>
+                  </Pressable>
+                </View>
+              </View>
+              <View style={styles.dayTabs}>
+                {orderedDays.map((day) => (
+                  <Pressable
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: selectedDay?.id === day.id }}
+                    key={day.id}
+                    onPress={() => {
+                      setSelectedDayId(day.id);
+                      setSelectedExerciseId(null);
+                    }}
+                    style={[styles.dayTab, selectedDay?.id === day.id && styles.dayTabActive]}
+                  >
+                    <Text style={[styles.dayTabText, selectedDay?.id === day.id && styles.dayTabTextActive]}>{day.name}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              {selectedDay ? (
+                <View style={[styles.planWorkspace, isDesktop && styles.planWorkspaceDesktop]}>
+                  <View style={styles.exerciseLedger}>
+                    <View style={styles.ledgerHeader}>
+                      <View>
+                        <Text style={styles.editorLabel}>EXERCISES</Text>
+                        <TextInput
+                          value={renamedDayNames[selectedDay.id] ?? selectedDay.name}
+                          onChangeText={(value) => setRenamedDayNames((current) => ({ ...current, [selectedDay.id]: value }))}
+                          style={[styles.input, styles.ledgerDayName]}
+                          returnKeyType="done"
+                          onSubmitEditing={() =>
+                            void run(() => {
+                              const dayName = (renamedDayNames[selectedDay.id] ?? selectedDay.name).trim();
+                              if (dayName.length < 2) throw new Error("Enter a day name with at least 2 characters.");
+                              return updateWorkoutPlanDay(selectedDay.id, { dayName });
+                            }, "Workout day renamed.")
+                          }
+                        />
+                      </View>
+                      <Text style={styles.ledgerCount}>{orderedExercises.length} movements</Text>
+                    </View>
+                    <View style={styles.ledgerList}>
+                      {orderedExercises.length ? orderedExercises.map((entry, index) => (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: selectedExercise?.id === entry.id }}
+                          key={entry.id}
+                          onPress={() => setSelectedExerciseId(entry.id)}
+                          style={[styles.ledgerRow, selectedExercise?.id === entry.id && styles.ledgerRowActive]}
+                        >
+                          <Text style={styles.dragHandle} accessibilityLabel={`Exercise ${index + 1}`}>≡</Text>
+                          <Text style={styles.ledgerOrder}>{String(index + 1).padStart(2, "0")}</Text>
+                          <View style={styles.ledgerRowCopy}>
+                            <Text style={styles.ledgerExerciseName}>{entry.name}</Text>
+                            <Text style={styles.ledgerExerciseMeta}>{prescriptionFor(entry)}</Text>
+                          </View>
+                          <Text style={styles.ledgerSelect}>›</Text>
+                        </Pressable>
+                      )) : (
+                        <View style={styles.ledgerEmpty}>
+                          <Text style={styles.ledgerEmptyTitle}>This day is blank.</Text>
+                          <Text style={styles.editorHint}>Add a movement from your exercise library to begin building the session.</Text>
+                        </View>
+                      )}
+                    </View>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={!record.exercises.length}
+                      onPress={() => setExerciseBrowserOpen(true)}
+                      style={[styles.addExerciseAction, !record.exercises.length && styles.buttonDisabled]}
+                    >
+                      <Text style={styles.addExerciseActionText}>+ Add exercise</Text>
+                    </Pressable>
+                    {!record.exercises.length ? <Text style={styles.editorHint}>Create an exercise in Exercise library before adding it to a plan.</Text> : null}
+                  </View>
+                  {isDesktop ? selectedEditor : null}
+                </View>
+              ) : (
+                <View style={styles.ledgerEmpty}>
+                  <Text style={styles.ledgerEmptyTitle}>No training days yet.</Text>
+                  <Text style={styles.editorHint}>Use Edit details to add the first day to this plan.</Text>
+                </View>
+              )}
+            </>
+          ) : null}
+        </>
+      ) : (
+        <View style={styles.planEmptyState}>
+          <Text style={styles.title}>Build your first plan.</Text>
+          <Text style={styles.body}>A plan keeps the training days, movements, and evidence in one working record.</Text>
+          <Pressable onPress={() => setCreatePlanOpen(true)} style={styles.planPrimaryAction}>
+            <Text style={styles.planPrimaryActionText}>Create plan</Text>
+          </Pressable>
+        </View>
+      )}
+
+      <Modal animationType="fade" transparent visible={exerciseBrowserOpen} onRequestClose={() => setExerciseBrowserOpen(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.editorLabel}>ADD EXERCISE</Text>
+                <Text style={styles.modalTitle}>{selectedDay?.name ?? "Workout day"}</Text>
+              </View>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close exercise browser" onPress={() => setExerciseBrowserOpen(false)} style={styles.modalClose}>
+                <X color="#642D2A" size={19} strokeWidth={2.4} />
               </Pressable>
             </View>
+            <TextInput value={exerciseQuery} onChangeText={setExerciseQuery} placeholder="Search exercises…" placeholderTextColor="#655D57" autoCapitalize="none" style={styles.searchInput} />
+            <Text style={styles.editorLabel}>{exerciseQuery.trim() ? "SEARCH RESULTS" : "AVAILABLE EXERCISES"}</Text>
+            <ScrollView style={styles.exerciseResults} keyboardShouldPersistTaps="handled">
+              {visibleExercises.map((exercise) => (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: pendingExercise?.id === exercise.id }}
+                  key={exercise.id}
+                  onPress={() => setPendingExerciseId(exercise.id)}
+                  style={[styles.exerciseResult, pendingExercise?.id === exercise.id && styles.exerciseResultActive]}
+                >
+                  <View>
+                    <Text style={[styles.exerciseResultName, pendingExercise?.id === exercise.id && styles.exerciseResultNameActive]}>{exercise.name}</Text>
+                    <Text style={[styles.exerciseResultMeta, pendingExercise?.id === exercise.id && styles.exerciseResultMetaActive]}>{[exercise.muscle_group, exercise.category].filter(Boolean).join(" · ") || "Exercise"}</Text>
+                  </View>
+                  <Text style={[styles.exerciseResultAdd, pendingExercise?.id === exercise.id && styles.exerciseResultNameActive]}>Select</Text>
+                </Pressable>
+              ))}
+              {!visibleExercises.length ? <Text style={styles.editorHint}>No exercises match that search.</Text> : null}
+            </ScrollView>
+            {pendingExercise ? (
+              <View style={styles.addExerciseDetails}>
+                <Text style={styles.addExerciseSelected}>{pendingExercise.name}</Text>
+                <View style={styles.macroRow}>
+                  <TextInput value={pendingTargets.sets} onChangeText={(sets) => setPendingTargets((current) => ({ ...current, sets }))} keyboardType="number-pad" placeholder="Sets" placeholderTextColor="#655D57" style={[styles.input, styles.macroInput]} />
+                  <TextInput value={pendingTargets.reps} onChangeText={(reps) => setPendingTargets((current) => ({ ...current, reps }))} keyboardType="number-pad" placeholder="Reps" placeholderTextColor="#655D57" style={[styles.input, styles.macroInput]} />
+                  <TextInput value={pendingTargets.weight} onChangeText={(weight) => setPendingTargets((current) => ({ ...current, weight }))} keyboardType="decimal-pad" placeholder={`Weight (${record.settings.weight_unit})`} placeholderTextColor="#655D57" style={[styles.input, styles.macroInput]} />
+                </View>
+                <Pressable disabled={saving} onPress={() => void run(addSelectedExercise, `${pendingExercise.name} added.`)} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}>
+                  <Text style={styles.planPrimaryActionText}>Add to {selectedDay?.name}</Text>
+                </Pressable>
+              </View>
+            ) : null}
           </View>
-        ))
-      ) : (
-        <Card
-          title="No workout plans yet"
-          meta="Your first plan will appear here."
-        />
-      )}
+        </View>
+      </Modal>
+
+      <Modal animationType="fade" transparent visible={detailsOpen} onRequestClose={() => setDetailsOpen(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}>
+            <View style={styles.modalHeader}>
+              <View><Text style={styles.editorLabel}>PLAN DETAILS</Text><Text style={styles.modalTitle}>{selectedPlan?.name}</Text></View>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close plan details" onPress={() => setDetailsOpen(false)} style={styles.modalClose}><X color="#642D2A" size={19} strokeWidth={2.4} /></Pressable>
+            </View>
+            {selectedPlan ? (
+              <>
+                <Text style={styles.editorFieldLabel}>PLAN NAME</Text>
+                <TextInput
+                  value={renamedPlanNames[selectedPlan.id] ?? selectedPlan.name}
+                  onChangeText={(value) => setRenamedPlanNames((current) => ({ ...current, [selectedPlan.id]: value }))}
+                  style={styles.input}
+                  returnKeyType="done"
+                  onSubmitEditing={() => void run(() => {
+                    const name = (renamedPlanNames[selectedPlan.id] ?? selectedPlan.name).trim();
+                    if (name.length < 2) throw new Error("Enter a workout plan name with at least 2 characters.");
+                    return updateWorkoutPlan(selectedPlan.id, { name });
+                  }, "Workout plan renamed.")}
+                />
+                <Pressable disabled={saving} onPress={() => void run(() => {
+                  const name = (renamedPlanNames[selectedPlan.id] ?? selectedPlan.name).trim();
+                  if (name.length < 2) throw new Error("Enter a workout plan name with at least 2 characters.");
+                  return updateWorkoutPlan(selectedPlan.id, { name });
+                }, "Workout plan renamed.")} style={[styles.planSecondaryAction, saving && styles.buttonDisabled]}><Text style={styles.planSecondaryActionText}>Save name</Text></Pressable>
+                <View style={styles.editorRule} />
+                <Text style={styles.editorFieldLabel}>ADD DAY</Text>
+                <View style={styles.addDayRow}>
+                  <TextInput value={dayNames[selectedPlan.id] ?? ""} onChangeText={(value) => setDayNames((current) => ({ ...current, [selectedPlan.id]: value }))} placeholder="Day name" placeholderTextColor="#655D57" style={[styles.input, styles.dayInput]} returnKeyType="done" onSubmitEditing={() => void run(addDay, "Workout day added.")} />
+                  <Pressable disabled={saving} onPress={() => void run(addDay, "Workout day added.")} style={[styles.planSecondaryAction, saving && styles.buttonDisabled]}><Text style={styles.planSecondaryActionText}>Add day</Text></Pressable>
+                </View>
+                <View style={styles.editorRule} />
+                <Pressable disabled={saving || activePlanId === selectedPlan.id} onPress={() => void run(() => setActiveWorkoutPlan(selectedPlan.id), "Active workout plan updated.")} style={[styles.editorAction, (saving || activePlanId === selectedPlan.id) && styles.buttonDisabled]}><Text style={styles.editorActionText}>{activePlanId === selectedPlan.id ? "Active plan" : "Set as active"}</Text></Pressable>
+                {selectedDay ? <Pressable disabled={saving} onPress={() => void run(() => deleteWorkoutPlanDay(selectedDay.id), "Workout day removed.")} style={[styles.editorRemove, saving && styles.buttonDisabled]}><Text style={styles.editorRemoveText}>Remove selected day</Text></Pressable> : null}
+                <Pressable disabled={saving} onPress={() => void run(async () => {
+                  await deleteWorkoutPlan(selectedPlan.id);
+                  setSelectedPlanId(null);
+                  setDetailsOpen(false);
+                }, "Workout plan removed.")} style={[styles.editorRemove, saving && styles.buttonDisabled]}><Text style={styles.editorRemoveText}>Remove plan</Text></Pressable>
+              </>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal animationType="fade" transparent visible={createPlanOpen} onRequestClose={() => setCreatePlanOpen(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}>
+            <View style={styles.modalHeader}><View><Text style={styles.editorLabel}>NEW PLAN</Text><Text style={styles.modalTitle}>Build the program.</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Close new plan" onPress={() => setCreatePlanOpen(false)} style={styles.modalClose}><X color="#642D2A" size={19} strokeWidth={2.4} /></Pressable></View>
+            <TextInput value={planName} onChangeText={setPlanName} placeholder="Plan name" placeholderTextColor="#655D57" style={styles.input} returnKeyType="next" />
+            <TextInput value={description} onChangeText={setDescription} placeholder="Description (optional)" placeholderTextColor="#655D57" style={styles.input} onSubmitEditing={() => void run(createPlan, "Workout plan created.")} returnKeyType="done" />
+            <Pressable disabled={saving} onPress={() => void run(createPlan, "Workout plan created.")} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>Create plan</Text></Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {!isDesktop && selectedExercise ? (
+        <Modal animationType="slide" transparent visible onRequestClose={() => setSelectedExerciseId(null)}>
+          <View style={styles.modalBackdrop}><View style={styles.mobileEditorSheet}>{selectedEditor}</View></View>
+        </Modal>
+      ) : null}
     </>
   );
 }
@@ -1220,16 +1316,55 @@ function ExercisesContent({
 function SessionsContent({
   record,
   refresh,
+  isDesktop,
 }: {
   record: TransmuteRecord;
   refresh: () => Promise<void>;
+  isDesktop: boolean;
 }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [daySelectorOpen, setDaySelectorOpen] = useState(false);
+  const [sessionAction, setSessionAction] = useState<{
+    id: string;
+    isActive: boolean;
+    name: string;
+    setCount: number;
+    timestamp: string;
+  } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{
+    id: string;
+    isActive: boolean;
+    name: string;
+    setCount: number;
+    timestamp: string;
+  } | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const activePlan =
     record.workoutPlans.find(
       (plan) => plan.id === record.settings.active_routine_id,
     ) ?? null;
+  const availableDays = useMemo(
+    () => activePlan ? [...activePlan.days].sort((a, b) => a.sortOrder - b.sortOrder) : [],
+    [activePlan],
+  );
+  const activeSession = record.dashboard.activeSession;
+  const activeSessionRecord = activeSession
+    ? record.sessions.find((session) => session.id === activeSession.id) ?? null
+    : null;
+  const activeSetCount = activeSessionRecord?.set_count ?? 0;
+  const historicalSessions = record.sessions.filter(
+    (session) => session.id !== activeSession?.id && session.status !== "active",
+  );
+  const activeTarget = activeSession
+    ? {
+        id: activeSession.id,
+        isActive: true,
+        name: `${activeSession.routine_name ?? "Workout plan"} · ${activeSession.day_name ?? "Session"}`,
+        setCount: activeSetCount,
+        timestamp: activeSession.started_at,
+      }
+    : null;
 
   const start = async (routineDayId: string) => {
     setSaving(true);
@@ -1248,15 +1383,18 @@ function SessionsContent({
     }
   };
 
-  const remove = async (sessionId: string) => {
+  const remove = async () => {
+    if (!deleteTarget) return;
     setSaving(true);
     setNotice(null);
+    setDeleteError(null);
     try {
-      await deleteWorkoutSession(sessionId);
+      await deleteWorkoutSession(deleteTarget.id);
       await refresh();
-      setNotice("Session removed.");
+      setDeleteTarget(null);
+      setNotice(deleteTarget.isActive ? "Active session discarded." : "Session removed.");
     } catch (reason) {
-      setNotice(
+      setDeleteError(
         reason instanceof Error
           ? reason.message
           : "Unable to remove the session.",
@@ -1271,72 +1409,171 @@ function SessionsContent({
       <Text style={styles.eyebrow}>THE TRAINING LOG</Text>
       <Text style={styles.title}>Sessions</Text>
       <Text style={styles.body}>
-        Choose an active plan, open a session, and let each set become part of
-        the record.
+        {activeSession
+          ? "Continue your current work or choose the next session from your plan."
+          : "Choose a day from your active plan and begin the work."}
       </Text>
-      <View style={styles.formCard}>
-        <Text style={styles.cardTitle}>Start a session</Text>
-        {!activePlan ? (
-          <Text style={styles.cardMeta}>
-            Choose an active workout plan in Workout plans first.
-          </Text>
-        ) : activePlan.days.length === 0 ? (
-          <Text style={styles.cardMeta}>This plan has no days yet.</Text>
-        ) : (
-          activePlan.days
-            .sort((a, b) => a.sortOrder - b.sortOrder)
-            .map((day) => (
-              <Pressable
-                accessibilityRole="button"
-                disabled={saving}
-                key={day.id}
-                onPress={() => void start(day.id)}
-                style={({ pressed }) => [
-                  styles.dayAction,
-                  pressed && styles.buttonPressed,
-                  saving && styles.buttonDisabled,
-                ]}
-              >
-                <Text style={styles.dayActionText}>{day.name}</Text>
-                <Text style={styles.dayActionMeta}>
-                  {day.exerciseCount} exercises · Start
-                </Text>
-              </Pressable>
-            ))
-        )}
-      </View>
-      {notice ? <Text style={styles.notice}>{notice}</Text> : null}
-      <Text style={[styles.eyebrow, styles.section]}>RECENT SESSIONS</Text>
-      {record.sessions.length ? (
-        record.sessions.map((session) => (
-          <View key={session.id} style={styles.card}>
-            <Pressable
-              accessibilityRole="link"
-              onPress={() => router.push(`/sessions/${session.id}`)}
-            >
-              <Text style={styles.cardTitle}>
-                {session.routine_name ?? "Workout plan"} ·{" "}
-                {session.day_name ?? "Day"}
+
+      {activeSession ? (
+        <View style={[styles.sessionActionPanel, styles.activeSessionPanel, isDesktop && styles.sessionActionPanelDesktop]}>
+          <View style={styles.sessionActionHeader}>
+            <View style={styles.sessionActionCopy}>
+              <Text style={styles.editorLabel}>ACTIVE SESSION</Text>
+              <Text style={styles.sessionActionTitle}>{activeTarget?.name}</Text>
+              <Text style={styles.sessionActionMeta}>
+                Started {dayKey(activeSession.started_at) === dayKey(new Date().toISOString()) ? "today" : date(activeSession.started_at)} · {activeSetCount} {activeSetCount === 1 ? "set" : "sets"} recorded
               </Text>
-              <Text style={styles.cardMeta}>
-                {label(session.status)} · {session.set_count} sets ·{" "}
-                {date(session.started_at)}
-              </Text>
-            </Pressable>
+            </View>
             <Pressable
-              disabled={saving}
-              onPress={() => void remove(session.id)}
+              accessibilityLabel="Session actions"
+              accessibilityRole="button"
+              onPress={() => setSessionAction(activeTarget)}
+              style={styles.sessionOverflowButton}
             >
-              <Text style={styles.inlineAction}>Remove</Text>
+              <MoreHorizontal color="#101015" size={21} strokeWidth={2.4} />
             </Pressable>
           </View>
-        ))
+          <Pressable accessibilityRole="button" onPress={() => router.push(`/sessions/${activeSession.id}`)} style={styles.sessionContinueButton}>
+            <Text style={styles.sessionContinueButtonText}>Continue session</Text>
+          </Pressable>
+          <Pressable accessibilityRole="link" onPress={() => router.push(`/sessions/${activeSession.id}`)} style={styles.sessionDetailsAction}>
+            <View style={styles.sessionLinkContent}><Text style={styles.sessionDetailsActionText}>View session details</Text><ArrowRight color="#642D2A" size={16} strokeWidth={2.4} /></View>
+          </Pressable>
+        </View>
       ) : (
-        <Card
-          title="No sessions yet"
-          meta="Start a day from your active workout plan."
-        />
+        <View style={[styles.sessionActionPanel, isDesktop && styles.sessionActionPanelDesktop]}>
+          <Text style={styles.editorLabel}>START A SESSION</Text>
+          {!activePlan ? (
+            <Text style={styles.cardMeta}>Choose an active workout plan in Workout plans first.</Text>
+          ) : availableDays.length === 0 ? (
+            <Text style={styles.cardMeta}>This plan has no days yet.</Text>
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Choose a workout day to start"
+              disabled={saving}
+              onPress={() => setDaySelectorOpen(true)}
+              style={({ pressed }) => [styles.sessionDayPicker, pressed && styles.buttonPressed, saving && styles.buttonDisabled]}
+            >
+              <View>
+                <Text style={styles.sessionDayPickerTitle}>Choose a day</Text>
+                <Text style={styles.sessionDayPickerMeta}>{activePlan.name} · {availableDays.length} {availableDays.length === 1 ? "day" : "days"} available</Text>
+              </View>
+              <ArrowRight color="#642D2A" size={19} strokeWidth={2.4} />
+            </Pressable>
+          )}
+        </View>
       )}
+
+      <Modal animationType="fade" transparent visible={daySelectorOpen} onRequestClose={() => setDaySelectorOpen(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.editorLabel}>START A SESSION</Text>
+                <Text style={styles.modalTitle}>Choose your day.</Text>
+                <Text style={styles.modalPlanName}>{activePlan?.name}</Text>
+              </View>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close day selection" onPress={() => setDaySelectorOpen(false)} style={styles.modalClose}>
+                <X color="#642D2A" size={19} strokeWidth={2.4} />
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={styles.sessionDaySelectorList} showsVerticalScrollIndicator={false}>
+              {availableDays.map((day) => (
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={saving}
+                  key={day.id}
+                  onPress={() => {
+                    setDaySelectorOpen(false);
+                    void start(day.id);
+                  }}
+                  style={({ pressed }) => [styles.sessionDayOption, pressed && styles.buttonPressed, saving && styles.buttonDisabled]}
+                >
+                  <View>
+                    <Text style={styles.sessionDayOptionTitle}>{day.name}</Text>
+                    <Text style={styles.sessionDayOptionMeta}>{day.exerciseCount} {day.exerciseCount === 1 ? "exercise" : "exercises"}</Text>
+                  </View>
+                  <View style={styles.sessionLinkContent}><Text style={styles.sessionDayPickerText}>Start</Text><ArrowRight color="#642D2A" size={16} strokeWidth={2.4} /></View>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+      {notice ? <Text style={styles.notice}>{notice}</Text> : null}
+      <Text style={[styles.eyebrow, styles.section]}>SESSION HISTORY</Text>
+      {historicalSessions.length ? (
+        <View style={styles.sessionHistory}>
+          {historicalSessions.map((session) => {
+            const target = {
+              id: session.id,
+              isActive: false,
+              name: `${session.routine_name ?? "Workout plan"} · ${session.day_name ?? "Day"}`,
+              setCount: session.set_count,
+              timestamp: session.ended_at ?? session.started_at,
+            };
+            return (
+              <View key={session.id} style={styles.sessionHistoryRow}>
+                <Pressable accessibilityRole="link" onPress={() => router.push(`/sessions/${session.id}`)} style={styles.sessionHistoryCopy}>
+                  <Text style={styles.sessionHistoryTitle}>{target.name}</Text>
+                  <Text style={styles.sessionHistoryMeta}>{session.set_count} {session.set_count === 1 ? "set" : "sets"} · {label(session.status)} · {date(target.timestamp)}</Text>
+                </Pressable>
+                <View style={styles.sessionHistoryActions}>
+                  <Pressable accessibilityRole="link" onPress={() => router.push(`/sessions/${session.id}`)} style={styles.sessionViewAction}>
+                    <View style={styles.sessionLinkContent}><Text style={styles.sessionViewActionText}>View session</Text><ArrowRight color="#642D2A" size={16} strokeWidth={2.4} /></View>
+                  </Pressable>
+                  <Pressable accessibilityLabel={`Actions for ${target.name}`} accessibilityRole="button" onPress={() => setSessionAction(target)} style={styles.sessionOverflowButton}>
+                    <MoreHorizontal color="#101015" size={21} strokeWidth={2.4} />
+                  </Pressable>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      ) : (
+        <View style={styles.sessionHistoryEmpty}>
+          <Text style={styles.ledgerEmptyTitle}>No completed sessions yet.</Text>
+          <Text style={styles.cardMeta}>{activeSession ? "Your active work will appear here once it is completed." : "Start a day from your active workout plan."}</Text>
+        </View>
+      )}
+
+      <Modal animationType="fade" transparent visible={Boolean(sessionAction)} onRequestClose={() => setSessionAction(null)}>
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}>
+            <View style={styles.modalHeader}>
+              <View><Text style={styles.editorLabel}>SESSION ACTIONS</Text><Text style={styles.modalTitle}>{sessionAction?.name}</Text></View>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close session actions" onPress={() => setSessionAction(null)} style={styles.modalClose}><X color="#642D2A" size={19} strokeWidth={2.4} /></Pressable>
+            </View>
+            <Pressable accessibilityRole="menuitem" onPress={() => { const target = sessionAction; setSessionAction(null); if (target) router.push(`/sessions/${target.id}`); }} style={styles.sessionMenuItem}>
+              <Text style={styles.sessionMenuItemText}>View session</Text>
+            </Pressable>
+            <Pressable accessibilityRole="menuitem" disabled={saving} onPress={() => { if (!sessionAction) return; setDeleteError(null); setDeleteTarget(sessionAction); setSessionAction(null); }} style={styles.sessionMenuItem}>
+              <Text style={styles.sessionMenuDangerText}>{sessionAction?.isActive ? "Discard session" : "Remove session"}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal animationType="fade" transparent visible={Boolean(deleteTarget)} onRequestClose={() => !saving && setDeleteTarget(null)}>
+        <View style={styles.modalBackdrop}>
+          <View accessibilityRole="alert" style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}>
+            <Text style={styles.editorLabel}>{deleteTarget?.isActive ? "DISCARD ACTIVE SESSION?" : "REMOVE SESSION?"}</Text>
+            <Text style={styles.modalTitle}>{deleteTarget?.name}</Text>
+            <Text style={styles.sessionConfirmCopy}>
+              {deleteTarget?.isActive
+                ? `${deleteTarget.name} is still in progress. Discarding it will permanently remove its recorded work.`
+                : `${deleteTarget?.name} from ${deleteTarget ? date(deleteTarget.timestamp) : "this date"} will be permanently removed.`}
+            </Text>
+            <Text style={styles.sessionConfirmCopy}>{deleteTarget?.setCount ?? 0} {(deleteTarget?.setCount ?? 0) === 1 ? "recorded set" : "recorded sets"} will be removed. This cannot be undone.</Text>
+            {deleteError ? <Text accessibilityRole="alert" style={styles.notice}>{deleteError}</Text> : null}
+            <View style={styles.sessionConfirmActions}>
+              <Pressable accessibilityRole="button" disabled={saving} onPress={() => setDeleteTarget(null)} style={styles.planSecondaryAction}><Text style={styles.planSecondaryActionText}>{deleteTarget?.isActive ? "Keep session" : "Cancel"}</Text></Pressable>
+              <Pressable accessibilityRole="button" disabled={saving} onPress={() => void remove()} style={[styles.sessionDangerButton, saving && styles.buttonDisabled]}><Text style={styles.sessionDangerButtonText}>{saving ? "Removing…" : deleteTarget?.isActive ? "Discard session" : "Remove session"}</Text></Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -1581,16 +1818,73 @@ function AdminUserCard({
 function ProgressContent({
   record,
   refresh,
+  isDesktop,
 }: {
   record: TransmuteRecord;
   refresh: () => Promise<void>;
+  isDesktop: boolean;
 }) {
+  const { view } = useLocalSearchParams<{ view?: string }>();
+  const activeView = view === "timeline" ? "timeline" : "calendar";
+  const initialDayKey = recordDayKey(
+    record.progress[0]?.captured_at ?? record.sessions[0]?.started_at ?? new Date(),
+  );
   const [note, setNote] = useState("");
-  const [capturedAt, setCapturedAt] = useState(() => new Date().toISOString().slice(0, 10));
+  const [capturedAt, setCapturedAt] = useState(initialDayKey);
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [month, setMonth] = useState(() => startOfCalendarMonth(dateFromRecordDayKey(initialDayKey)));
+  const [selectedDayKey, setSelectedDayKey] = useState(initialDayKey);
+  const [addOpen, setAddOpen] = useState(false);
+  const [viewingPhotoId, setViewingPhotoId] = useState<string | null>(null);
+  const [selectedPhotoId, setSelectedPhotoId] = useState<string | null>(null);
   const [editingPhotoId, setEditingPhotoId] = useState<string | null>(null);
   const [editingPhotoDate, setEditingPhotoDate] = useState("");
+  const [removeConfirmId, setRemoveConfirmId] = useState<string | null>(null);
+
+  const photosByDay = useMemo(() => {
+    const grouped = new Map<string, TransmuteRecord["progress"]>();
+    for (const photo of record.progress) {
+      const key = recordDayKey(photo.captured_at);
+      grouped.set(key, [...(grouped.get(key) ?? []), photo]);
+    }
+    return grouped;
+  }, [record.progress]);
+  const sessionsByDay = useMemo(() => {
+    const grouped = new Map<string, TransmuteRecord["sessions"]>();
+    for (const session of record.sessions) {
+      const key = recordDayKey(session.started_at);
+      grouped.set(key, [...(grouped.get(key) ?? []), session]);
+    }
+    return grouped;
+  }, [record.sessions]);
+  const selectedPhotos = photosByDay.get(selectedDayKey) ?? [];
+  const selectedSessions = sessionsByDay.get(selectedDayKey) ?? [];
+  const selectedPhoto =
+    selectedPhotos.find((photo) => photo.id === selectedPhotoId) ?? selectedPhotos[0] ?? null;
+  const viewedPhoto = record.progress.find((photo) => photo.id === viewingPhotoId) ?? null;
+  const visibleMonthKey = calendarMonthKey(month);
+  const monthPhotoDays = [...photosByDay.keys()].filter((key) => key.slice(0, 7) === visibleMonthKey);
+  const monthSessions = record.sessions.filter(
+    (session) =>
+      recordDayKey(session.started_at).slice(0, 7) === visibleMonthKey &&
+      session.status === "completed",
+  );
+  const timelineDays = useMemo(() => {
+    const keys = new Set([...photosByDay.keys(), ...sessionsByDay.keys()]);
+    return [...keys].sort((left, right) => right.localeCompare(left));
+  }, [photosByDay, sessionsByDay]);
+
+  const chooseDay = (key: string) => {
+    setSelectedDayKey(key);
+    setSelectedPhotoId(null);
+    setEditingPhotoId(null);
+    setRemoveConfirmId(null);
+  };
+
+  const setProgressView = (next: "calendar" | "timeline") => {
+    router.setParams({ view: next });
+  };
 
   const choosePhoto = async () => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(capturedAt)) {
@@ -1619,6 +1913,7 @@ function ProgressContent({
       });
       setNote("");
       await refresh();
+      setAddOpen(false);
       setNotice("Progress photo recorded.");
     } catch (reason) {
       setNotice(
@@ -1637,6 +1932,8 @@ function ProgressContent({
     try {
       await deleteProgressPhoto(id);
       await refresh();
+      setRemoveConfirmId(null);
+      setSelectedPhotoId(null);
       setNotice("Progress photo removed.");
     } catch (reason) {
       setNotice(
@@ -1675,140 +1972,133 @@ function ProgressContent({
 
   return (
     <>
-      <Text style={styles.eyebrow}>THE EVIDENCE</Text>
+      <Text style={styles.eyebrow}>THE RECORD</Text>
       <Text style={styles.title}>Progress</Text>
-      <Text style={styles.body}>
-        Keep a visual record of the work and the changes it creates.
-      </Text>
-      <View style={styles.formCard}>
-        <Text style={styles.cardTitle}>Add a check-in</Text>
-        <TextInput
-          value={capturedAt}
-          onChangeText={setCapturedAt}
-          placeholder="Photo date (YYYY-MM-DD)"
-          placeholderTextColor="#655D57"
-          style={styles.input}
-        />
-        <TextInput
-          value={note}
-          onChangeText={setNote}
-          placeholder="Note (optional)"
-          placeholderTextColor="#655D57"
-          style={styles.input}
-          returnKeyType="done"
-          onSubmitEditing={() => void choosePhoto()}
-        />
-        <Pressable
-          accessibilityRole="button"
-          disabled={saving}
-          onPress={() => void choosePhoto()}
-          style={[styles.actionButton, saving && styles.buttonDisabled]}
-        >
-          <Text style={styles.actionButtonText}>
-            {saving ? "Recording…" : "Choose progress photo"}
-          </Text>
-        </Pressable>
-      </View>
+      <Text style={styles.body}>Index the work by date, then examine the evidence that belongs to it.</Text>
       {notice ? <Text style={styles.notice}>{notice}</Text> : null}
-      <Text style={[styles.eyebrow, styles.section]}>YOUR CHECK-INS</Text>
-      {record.progress.length ? (
-        record.progress.map((photo) => (
-          <View key={photo.id} style={styles.progressCard}>
-            {photo.imageUrl ? (
-              <Image
-                accessibilityLabel={`Progress photo from ${date(photo.captured_at)}`}
-                source={{ uri: photo.imageUrl }}
-                style={styles.progressImage}
-              />
-            ) : (
-              <View style={styles.progressImageUnavailable}>
-                <Text style={styles.cardMeta}>Photo preview unavailable.</Text>
-              </View>
-            )}
-            <View style={styles.progressDetails}>
-              <View>
-                <Text style={styles.cardTitle}>{date(photo.captured_at)}</Text>
-                <Text style={styles.cardMeta}>
-                  {photo.note ?? "Progress photo"}
-                </Text>
-              </View>
-              {editingPhotoId === photo.id ? (
-                <View style={styles.progressEdit}>
-                  <TextInput
-                    value={editingPhotoDate}
-                    onChangeText={setEditingPhotoDate}
-                    placeholder="YYYY-MM-DD"
-                    placeholderTextColor="#655D57"
-                    style={styles.progressDateInput}
-                    returnKeyType="done"
-                    onSubmitEditing={() => void savePhotoDate(photo.id)}
-                  />
-                  <View style={styles.progressActions}>
-                    <Pressable accessibilityRole="button" disabled={saving} onPress={() => void savePhotoDate(photo.id)}>
-                      <Text style={styles.inlineAction}>Save</Text>
-                    </Pressable>
-                    <Pressable
-                      accessibilityRole="button"
-                      disabled={saving}
-                      onPress={() => {
-                        setEditingPhotoId(null);
-                        setEditingPhotoDate("");
-                      }}
-                    >
-                      <Text style={styles.inlineAction}>Cancel</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              ) : (
-                <View style={styles.progressActions}>
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={saving}
-                    onPress={() => {
-                      setEditingPhotoId(photo.id);
-                      setEditingPhotoDate(photo.captured_at.slice(0, 10));
-                    }}
-                  >
-                    <Text style={styles.inlineAction}>Edit date</Text>
-                  </Pressable>
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={saving}
-                    onPress={() => void remove(photo.id)}
-                  >
-                    <Text style={styles.inlineAction}>Remove</Text>
-                  </Pressable>
-                </View>
-              )}
+      <View style={styles.progressViewTabs} accessibilityRole="tablist">
+        {(["calendar", "timeline"] as const).map((next) => (
+          <Pressable
+            accessibilityRole="tab"
+            accessibilityState={{ selected: activeView === next }}
+            key={next}
+            onPress={() => setProgressView(next)}
+            style={[styles.progressViewTab, activeView === next && styles.progressViewTabActive]}
+          >
+            <Text style={[styles.progressViewTabText, activeView === next && styles.progressViewTabTextActive]}>{next === "calendar" ? "Calendar" : "Timeline"}</Text>
+          </Pressable>
+        ))}
+      </View>
+      {activeView === "calendar" ? (
+        <>
+          <View style={styles.monthSummary}>
+            <Text style={styles.editorLabel}>THIS MONTH</Text>
+            <View style={styles.monthSummaryValues}>
+              <Text style={styles.monthSummaryValue}>{monthSessions.length} sessions</Text>
+              <Text style={styles.monthSummaryValue}>{monthPhotoDays.length} photo sets</Text>
             </View>
           </View>
-        ))
+          <View style={[styles.progressWorkspace, isDesktop && styles.progressWorkspaceDesktop]}>
+            <View style={styles.calendarPanel}>
+              <View style={styles.calendarHeader}>
+                <View>
+                  <Text style={styles.calendarMonth}>{month.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</Text>
+                  <Text style={styles.calendarPeriodMeta}>{monthSessions.length} sessions · {monthPhotoDays.length} photo sets</Text>
+                </View>
+                <View style={styles.calendarControls}>
+                  <Pressable accessibilityLabel="Previous month" accessibilityRole="button" onPress={() => setMonth((current) => addCalendarMonths(current, -1))} style={styles.calendarControl}><Text style={styles.calendarControlText}>‹</Text></Pressable>
+                  <Pressable accessibilityRole="button" onPress={() => {
+                    const today = recordDayKey(new Date());
+                    setMonth(startOfCalendarMonth(dateFromRecordDayKey(today)));
+                    chooseDay(today);
+                  }} style={styles.calendarToday}><Text style={styles.calendarTodayText}>Today</Text></Pressable>
+                  <Pressable accessibilityLabel="Next month" accessibilityRole="button" onPress={() => setMonth((current) => addCalendarMonths(current, 1))} style={styles.calendarControl}><Text style={styles.calendarControlText}>›</Text></Pressable>
+                </View>
+              </View>
+              <View style={styles.calendarWeekdays}>{CALENDAR_WEEKDAYS.map((weekday) => <Text key={weekday} style={styles.calendarWeekday}>{weekday}</Text>)}</View>
+              <View style={styles.calendarGrid}>
+                {calendarGrid(month).map((calendarDate) => {
+                  const key = calendarDayKey(calendarDate);
+                  const photos = photosByDay.get(key) ?? [];
+                  const sessions = sessionsByDay.get(key) ?? [];
+                  const inMonth = calendarDate.getMonth() === month.getMonth();
+                  const isToday = key === recordDayKey(new Date());
+                  const selected = key === selectedDayKey;
+                  const recordTypes = [sessions.length ? `${sessions.length} session${sessions.length === 1 ? "" : "s"}` : "", photos.length ? `${photos.length} photo${photos.length === 1 ? "" : "s"}` : ""].filter(Boolean).join(", ");
+                  return (
+                    <Pressable
+                      accessibilityLabel={`${calendarDate.toLocaleDateString(undefined, { dateStyle: "full" })}${recordTypes ? `, ${recordTypes}` : ", no records"}`}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      key={key}
+                      onPress={() => chooseDay(key)}
+                      style={[styles.calendarCell, !inMonth && styles.calendarCellMuted, isToday && styles.calendarCellToday, selected && styles.calendarCellSelected]}
+                    >
+                      <Text style={[styles.calendarDate, !inMonth && styles.calendarDateMuted, selected && styles.calendarDateSelected]}>{calendarDate.getDate()}</Text>
+                      <View style={styles.calendarMarks}>
+                        {sessions.length ? <View style={styles.calendarTrainingMark} /> : null}
+                        {photos.length ? <View style={styles.calendarPhotoMark} /> : null}
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <View style={styles.calendarLegend}><View style={[styles.legendDot, styles.calendarTrainingMark]} /><Text style={styles.legendText}>Training</Text><View style={[styles.legendDot, styles.calendarPhotoMark]} /><Text style={styles.legendText}>Photo set</Text></View>
+            </View>
+            <View style={[styles.selectedDayPanel, isDesktop && styles.selectedDayPanelDesktop]}>
+              <Text style={styles.editorLabel}>SELECTED DATE</Text>
+              <Text style={styles.selectedDayTitle}>{dateFromRecordDayKey(selectedDayKey).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}</Text>
+              {selectedPhotos.length || selectedSessions.length ? (
+                <>
+                  {selectedPhotos.length ? (
+                    <View style={styles.selectedRecordSection}>
+                      <View style={styles.selectedRecordHeading}><Text style={styles.selectedRecordTitle}>Progress photos</Text><Text style={styles.selectedRecordCount}>{selectedPhotos.length} {selectedPhotos.length === 1 ? "photo" : "photos"}</Text></View>
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photoStrip}>
+                        {selectedPhotos.map((photo) => (
+                          <Pressable key={photo.id} accessibilityLabel="Open progress photo" onPress={() => { setSelectedPhotoId(photo.id); setViewingPhotoId(photo.id); }} style={[styles.photoThumb, selectedPhoto?.id === photo.id && styles.photoThumbActive]}>
+                            {photo.imageUrl ? <Image source={{ uri: photo.imageUrl }} style={styles.photoThumbImage} /> : <View style={styles.photoThumbUnavailable}><Text style={styles.photoThumbUnavailableText}>Unavailable</Text></View>}
+                          </Pressable>
+                        ))}
+                      </ScrollView>
+                      {selectedPhoto ? (
+                        <View style={styles.photoActionsPanel}>
+                          <Text style={styles.photoNote}>{selectedPhoto.note ?? "Progress photo"}</Text>
+                          {editingPhotoId === selectedPhoto.id ? (
+                            <View style={styles.photoDateEdit}><TextInput value={editingPhotoDate} onChangeText={setEditingPhotoDate} placeholder="YYYY-MM-DD" placeholderTextColor="#655D57" style={[styles.input, styles.photoDateInput]} returnKeyType="done" onSubmitEditing={() => void savePhotoDate(selectedPhoto.id)} /><Pressable disabled={saving} onPress={() => void savePhotoDate(selectedPhoto.id)} style={styles.editorAction}><Text style={styles.editorActionText}>Save</Text></Pressable><Pressable disabled={saving} onPress={() => { setEditingPhotoId(null); setEditingPhotoDate(""); }} style={styles.editorAction}><Text style={styles.editorActionText}>Cancel</Text></Pressable></View>
+                          ) : (
+                            <View style={styles.photoActionRow}><Pressable disabled={saving} onPress={() => { setEditingPhotoId(selectedPhoto.id); setEditingPhotoDate(recordDayKey(selectedPhoto.captured_at)); }} style={styles.editorAction}><Text style={styles.editorActionText}>Edit date</Text></Pressable><Pressable disabled={saving} onPress={() => setRemoveConfirmId(selectedPhoto.id)} style={styles.editorRemove}><Text style={styles.editorRemoveText}>Remove</Text></Pressable></View>
+                          )}
+                          {removeConfirmId === selectedPhoto.id ? <View style={styles.removeConfirm}><Text style={styles.removeConfirmText}>Remove this progress photo?</Text><Pressable disabled={saving} onPress={() => void remove(selectedPhoto.id)} style={styles.editorAction}><Text style={styles.editorActionText}>Remove</Text></Pressable><Pressable disabled={saving} onPress={() => setRemoveConfirmId(null)} style={styles.editorAction}><Text style={styles.editorActionText}>Keep</Text></Pressable></View> : null}
+                        </View>
+                      ) : null}
+                    </View>
+                  ) : null}
+                  {selectedSessions.length ? <View style={styles.selectedRecordSection}><Text style={styles.selectedRecordTitle}>Training</Text>{selectedSessions.map((session) => <Pressable key={session.id} accessibilityRole="link" onPress={() => router.push(`/sessions/${session.id}`)} style={styles.selectedSessionRow}><View><Text style={styles.selectedSessionName}>{session.routine_name ?? "Workout plan"} · {session.day_name ?? "Day"}</Text><Text style={styles.selectedSessionMeta}>{label(session.status)} · {session.set_count} sets</Text></View><Text style={styles.ledgerSelect}>›</Text></Pressable>)}</View> : null}
+                </>
+              ) : (
+                <View style={styles.selectedDayEmpty}><Text style={styles.ledgerEmptyTitle}>No work recorded on this date.</Text><Text style={styles.editorHint}>Add a progress photo to create a visual check-in.</Text></View>
+              )}
+              <Pressable accessibilityRole="button" onPress={() => { setCapturedAt(selectedDayKey); setAddOpen(true); }} style={styles.addProgressAction}><Text style={styles.addProgressActionText}>+ Add progress photo</Text></Pressable>
+            </View>
+          </View>
+        </>
       ) : (
-        <Card
-          title="No progress photos yet"
-          meta="Add your first check-in to begin a visual record."
-        />
+        <View style={styles.timelineList}>
+          {timelineDays.length ? timelineDays.map((key) => {
+            const photos = photosByDay.get(key) ?? [];
+            const sessions = sessionsByDay.get(key) ?? [];
+            return <Pressable accessibilityRole="button" key={key} onPress={() => { chooseDay(key); setProgressView("calendar"); setMonth(startOfCalendarMonth(dateFromRecordDayKey(key))); }} style={styles.timelineDay}><Text style={styles.timelineDate}>{dateFromRecordDayKey(key).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}</Text>{photos.length ? <Text style={styles.timelineRow}>Progress photos · {photos.length} {photos.length === 1 ? "image" : "images"}</Text> : null}{sessions.map((session) => <Text key={session.id} style={styles.timelineRow}>{session.routine_name ?? "Workout plan"} — {session.day_name ?? "Day"} · {session.set_count} sets</Text>)}</Pressable>;
+          }) : <View style={styles.selectedDayEmpty}><Text style={styles.ledgerEmptyTitle}>No progress records yet.</Text><Text style={styles.editorHint}>Add the first photo check-in to start the record.</Text><Pressable onPress={() => { setCapturedAt(recordDayKey(new Date())); setAddOpen(true); }} style={styles.addProgressAction}><Text style={styles.addProgressActionText}>+ Add progress photo</Text></Pressable></View>}
+        </View>
       )}
-      <Text style={[styles.eyebrow, styles.section]}>TRAINING HISTORY</Text>
-      {record.sessions.length ? (
-        record.sessions.map((session) => (
-          <Card
-            key={session.id}
-            title={`${session.routine_name ?? "Workout plan"} · ${session.day_name ?? "Day"}`}
-            meta={`${label(session.status)} · ${session.set_count} sets · ${date(session.started_at)}`}
-          />
-        ))
-      ) : (
-        <Card
-          title="No sessions yet"
-          meta="Completed work will appear here alongside your check-ins."
-        />
-      )}
+
+      <Modal animationType="fade" transparent visible={addOpen} onRequestClose={() => setAddOpen(false)}><View style={styles.modalBackdrop}><View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}><View style={styles.modalHeader}><View><Text style={styles.editorLabel}>ADD CHECK-IN</Text><Text style={styles.modalTitle}>Record the evidence.</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Close add check-in" onPress={() => setAddOpen(false)} style={styles.modalClose}><X color="#642D2A" size={19} strokeWidth={2.4} /></Pressable></View><TextInput value={capturedAt} onChangeText={setCapturedAt} placeholder="Photo date (YYYY-MM-DD)" placeholderTextColor="#655D57" style={styles.input} /><TextInput value={note} onChangeText={setNote} placeholder="Note (optional)" placeholderTextColor="#655D57" style={styles.input} returnKeyType="done" onSubmitEditing={() => void choosePhoto()} /><Pressable accessibilityRole="button" disabled={saving} onPress={() => void choosePhoto()} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{saving ? "Recording…" : "Choose progress photo"}</Text></Pressable></View></View></Modal>
+      <Modal animationType="fade" transparent visible={Boolean(viewedPhoto)} onRequestClose={() => setViewingPhotoId(null)}><View style={styles.photoViewerBackdrop}><View style={styles.photoViewer}><View style={styles.modalHeader}><Text style={styles.editorLabel}>PROGRESS PHOTO</Text><Pressable accessibilityRole="button" accessibilityLabel="Close progress photo" onPress={() => setViewingPhotoId(null)} style={styles.modalClose}><X color="#642D2A" size={19} strokeWidth={2.4} /></Pressable></View>{viewedPhoto?.imageUrl ? <Image accessibilityLabel={`Progress photo from ${recordDayKey(viewedPhoto.captured_at)}`} source={{ uri: viewedPhoto.imageUrl }} resizeMode="contain" style={styles.photoViewerImage} /> : <View style={styles.progressImageUnavailable}><Text style={styles.cardMeta}>Photo preview unavailable.</Text></View>}<Text style={styles.photoViewerNote}>{viewedPhoto?.note ?? "Progress photo"}</Text></View></View></Modal>
     </>
   );
 }
 
-function NutritionContent({
+export function LegacyNutritionContent({
   record,
   refresh,
 }: {
@@ -2653,6 +2943,7 @@ const styles = StyleSheet.create({
     textDecorationLine: "underline",
   },
   content: { paddingBottom: 56, maxWidth: 760, width: "100%" },
+  planPageContent: { maxWidth: 1120 },
   eyebrow: {
     color: "#642D2A",
     fontFamily: "Courier",
@@ -2701,6 +2992,75 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   progressActions: { alignItems: "flex-end", gap: 8 },
+  progressViewTabs: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, flexDirection: "row", gap: 16, marginTop: 20 },
+  progressViewTab: { minHeight: 42, justifyContent: "center", paddingHorizontal: 3 },
+  progressViewTabActive: { borderBottomColor: "#642D2A", borderBottomWidth: 3 },
+  progressViewTabText: { color: "#655D57", fontSize: 14, fontWeight: "700" },
+  progressViewTabTextActive: { color: "#101015", fontWeight: "900" },
+  monthSummary: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, gap: 9, paddingVertical: 16 },
+  monthSummaryValues: { flexDirection: "row", flexWrap: "wrap", gap: 16 },
+  monthSummaryValue: { color: "#101015", fontSize: 15, fontWeight: "800" },
+  progressWorkspace: { gap: 20, marginTop: 18 },
+  progressWorkspaceDesktop: { alignItems: "stretch", flexDirection: "row" },
+  calendarPanel: { flex: 1, minWidth: 0 },
+  calendarHeader: { alignItems: "flex-start", flexDirection: "row", gap: 12, justifyContent: "space-between", marginBottom: 15 },
+  calendarMonth: { color: "#101015", fontSize: 24, fontWeight: "900", letterSpacing: -1 },
+  calendarPeriodMeta: { color: "#655D57", fontSize: 13, marginTop: 4 },
+  calendarControls: { alignItems: "center", flexDirection: "row", gap: 4 },
+  calendarControl: { alignItems: "center", justifyContent: "center", minHeight: 44, minWidth: 38 },
+  calendarControlText: { color: "#101015", fontSize: 28, fontWeight: "400", lineHeight: 30 },
+  calendarToday: { alignItems: "center", borderColor: "#D4C9B9", borderWidth: 1, justifyContent: "center", minHeight: 38, paddingHorizontal: 9 },
+  calendarTodayText: { color: "#101015", fontSize: 12, fontWeight: "800" },
+  calendarWeekdays: { flexDirection: "row" },
+  calendarWeekday: { color: "#655D57", flex: 1, fontFamily: "Courier", fontSize: 9, fontWeight: "800", letterSpacing: 0.4, paddingBottom: 7, textAlign: "center" },
+  calendarGrid: { borderLeftColor: "#D4C9B9", borderLeftWidth: 1, borderTopColor: "#D4C9B9", borderTopWidth: 1, flexDirection: "row", flexWrap: "wrap" },
+  calendarCell: { alignItems: "center", borderBottomColor: "#D4C9B9", borderBottomWidth: 1, borderRightColor: "#D4C9B9", borderRightWidth: 1, minHeight: 52, paddingTop: 6, width: "14.285714%" },
+  calendarCellMuted: { backgroundColor: "#EEE8DF" },
+  calendarCellToday: { borderColor: "#101015", borderWidth: 1 },
+  calendarCellSelected: { backgroundColor: "#E8DED2" },
+  calendarDate: { color: "#101015", fontSize: 13, fontWeight: "800" },
+  calendarDateMuted: { color: "#9A9189" },
+  calendarDateSelected: { color: "#642D2A" },
+  calendarMarks: { alignItems: "center", flexDirection: "row", gap: 3, height: 12, justifyContent: "center", marginTop: 4 },
+  calendarTrainingMark: { backgroundColor: "#642D2A", height: 4, width: 12 },
+  calendarPhotoMark: { backgroundColor: "#B68A36", height: 4, width: 12 },
+  calendarLegend: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 12 },
+  legendDot: { height: 6, width: 12 },
+  legendText: { color: "#655D57", fontSize: 12, marginRight: 8 },
+  selectedDayPanel: { borderTopColor: "#101015", borderTopWidth: 1, gap: 15, paddingTop: 18 },
+  selectedDayPanelDesktop: { backgroundColor: "#FBF7F0", borderLeftColor: "#D4C9B9", borderLeftWidth: 1, borderTopWidth: 0, flexBasis: 340, padding: 20 },
+  selectedDayTitle: { color: "#101015", fontSize: 24, fontWeight: "900", letterSpacing: -1, marginTop: -7 },
+  selectedDayEmpty: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, gap: 7, paddingVertical: 14 },
+  selectedRecordSection: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, gap: 10, paddingBottom: 15 },
+  selectedRecordHeading: { alignItems: "baseline", flexDirection: "row", justifyContent: "space-between" },
+  selectedRecordTitle: { color: "#101015", fontSize: 16, fontWeight: "900" },
+  selectedRecordCount: { color: "#655D57", fontSize: 12 },
+  photoStrip: { gap: 8 },
+  photoThumb: { borderColor: "#D4C9B9", borderWidth: 1, height: 76, overflow: "hidden", width: 76 },
+  photoThumbActive: { borderColor: "#642D2A", borderWidth: 2 },
+  photoThumbImage: { backgroundColor: "#DED4C6", height: "100%", width: "100%" },
+  photoThumbUnavailable: { alignItems: "center", backgroundColor: "#DED4C6", height: "100%", justifyContent: "center", paddingHorizontal: 5, width: "100%" },
+  photoThumbUnavailableText: { color: "#655D57", fontSize: 9, textAlign: "center" },
+  photoActionsPanel: { gap: 9 },
+  photoNote: { color: "#2C2C31", fontSize: 13, lineHeight: 19 },
+  photoActionRow: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  photoDateEdit: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  photoDateInput: { flexGrow: 1, minWidth: 120 },
+  removeConfirm: { alignItems: "center", borderLeftColor: "#A95B5B", borderLeftWidth: 2, flexDirection: "row", flexWrap: "wrap", gap: 8, paddingLeft: 9 },
+  removeConfirmText: { color: "#642D2A", fontSize: 12, fontWeight: "800", width: "100%" },
+  selectedSessionRow: { alignItems: "center", borderTopColor: "#D4C9B9", borderTopWidth: 1, flexDirection: "row", justifyContent: "space-between", minHeight: 55, paddingVertical: 8 },
+  selectedSessionName: { color: "#101015", fontSize: 14, fontWeight: "800" },
+  selectedSessionMeta: { color: "#655D57", fontSize: 12, marginTop: 3 },
+  addProgressAction: { alignSelf: "flex-start", minHeight: 44, justifyContent: "center", paddingHorizontal: 2 },
+  addProgressActionText: { color: "#642D2A", fontSize: 14, fontWeight: "900", textDecorationColor: "#A95B5B", textDecorationLine: "underline" },
+  timelineList: { marginTop: 16 },
+  timelineDay: { borderTopColor: "#D4C9B9", borderTopWidth: 1, gap: 7, paddingVertical: 17 },
+  timelineDate: { color: "#642D2A", fontFamily: "Courier", fontSize: 12, fontWeight: "800", letterSpacing: 1 },
+  timelineRow: { color: "#101015", fontSize: 15, fontWeight: "700", lineHeight: 21 },
+  photoViewerBackdrop: { alignItems: "center", backgroundColor: "rgba(16, 16, 21, 0.9)", flex: 1, justifyContent: "center", padding: 20 },
+  photoViewer: { backgroundColor: "#F4EFE7", gap: 13, maxHeight: "92%", maxWidth: 760, padding: 16, width: "100%" },
+  photoViewerImage: { backgroundColor: "#101015", height: 460, width: "100%" },
+  photoViewerNote: { color: "#2C2C31", fontSize: 13, lineHeight: 19 },
   progressEdit: { alignItems: "flex-end", gap: 8, width: 132 },
   progressDateInput: {
     borderBottomColor: "#6A7CA0",
@@ -2759,6 +3119,100 @@ const styles = StyleSheet.create({
     backgroundColor: "#FBF7F0",
   },
   activePlanCard: { borderColor: "#642D2A", borderWidth: 2 },
+  planSwitcher: {
+    alignItems: "center",
+    borderBottomColor: "#D4C9B9",
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 18,
+    paddingBottom: 12,
+  },
+  planSwitchItem: { minHeight: 40, justifyContent: "center", paddingHorizontal: 10 },
+  planSwitchItemActive: { backgroundColor: "#101015" },
+  planSwitchText: { color: "#655D57", fontSize: 13, fontWeight: "800" },
+  planSwitchTextActive: { color: "#F4EFE7" },
+  planSwitchAdd: { minHeight: 40, justifyContent: "center", marginLeft: "auto", paddingHorizontal: 8 },
+  planSwitchAddText: { color: "#642D2A", fontSize: 13, fontWeight: "800", textDecorationColor: "#A95B5B", textDecorationLine: "underline" },
+  planHeader: {
+    borderBottomColor: "#101015",
+    borderBottomWidth: 1,
+    gap: 20,
+    marginTop: 18,
+    paddingBottom: 22,
+  },
+  planHeaderCopy: { flex: 1 },
+  planHeaderTitle: { color: "#101015", fontSize: 36, fontWeight: "900", letterSpacing: -1.8, lineHeight: 39 },
+  planHeaderMeta: { color: "#642D2A", fontFamily: "Courier", fontSize: 12, fontWeight: "800", letterSpacing: 1, marginTop: 8 },
+  planDescription: { color: "#655D57", fontSize: 15, lineHeight: 22, marginTop: 9 },
+  planHeaderActions: { alignItems: "flex-start", flexDirection: "row", flexWrap: "wrap", gap: 9 },
+  planPrimaryAction: { alignItems: "center", backgroundColor: "#101015", justifyContent: "center", minHeight: 46, paddingHorizontal: 16 },
+  planPrimaryActionText: { color: "#F4EFE7", fontSize: 14, fontWeight: "800" },
+  planSecondaryAction: { alignItems: "center", borderColor: "#101015", borderWidth: 1, justifyContent: "center", minHeight: 42, paddingHorizontal: 13 },
+  planSecondaryActionText: { color: "#101015", fontSize: 13, fontWeight: "800" },
+  dayTabs: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 16 },
+  dayTab: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, minHeight: 40, justifyContent: "center", paddingHorizontal: 8 },
+  dayTabActive: { borderBottomColor: "#642D2A", borderBottomWidth: 3 },
+  dayTabText: { color: "#655D57", fontSize: 14, fontWeight: "700" },
+  dayTabTextActive: { color: "#101015", fontWeight: "900" },
+  planWorkspace: { borderTopColor: "#101015", borderTopWidth: 1, marginTop: 12 },
+  planWorkspaceDesktop: { flexDirection: "row" },
+  exerciseLedger: { flex: 1, paddingTop: 18 },
+  ledgerHeader: { alignItems: "flex-start", flexDirection: "row", gap: 12, justifyContent: "space-between", paddingBottom: 10 },
+  ledgerDayName: { fontSize: 23, fontWeight: "900", letterSpacing: -1, minWidth: 180, paddingBottom: 5, paddingTop: 0 },
+  ledgerCount: { color: "#655D57", fontSize: 13, paddingTop: 18 },
+  ledgerList: { borderTopColor: "#D4C9B9", borderTopWidth: 1 },
+  ledgerRow: { alignItems: "center", borderBottomColor: "#D4C9B9", borderBottomWidth: 1, flexDirection: "row", gap: 10, minHeight: 60, paddingHorizontal: 4, paddingVertical: 9 },
+  ledgerRowActive: { backgroundColor: "#E8DED2" },
+  dragHandle: { color: "#8A817A", fontSize: 18, fontWeight: "800", width: 17 },
+  ledgerOrder: { color: "#642D2A", fontFamily: "Courier", fontSize: 11, fontWeight: "800", width: 24 },
+  ledgerRowCopy: { flex: 1 },
+  ledgerExerciseName: { color: "#101015", fontSize: 16, fontWeight: "800" },
+  ledgerExerciseMeta: { color: "#655D57", fontSize: 13, marginTop: 3 },
+  ledgerSelect: { color: "#642D2A", fontSize: 24, fontWeight: "400", lineHeight: 24 },
+  ledgerEmpty: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, gap: 7, paddingVertical: 24 },
+  ledgerEmptyTitle: { color: "#101015", fontSize: 19, fontWeight: "900" },
+  addExerciseAction: { alignSelf: "flex-start", minHeight: 46, justifyContent: "center", marginTop: 12, paddingHorizontal: 2 },
+  addExerciseActionText: { color: "#642D2A", fontSize: 15, fontWeight: "900", textDecorationColor: "#A95B5B", textDecorationLine: "underline" },
+  exerciseEditor: { backgroundColor: "#FBF7F0", borderLeftColor: "#D4C9B9", borderLeftWidth: 1, flexBasis: 330, gap: 13, padding: 22 },
+  editorEmpty: { backgroundColor: "#FBF7F0", borderLeftColor: "#D4C9B9", borderLeftWidth: 1, flexBasis: 330, gap: 8, justifyContent: "center", padding: 22 },
+  editorHeading: { alignItems: "flex-start", flexDirection: "row", gap: 12, justifyContent: "space-between" },
+  editorCopy: { flex: 1 },
+  editorLabel: { color: "#642D2A", fontFamily: "Courier", fontSize: 11, fontWeight: "800", letterSpacing: 1.4 },
+  editorTitle: { color: "#101015", fontSize: 25, fontWeight: "900", letterSpacing: -1, lineHeight: 29, marginTop: 8 },
+  editorMeta: { color: "#655D57", fontSize: 13, marginTop: 5 },
+  editorClose: { minHeight: 40, justifyContent: "center", paddingHorizontal: 6 },
+  editorCloseText: { color: "#642D2A", fontSize: 13, fontWeight: "800", textDecorationColor: "#A95B5B", textDecorationLine: "underline" },
+  editorRule: { backgroundColor: "#D4C9B9", height: 1, marginVertical: 3 },
+  editorFieldLabel: { color: "#655D57", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },
+  editorValue: { color: "#101015", fontSize: 20, fontWeight: "900" },
+  editorHint: { color: "#655D57", fontSize: 13, lineHeight: 19 },
+  editorActions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 5 },
+  editorAction: { alignItems: "center", borderColor: "#D4C9B9", borderWidth: 1, justifyContent: "center", minHeight: 42, paddingHorizontal: 12 },
+  editorActionText: { color: "#101015", fontSize: 13, fontWeight: "800" },
+  editorRemove: { alignSelf: "flex-start", minHeight: 42, justifyContent: "center", marginTop: 3, paddingHorizontal: 2 },
+  editorRemoveText: { color: "#A95B5B", fontSize: 13, fontWeight: "800", textDecorationLine: "underline" },
+  planEmptyState: { gap: 12, marginTop: 80, maxWidth: 540 },
+  modalBackdrop: { alignItems: "stretch", backgroundColor: "rgba(16, 16, 21, 0.45)", flex: 1, justifyContent: "flex-end" },
+  modalPanel: { backgroundColor: "#F4EFE7", borderTopColor: "#101015", borderTopWidth: 1, gap: 14, maxHeight: "88%", padding: 22 },
+  modalPanelDesktop: { alignSelf: "center", borderColor: "#101015", borderWidth: 1, maxWidth: 640, width: "92%" },
+  mobileEditorSheet: { backgroundColor: "#FBF7F0", borderTopColor: "#101015", borderTopWidth: 1, maxHeight: "80%" },
+  modalHeader: { alignItems: "flex-start", flexDirection: "row", gap: 16, justifyContent: "space-between" },
+  modalTitle: { color: "#101015", fontSize: 25, fontWeight: "900", letterSpacing: -1, marginTop: 6 },
+  modalPlanName: { color: "#655D57", fontSize: 14, marginTop: 5 },
+  modalClose: { minHeight: 40, justifyContent: "center", paddingHorizontal: 4 },
+  searchInput: { backgroundColor: "#FBF7F0", borderColor: "#101015", borderWidth: 1, color: "#101015", fontSize: 16, minHeight: 48, paddingHorizontal: 12 },
+  exerciseResults: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, borderTopColor: "#D4C9B9", borderTopWidth: 1, maxHeight: 280 },
+  exerciseResult: { alignItems: "center", borderBottomColor: "#D4C9B9", borderBottomWidth: 1, flexDirection: "row", justifyContent: "space-between", minHeight: 58, paddingHorizontal: 4, paddingVertical: 8 },
+  exerciseResultActive: { backgroundColor: "#101015", paddingHorizontal: 10 },
+  exerciseResultName: { color: "#101015", fontSize: 15, fontWeight: "800" },
+  exerciseResultNameActive: { color: "#F4EFE7" },
+  exerciseResultMeta: { color: "#655D57", fontSize: 12, marginTop: 3 },
+  exerciseResultMetaActive: { color: "#D4C9B9" },
+  exerciseResultAdd: { color: "#642D2A", fontSize: 12, fontWeight: "800" },
+  addExerciseDetails: { gap: 10 },
+  addExerciseSelected: { color: "#101015", fontSize: 16, fontWeight: "900" },
   planHeading: {
     alignItems: "flex-start",
     flexDirection: "row",
@@ -2868,6 +3322,19 @@ const styles = StyleSheet.create({
   },
   dashboardPrimaryMeta: { color: "#655D57", fontSize: 15, lineHeight: 22, marginTop: 8 },
   dashboardMovementList: { color: "#2C2C31", fontSize: 14, lineHeight: 21, marginTop: 7 },
+  recoveryRecord: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, borderTopColor: "#101015", borderTopWidth: 1, gap: 18, marginTop: 30, paddingVertical: 18 },
+  recoveryRecordDesktop: { alignItems: "flex-start", flexDirection: "row", flexWrap: "wrap", gap: 26 },
+  recoveryHeading: { gap: 7, width: "100%" },
+  recoveryIntro: { color: "#655D57", fontSize: 14, lineHeight: 20 },
+  recoveryMap: { flex: 1, minWidth: 260 },
+  recoveryDetails: { flex: 1, gap: 0, minWidth: 240 },
+  recoverySubhead: { color: "#642D2A", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.25, marginBottom: 5 },
+  recoveryRow: { alignItems: "center", borderBottomColor: "#D4C9B9", borderBottomWidth: 1, flexDirection: "row", justifyContent: "space-between", paddingVertical: 10 },
+  recoveryGroup: { color: "#101015", fontSize: 16, fontWeight: "800" },
+  recoveryEta: { color: "#642D2A", fontFamily: "Courier", fontSize: 11, fontWeight: "800", letterSpacing: 0.4 },
+  recoveryReadyLabel: { marginTop: 18 },
+  recoveryReady: { color: "#2C2C31", fontSize: 14, fontWeight: "700", lineHeight: 21 },
+  recoveryEmpty: { color: "#655D57", fontSize: 14, lineHeight: 21 },
   dashboardSecondary: { gap: 30, marginTop: 30 },
   dashboardSecondaryDesktop: { flexDirection: "row", gap: 36 },
   weeklyRecord: { flex: 1 },
@@ -2939,9 +3406,43 @@ const styles = StyleSheet.create({
   bottomNavText: { color: "#655D57", fontSize: 12, fontWeight: "700" },
   bottomNavTextActive: { color: "#101015", fontWeight: "900" },
   actionButtonText: { color: "#F4EFE7", fontSize: 14, fontWeight: "800" },
-  dayAction: { borderColor: "#D4C9B9", borderTopWidth: 1, paddingVertical: 12 },
-  dayActionText: { color: "#101015", fontSize: 16, fontWeight: "800" },
-  dayActionMeta: { color: "#655D57", fontSize: 13, marginTop: 3 },
+  sessionDayPicker: { alignItems: "center", borderColor: "#101015", borderWidth: 1, flexDirection: "row", justifyContent: "space-between", marginTop: 16, minHeight: 70, paddingHorizontal: 14, paddingVertical: 12 },
+  sessionDayPickerTitle: { color: "#101015", fontSize: 16, fontWeight: "800" },
+  sessionDayPickerMeta: { color: "#655D57", fontSize: 13, marginTop: 3 },
+  sessionDayPickerText: { color: "#642D2A", fontSize: 13, fontWeight: "800", textDecorationColor: "#A95B5B", textDecorationLine: "underline" },
+  sessionDaySelectorList: { paddingBottom: 2 },
+  sessionDayOption: { alignItems: "center", borderTopColor: "#D4C9B9", borderTopWidth: 1, flexDirection: "row", justifyContent: "space-between", minHeight: 66, paddingVertical: 11 },
+  sessionDayOptionTitle: { color: "#101015", fontSize: 16, fontWeight: "800" },
+  sessionDayOptionMeta: { color: "#655D57", fontSize: 13, marginTop: 3 },
+  sessionActionPanel: { borderColor: "#D4C9B9", borderWidth: 1, gap: 14, marginTop: 22, maxWidth: 680, padding: 16 },
+  sessionActionPanelDesktop: { alignSelf: "flex-start", minWidth: 520 },
+  activeSessionPanel: { borderColor: "#101015" },
+  sessionActionHeader: { alignItems: "flex-start", flexDirection: "row", gap: 14, justifyContent: "space-between" },
+  sessionActionCopy: { flex: 1 },
+  sessionActionTitle: { color: "#101015", fontSize: 22, fontWeight: "900", letterSpacing: -0.9, lineHeight: 27, marginTop: 8 },
+  sessionActionMeta: { color: "#655D57", fontSize: 14, lineHeight: 21, marginTop: 5 },
+  sessionContinueButton: { alignItems: "center", backgroundColor: "#101015", justifyContent: "center", minHeight: 52, paddingHorizontal: 16 },
+  sessionContinueButtonText: { color: "#F4EFE7", fontSize: 15, fontWeight: "800" },
+  sessionDetailsAction: { alignSelf: "flex-start", minHeight: 36, justifyContent: "center" },
+  sessionLinkContent: { alignItems: "center", flexDirection: "row", gap: 6 },
+  sessionDetailsActionText: { color: "#642D2A", fontSize: 13, fontWeight: "800", textDecorationColor: "#A95B5B", textDecorationLine: "underline" },
+  sessionHistory: { borderTopColor: "#D4C9B9", borderTopWidth: 1, marginTop: 12, maxWidth: 760 },
+  sessionHistoryRow: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, gap: 11, paddingVertical: 15 },
+  sessionHistoryCopy: { minHeight: 44 },
+  sessionHistoryTitle: { color: "#101015", fontSize: 17, fontWeight: "900", letterSpacing: -0.5 },
+  sessionHistoryMeta: { color: "#655D57", fontSize: 13, lineHeight: 19, marginTop: 4 },
+  sessionHistoryActions: { alignItems: "center", flexDirection: "row", gap: 14, justifyContent: "space-between" },
+  sessionViewAction: { minHeight: 44, justifyContent: "center" },
+  sessionViewActionText: { color: "#642D2A", fontSize: 13, fontWeight: "800", textDecorationColor: "#A95B5B", textDecorationLine: "underline" },
+  sessionOverflowButton: { alignItems: "center", justifyContent: "center", minHeight: 44, minWidth: 44 },
+  sessionHistoryEmpty: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, borderTopColor: "#D4C9B9", borderTopWidth: 1, gap: 6, marginTop: 12, maxWidth: 760, paddingVertical: 20 },
+  sessionMenuItem: { borderTopColor: "#D4C9B9", borderTopWidth: 1, justifyContent: "center", minHeight: 52 },
+  sessionMenuItemText: { color: "#101015", fontSize: 15, fontWeight: "800" },
+  sessionMenuDangerText: { color: "#A95B5B", fontSize: 15, fontWeight: "800" },
+  sessionConfirmCopy: { color: "#2C2C31", fontSize: 15, lineHeight: 22 },
+  sessionConfirmActions: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: 10, justifyContent: "flex-end", marginTop: 4 },
+  sessionDangerButton: { alignItems: "center", backgroundColor: "#642D2A", justifyContent: "center", minHeight: 42, paddingHorizontal: 13 },
+  sessionDangerButtonText: { color: "#F4EFE7", fontSize: 13, fontWeight: "800" },
   buttonPressed: { backgroundColor: "#642D2A" },
   buttonDisabled: { opacity: 0.55 },
   notice: {

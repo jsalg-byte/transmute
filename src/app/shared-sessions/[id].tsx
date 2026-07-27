@@ -1,4 +1,5 @@
 import { router, useLocalSearchParams } from 'expo-router';
+import { ArrowLeft } from 'lucide-react-native';
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -33,7 +34,7 @@ export default function SharedSessionScreen() {
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
       <ScrollView contentContainerStyle={styles.wrap}>
         <Pressable accessibilityRole="link" onPress={() => router.replace('/friends')}>
-          <Text style={styles.back}>← Friend activity</Text>
+          <View style={styles.backLink}><ArrowLeft color="#642D2A" size={17} strokeWidth={2.4} /><Text style={styles.back}>Friend activity</Text></View>
         </Pressable>
         {!detail && !error ? <View style={styles.loading}><ActivityIndicator color="#642D2A" /><Text style={styles.body}>Loading shared workout…</Text></View> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -67,7 +68,7 @@ export default function SharedSessionScreen() {
 const styles = StyleSheet.create({
   safeArea: { backgroundColor: '#F4EFE7', flex: 1 },
   wrap: { alignSelf: 'center', maxWidth: 760, padding: 24, paddingBottom: 56, width: '100%' },
-  back: { color: '#642D2A', fontSize: 14, fontWeight: '800', textDecorationLine: 'underline' },
+  backLink: { alignItems: 'center', alignSelf: 'flex-start', flexDirection: 'row', gap: 6 }, back: { color: '#642D2A', fontSize: 14, fontWeight: '800', textDecorationLine: 'underline' },
   loading: { gap: 10, marginTop: 80 },
   eyebrow: { color: '#642D2A', fontFamily: 'Courier', fontSize: 12, letterSpacing: 1.5, marginTop: 28 },
   title: { color: '#101015', fontSize: 34, fontWeight: '900', letterSpacing: -1.8, lineHeight: 40, marginTop: 12 },

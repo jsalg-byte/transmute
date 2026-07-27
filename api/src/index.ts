@@ -10,6 +10,8 @@ import postgres from 'postgres';
 import type { Worker } from 'tesseract.js';
 import { z } from 'zod';
 
+import { getCalistreeExerciseMetadata, searchCalistreeExercises } from './calistree.js';
+
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   JWT_ACCESS_SECRET: z.string().min(32),
@@ -112,6 +114,10 @@ const sessionExerciseSchema = z.object({
   targetReps: z.number().int().positive().max(50).optional(),
   targetWeight: z.number().nonnegative().max(2000).optional(),
 });
+const calistreeSearchSchema = z.object({ q: z.string().trim().min(2).max(120) });
+const calistreeExerciseSchema = z.object({ name: z.string().trim().min(2).max(120).optional(), slug: z.string().trim().min(2).max(180).optional() })
+  .refine((value) => Boolean(value.name || value.slug), 'An exercise name or Calistree slug is required.');
+const calistreeImportSchema = z.object({ slug: z.string().trim().min(2).max(180) });
 const foodSchema = z.object({
   name: z.string().trim().min(2).max(120),
   barcodeUpc: z.string().trim().regex(/^\d+$/).min(8).max(14).optional(),
@@ -631,6 +637,37 @@ app.put('/v1/exercises/:id/demo', async (request, reply) => {
   return reply.send({ demo: { exerciseId: demo.exercise_id, demoUrl: demo.gif_url, sourceName: demo.source_name } });
 });
 
+app.get('/v1/calistree/exercises', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = calistreeSearchSchema.safeParse(request.query);
+  if (!parsed.success) return reply.code(400).send({ error: 'Enter at least two characters to search Calistree.' });
+
+  try {
+    const results = await searchCalistreeExercises(parsed.data.q);
+    return reply.send({ results });
+  } catch (error) {
+    request.log.error(error, 'Calistree catalog search failed');
+    return reply.code(502).send({ error: 'Calistree is unavailable right now. Try again shortly.' });
+  }
+});
+
+app.get('/v1/calistree/exercise', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = calistreeExerciseSchema.safeParse(request.query);
+  if (!parsed.success) return reply.code(400).send({ error: 'Enter a valid Calistree exercise.' });
+
+  try {
+    const exercise = await getCalistreeExerciseMetadata(parsed.data);
+    if (!exercise) return reply.code(404).send({ error: 'No matching Calistree exercise was found.' });
+    return reply.send({ exercise });
+  } catch (error) {
+    request.log.error(error, 'Calistree exercise lookup failed');
+    return reply.code(502).send({ error: 'Calistree is unavailable right now. Try again shortly.' });
+  }
+});
+
 app.patch('/v1/plans/:id', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
@@ -848,28 +885,60 @@ app.get('/v1/sessions/:id', async (request, reply) => {
 
   const [plannedExercises, addedExercises, sets, libraryExercises, preferences] = await Promise.all([
     session.routine_day_id
-      ? sql<{ id: string; name: string; category: string; muscle_group: string | null; target_reps: number | null; target_weight: string | null }[]>`
-          SELECT e.id, e.name, e.category, e.muscle_group, rde.target_reps, rde.target_weight
+      ? sql<{ id: string; name: string; category: string; muscle_group: string | null; target_sets: number | null; target_reps: number | null; target_weight: string | null; demo_url: string | null; demo_source_name: string | null }[]>`
+          SELECT e.id, e.name, e.category, e.muscle_group, rde.target_sets, rde.target_reps, rde.target_weight,
+            ego.gif_url AS demo_url, ego.source_name AS demo_source_name
           FROM routine_day_exercises rde INNER JOIN exercises e ON e.id = rde.exercise_id
+          LEFT JOIN exercise_gif_overrides ego ON ego.exercise_id = e.id AND ego.user_id = ${userId}
           WHERE rde.routine_day_id = ${session.routine_day_id} ORDER BY rde.sort_order ASC
         `
       : Promise.resolve([]),
-    sql<{ id: string; name: string; category: string; muscle_group: string | null; target_reps: number | null; target_weight: string | null }[]>`
-      SELECT e.id, e.name, e.category, e.muscle_group, se.target_reps, se.target_weight
+    sql<{ id: string; name: string; category: string; muscle_group: string | null; target_sets: number | null; target_reps: number | null; target_weight: string | null; demo_url: string | null; demo_source_name: string | null }[]>`
+      SELECT e.id, e.name, e.category, e.muscle_group, null::integer AS target_sets, se.target_reps, se.target_weight,
+        ego.gif_url AS demo_url, ego.source_name AS demo_source_name
       FROM session_exercises se INNER JOIN exercises e ON e.id = se.exercise_id
+      LEFT JOIN exercise_gif_overrides ego ON ego.exercise_id = e.id AND ego.user_id = ${userId}
       WHERE se.session_id = ${session.id} ORDER BY se.sort_order ASC
     `,
     sql<{ id: string; exercise_id: string; set_order: number; reps: number; weight: string | null; is_warmup: boolean; created_at: Date }[]>`
       SELECT id, exercise_id, set_order, reps, weight, is_warmup, created_at
       FROM workout_sets WHERE session_id = ${session.id} ORDER BY set_order ASC, created_at ASC
     `,
-    sql<{ id: string; name: string; category: string; muscle_group: string | null }[]>`
-      SELECT id, name, category, muscle_group FROM exercises ORDER BY name ASC LIMIT 300
+    sql<{ id: string; name: string; category: string; muscle_group: string | null; demo_url: string | null; demo_source_name: string | null }[]>`
+      SELECT e.id, e.name, e.category, e.muscle_group,
+        ego.gif_url AS demo_url, ego.source_name AS demo_source_name
+      FROM exercises e
+      LEFT JOIN exercise_gif_overrides ego ON ego.exercise_id = e.id AND ego.user_id = ${userId}
+      ORDER BY e.name ASC LIMIT 300
     `,
     sql<{ weight_unit: string }[]>`SELECT weight_unit FROM user_preferences WHERE user_id = ${userId} LIMIT 1`,
   ]);
 
   const plannedIds = new Set(plannedExercises.map((exercise) => exercise.id));
+  const sessionExercises = [...plannedExercises, ...addedExercises.filter((exercise) => !plannedIds.has(exercise.id))];
+  const sessionExerciseIds = sessionExercises.map((exercise) => exercise.id);
+  const previousPerformances = sessionExerciseIds.length
+    ? await sql<{ exercise_id: string; started_at: Date; ordinal: number; reps: number; weight: string | null }[]>`
+        WITH latest_completed AS (
+          SELECT DISTINCT ON (wset.exercise_id) wset.exercise_id, ws.id AS session_id, ws.started_at
+          FROM workout_sets wset
+          INNER JOIN workout_sessions ws ON ws.id = wset.session_id
+          WHERE ws.user_id = ${userId}
+            AND ws.status = 'completed'
+            AND ws.id <> ${session.id}
+            AND wset.is_warmup = false
+            AND wset.exercise_id = ANY(${sessionExerciseIds}::uuid[])
+          ORDER BY wset.exercise_id, ws.started_at DESC, ws.id DESC
+        )
+        SELECT wset.exercise_id, latest_completed.started_at,
+          row_number() OVER (PARTITION BY wset.exercise_id ORDER BY wset.created_at ASC, wset.id ASC)::int AS ordinal,
+          wset.reps, wset.weight
+        FROM workout_sets wset
+        INNER JOIN latest_completed ON latest_completed.session_id = wset.session_id AND latest_completed.exercise_id = wset.exercise_id
+        WHERE wset.is_warmup = false
+        ORDER BY wset.exercise_id, ordinal ASC
+      `
+    : [];
   return reply.send({
     session: {
       id: session.id,
@@ -880,9 +949,10 @@ app.get('/v1/sessions/:id', async (request, reply) => {
       dayName: session.day_name,
       weightUnit: preferences[0]?.weight_unit === 'kg' ? 'kg' : 'lbs',
     },
-    exercises: [...plannedExercises, ...addedExercises.filter((exercise) => !plannedIds.has(exercise.id))].map((exercise) => ({ id: exercise.id, name: exercise.name, category: exercise.category, muscleGroup: exercise.muscle_group, targetReps: exercise.target_reps, targetWeight: exercise.target_weight })),
-    libraryExercises: libraryExercises.map((exercise) => ({ id: exercise.id, name: exercise.name, category: exercise.category, muscleGroup: exercise.muscle_group })),
+    exercises: sessionExercises.map((exercise) => ({ id: exercise.id, name: exercise.name, category: exercise.category, muscleGroup: exercise.muscle_group, targetSets: exercise.target_sets, targetReps: exercise.target_reps, targetWeight: exercise.target_weight, demoUrl: exercise.demo_url, demoSourceName: exercise.demo_source_name })),
+    libraryExercises: libraryExercises.map((exercise) => ({ id: exercise.id, name: exercise.name, category: exercise.category, muscleGroup: exercise.muscle_group, demoUrl: exercise.demo_url, demoSourceName: exercise.demo_source_name })),
     sets: sets.map((set) => ({ id: set.id, exerciseId: set.exercise_id, setOrder: set.set_order, reps: set.reps, weight: set.weight, isWarmup: set.is_warmup, createdAt: set.created_at })),
+    previousPerformances: previousPerformances.map((set) => ({ exerciseId: set.exercise_id, startedAt: set.started_at, order: set.ordinal, reps: set.reps, weight: set.weight })),
   });
 });
 
@@ -997,6 +1067,77 @@ app.post('/v1/sessions/:id/exercises', async (request, reply) => {
       name: selectedExercise.name,
       category: selectedExercise.category,
       muscleGroup: selectedExercise.muscle_group,
+    },
+  });
+});
+
+app.post('/v1/sessions/:id/calistree-exercises', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = calistreeImportSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid Calistree exercise payload.' });
+
+  let metadata;
+  try {
+    metadata = await getCalistreeExerciseMetadata({ slug: parsed.data.slug });
+  } catch (error) {
+    request.log.error(error, 'Calistree exercise import lookup failed');
+    return reply.code(502).send({ error: 'Calistree is unavailable right now. Try again shortly.' });
+  }
+  if (!metadata) return reply.code(404).send({ error: 'No matching Calistree exercise was found.' });
+
+  const result = await sql.begin(async (transaction) => {
+    const [session] = await transaction<{ id: string; status: string }[]>`
+      SELECT id, status FROM workout_sessions WHERE id = ${params.data.id} AND user_id = ${userId} LIMIT 1
+    `;
+    if (!session) return { kind: 'missing-session' as const };
+    if (session.status !== 'active') return { kind: 'inactive-session' as const };
+
+    const [existing] = await transaction<{ id: string; name: string; category: string; muscle_group: string | null }[]>`
+      SELECT id, name, category, muscle_group FROM exercises
+      WHERE lower(name) = lower(${metadata.name}) LIMIT 1
+    `;
+    const exercise = existing ?? (await transaction<{ id: string; name: string; category: string; muscle_group: string | null }[]>`
+      INSERT INTO exercises (id, name, category, muscle_group, created_by_user_id, created_at)
+      VALUES (${randomUUID()}, ${metadata.name}, ${metadata.category}, ${metadata.muscleGroup}, ${userId}, now())
+      RETURNING id, name, category, muscle_group
+    `)[0];
+
+    const sourceName = JSON.stringify({ provider: 'Calistree', sourceUrl: metadata.sourceUrl, importedAt: new Date().toISOString() });
+    if (metadata.videoUrl) {
+      await transaction`
+        INSERT INTO exercise_gif_overrides (id, user_id, exercise_id, gif_url, source_name, created_at, updated_at)
+        VALUES (${randomUUID()}, ${userId}, ${exercise.id}, ${metadata.videoUrl}, ${sourceName}, now(), now())
+        ON CONFLICT (user_id, exercise_id) DO UPDATE
+          SET gif_url = EXCLUDED.gif_url, source_name = EXCLUDED.source_name, updated_at = now()
+      `;
+    }
+
+    const [entry] = await transaction<{ id: string }[]>`
+      INSERT INTO session_exercises (id, session_id, exercise_id, sort_order, target_reps, target_weight, created_at)
+      VALUES (
+        ${randomUUID()}, ${session.id}, ${exercise.id},
+        (SELECT coalesce(max(sort_order), -1) + 1 FROM session_exercises WHERE session_id = ${session.id}),
+        null, null, now()
+      )
+      ON CONFLICT (session_id, exercise_id) DO UPDATE SET exercise_id = EXCLUDED.exercise_id
+      RETURNING id
+    `;
+    return { kind: 'created' as const, entry, exercise, sourceName: metadata.videoUrl ? sourceName : null, videoUrl: metadata.videoUrl };
+  });
+
+  if (result.kind === 'missing-session') return reply.code(404).send({ error: 'Workout session not found.' });
+  if (result.kind === 'inactive-session') return reply.code(409).send({ error: 'Only active sessions can be changed.' });
+  return reply.code(201).send({
+    entry: { id: result.entry.id, exerciseId: result.exercise.id, name: result.exercise.name, category: result.exercise.category, muscleGroup: result.exercise.muscle_group },
+    exercise: {
+      id: result.exercise.id,
+      name: result.exercise.name,
+      category: result.exercise.category,
+      muscleGroup: result.exercise.muscle_group,
+      demoUrl: result.videoUrl,
+      demoSourceName: result.sourceName,
     },
   });
 });
@@ -1507,7 +1648,7 @@ app.get('/v1/record', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
 
-  const [user, activeSession, routines, planExercises, exercises, sessions, foods, meals, activeFast, fasts, progress, incoming, outgoing, preferences] = await Promise.all([
+  const [user, activeSession, routines, planExercises, exercises, sessions, recoverySessions, foods, meals, activeFast, fasts, progress, incoming, outgoing, preferences] = await Promise.all([
     sql`SELECT id, username, name, email FROM users WHERE id = ${userId} LIMIT 1`,
     sql`
       SELECT ws.id, ws.status, ws.started_at, ws.ended_at, r.name AS routine_name, rd.day_name
@@ -1568,6 +1709,18 @@ app.get('/v1/record', async (request, reply) => {
       WHERE ws.user_id = ${userId}
       GROUP BY ws.id, r.name, rd.day_name
       ORDER BY ws.started_at DESC LIMIT 80
+    `,
+    sql<{ ended_at: Date; muscle_group: string | null; working_set_count: number }[]>`
+      SELECT ws.ended_at, e.muscle_group, count(wset.id)::int AS working_set_count
+      FROM workout_sessions ws
+      INNER JOIN workout_sets wset ON wset.session_id = ws.id AND wset.is_warmup = false
+      INNER JOIN exercises e ON e.id = wset.exercise_id
+      WHERE ws.user_id = ${userId}
+        AND ws.status = 'completed'
+        AND ws.ended_at IS NOT NULL
+        AND ws.ended_at >= now() - interval '48 hours'
+      GROUP BY ws.id, ws.ended_at, e.muscle_group
+      ORDER BY ws.ended_at DESC
     `,
     sql`SELECT id, name, barcode_upc, calories_kcal, protein_g, carbs_g, fat_g, serving_size_g, serving_size_text FROM foods ORDER BY name ASC LIMIT 300`,
     sql`
@@ -1770,6 +1923,11 @@ app.get('/v1/record', async (request, reply) => {
             exerciseCount: nextPlannedDay.exerciseCount,
           }
         : null,
+      recoverySessions: recoverySessions.map((session) => ({
+        endedAt: session.ended_at,
+        muscleGroup: session.muscle_group,
+        workingSetCount: session.working_set_count,
+      })),
     },
     workoutPlans,
     exercises: (exercises as Array<{ id: string; name: string; category: string; muscle_group: string | null; demo_url: string | null; demo_source_name: string | null }>).map((exercise) => ({

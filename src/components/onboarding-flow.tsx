@@ -122,9 +122,12 @@ export function OnboardingFlow() {
               </Text>
             </>
           ) : (
-            <Pressable accessibilityRole="button" onPress={advance} disabled={isTransitioning} style={({ pressed }) => [styles.primaryButton, pressed && styles.primaryButtonPressed, isTransitioning && styles.buttonDisabled]}>
-              <Text style={styles.primaryButtonText}>Continue</Text>
-            </Pressable>
+            <>
+              <Pressable accessibilityRole="button" onPress={advance} disabled={isTransitioning} style={({ pressed }) => [styles.primaryButton, pressed && styles.primaryButtonPressed, isTransitioning && styles.buttonDisabled]}>
+                <Text style={styles.primaryButtonText}>Continue</Text>
+              </Pressable>
+              <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={styles.accountPromptSpacer} />
+            </>
           )}
         </View>
       </View>
@@ -166,5 +169,6 @@ const styles = StyleSheet.create({
   buttonDisabled: { opacity: 0.62 },
   primaryButtonText: { color: '#F4EFE7', fontSize: 16, fontWeight: '800' },
   accountPrompt: { color: '#222328', fontSize: 14, fontWeight: '500', marginTop: 16 },
+  accountPromptSpacer: { height: 17, marginTop: 16 },
   accountLink: { fontWeight: '800', textDecorationColor: '#A95B5B', textDecorationLine: 'underline' },
 });
