@@ -10,6 +10,7 @@ import postgres from 'postgres';
 import type { Worker } from 'tesseract.js';
 import { z } from 'zod';
 
+import { requestAiWorkoutDraft } from './ai-workout.js';
 import { getCalistreeExerciseMetadata, searchCalistreeExercises } from './calistree.js';
 
 const envSchema = z.object({
@@ -25,6 +26,8 @@ const envSchema = z.object({
   S3_SECRET_ACCESS_KEY: z.string().min(1),
   S3_FORCE_PATH_STYLE: z.string().optional(),
   ADMIN_IDENTIFIERS: z.string().optional(),
+  AI_WORKOUT_WORKER_URL: z.string().url().optional(),
+  AI_WORKOUT_WORKER_TOKEN: z.string().min(32).optional(),
 });
 
 const env = envSchema.parse(process.env);
@@ -88,6 +91,22 @@ const planDayExerciseSchema = z.object({
   targetReps: z.number().int().positive().max(50).optional(),
   targetWeight: z.number().nonnegative().max(2000).optional(),
 });
+const aiWorkoutPromptSchema = z.object({ prompt: z.string().trim().min(12).max(2_000) });
+const aiWorkoutExerciseSchema = z.object({
+  exerciseId: z.string().uuid(),
+  targetSets: z.number().int().min(1).max(12),
+  targetReps: z.number().int().min(1).max(50).optional(),
+  targetWeight: z.number().nonnegative().max(2_000).optional(),
+});
+const aiWorkoutDraftSchema = z.object({
+  name: z.string().trim().min(2).max(80),
+  description: z.string().trim().max(200).optional(),
+  days: z.array(z.object({
+    name: z.string().trim().min(2).max(32),
+    exercises: z.array(aiWorkoutExerciseSchema).min(1).max(12),
+  })).min(1).max(7),
+});
+const aiWorkoutImportSchema = z.object({ plan: aiWorkoutDraftSchema });
 const reorderSchema = z.object({ direction: z.enum(['up', 'down']) });
 const exerciseSchema = z.object({
   name: z.string().trim().min(2).max(120),
@@ -603,6 +622,96 @@ app.post('/v1/plans', async (request, reply) => {
 
   return reply.code(201).send({
     plan: { id: plan.id, name: plan.name, description: plan.description, createdAt: plan.created_at, days: [{ id: plan.day.id, name: plan.day.day_name, sortOrder: plan.day.sort_order, exerciseCount: 0 }] },
+  });
+});
+
+function parseAiWorkoutDraft(response: string) {
+  const unwrapped = response.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  const start = unwrapped.indexOf('{');
+  const end = unwrapped.lastIndexOf('}');
+  if (start < 0 || end <= start) throw new Error('The plan assistant did not return a JSON workout draft.');
+  const parsed = aiWorkoutDraftSchema.safeParse(JSON.parse(unwrapped.slice(start, end + 1)));
+  if (!parsed.success) throw new Error('The plan assistant returned an invalid workout draft. Please try again.');
+  return parsed.data;
+}
+
+app.post('/v1/ai/workout-drafts', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = aiWorkoutPromptSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Describe the plan you want in at least 12 characters.' });
+  if (!env.AI_WORKOUT_WORKER_URL || !env.AI_WORKOUT_WORKER_TOKEN) {
+    return reply.code(503).send({ error: 'The plan assistant is not configured yet.' });
+  }
+
+  const exercises = await sql<{ id: string; name: string; category: string; muscle_group: string | null }[]>`
+    SELECT id, name, category, muscle_group FROM exercises ORDER BY name ASC LIMIT 300
+  `;
+  if (!exercises.length) return reply.code(409).send({ error: 'Add exercises to the library before creating an AI plan.' });
+
+  try {
+    const response = await requestAiWorkoutDraft({
+      workerUrl: env.AI_WORKOUT_WORKER_URL,
+      workerToken: env.AI_WORKOUT_WORKER_TOKEN,
+      prompt: parsed.data.prompt,
+      exerciseCatalog: exercises.map((exercise) => ({
+        id: exercise.id,
+        name: exercise.name,
+        category: exercise.category,
+        muscleGroup: exercise.muscle_group,
+      })),
+    });
+    return reply.send({ draft: parseAiWorkoutDraft(response) });
+  } catch (error) {
+    request.log.error(error, 'AI workout draft generation failed');
+    return reply.code(502).send({ error: error instanceof Error ? error.message : 'The plan assistant could not respond right now.' });
+  }
+});
+
+app.post('/v1/ai/workout-plans', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = aiWorkoutImportSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid AI workout plan.' });
+  const draft = parsed.data.plan;
+  const exerciseIds = [...new Set(draft.days.flatMap((day) => day.exercises.map((exercise) => exercise.exerciseId)))];
+  const exerciseRows = await sql<{ id: string }[]>`SELECT id FROM exercises WHERE id = ANY(${exerciseIds}::uuid[])`;
+  if (exerciseRows.length !== exerciseIds.length) {
+    return reply.code(409).send({ error: 'One or more exercises in this draft are no longer available. Generate it again.' });
+  }
+
+  const plan = await sql.begin(async (transaction) => {
+    const [created] = await transaction<{ id: string; name: string; description: string | null; created_at: Date }[]>`
+      INSERT INTO routines (id, user_id, name, description, is_preset, created_at, updated_at)
+      VALUES (${randomUUID()}, ${userId}, ${draft.name}, ${draft.description ?? null}, false, now(), now())
+      RETURNING id, name, description, created_at
+    `;
+    const days = [] as Array<{ id: string; name: string; sortOrder: number; exercises: typeof draft.days[number]['exercises'] }>;
+    for (const [dayIndex, day] of draft.days.entries()) {
+      const [createdDay] = await transaction<{ id: string; day_name: string; sort_order: number }[]>`
+        INSERT INTO routine_days (id, routine_id, day_name, sort_order, created_at)
+        VALUES (${randomUUID()}, ${created.id}, ${day.name}, ${dayIndex}, now())
+        RETURNING id, day_name, sort_order
+      `;
+      for (const [exerciseIndex, exercise] of day.exercises.entries()) {
+        await transaction`
+          INSERT INTO routine_day_exercises (id, routine_day_id, exercise_id, sort_order, target_sets, target_reps, target_weight)
+          VALUES (${randomUUID()}, ${createdDay.id}, ${exercise.exerciseId}, ${exerciseIndex}, ${exercise.targetSets}, ${exercise.targetReps ?? null}, ${exercise.targetWeight?.toString() ?? null})
+        `;
+      }
+      days.push({ id: createdDay.id, name: createdDay.day_name, sortOrder: createdDay.sort_order, exercises: day.exercises });
+    }
+    return { created, days };
+  });
+
+  return reply.code(201).send({
+    plan: {
+      id: plan.created.id,
+      name: plan.created.name,
+      description: plan.created.description,
+      createdAt: plan.created.created_at,
+      days: plan.days.map((day) => ({ id: day.id, name: day.name, sortOrder: day.sortOrder, exerciseCount: day.exercises.length })),
+    },
   });
 });
 

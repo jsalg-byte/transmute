@@ -16,6 +16,20 @@ export type MobileSession = {
   user: MobileUser;
 };
 
+export type AiWorkoutPlanDraft = {
+  name: string;
+  description?: string;
+  days: {
+    name: string;
+    exercises: {
+      exerciseId: string;
+      targetSets: number;
+      targetReps?: number;
+      targetWeight?: number;
+    }[];
+  }[];
+};
+
 export type AdminUser = {
   id: string;
   username: string;
@@ -279,6 +293,18 @@ export async function signOut() {
 export async function createWorkoutPlan(payload: { name: string; description?: string }) {
   return authenticatedRequest<{ plan: TransmuteRecord['workoutPlans'][number] }>('/v1/plans', {
     method: 'POST', body: JSON.stringify(payload),
+  });
+}
+
+export async function generateAiWorkoutPlan(prompt: string) {
+  return authenticatedRequest<{ draft: AiWorkoutPlanDraft }>('/v1/ai/workout-drafts', {
+    method: 'POST', body: JSON.stringify({ prompt }),
+  });
+}
+
+export async function importAiWorkoutPlan(plan: AiWorkoutPlanDraft) {
+  return authenticatedRequest<{ plan: TransmuteRecord['workoutPlans'][number] }>('/v1/ai/workout-plans', {
+    method: 'POST', body: JSON.stringify({ plan }),
   });
 }
 

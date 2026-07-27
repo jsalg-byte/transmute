@@ -39,6 +39,8 @@ import {
   deleteWorkoutSession,
   getAdminUsers,
   getRecord,
+  generateAiWorkoutPlan,
+  importAiWorkoutPlan,
   lookupBarcode,
   rejectFriendRequest,
   removeFriend,
@@ -59,6 +61,7 @@ import {
   updateWorkoutPlan,
   updateWorkoutPlanDay,
   type AdminUser,
+  type AiWorkoutPlanDraft,
   type TransmuteRecord,
 } from "../lib/api";
 
@@ -669,6 +672,10 @@ function WorkoutPlansContent({
   const [exerciseBrowserOpen, setExerciseBrowserOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [createPlanOpen, setCreatePlanOpen] = useState(false);
+  const [aiPlanOpen, setAiPlanOpen] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiDraft, setAiDraft] = useState<AiWorkoutPlanDraft | null>(null);
+  const [generatingPlan, setGeneratingPlan] = useState(false);
   const [exerciseQuery, setExerciseQuery] = useState("");
   const [pendingExerciseId, setPendingExerciseId] = useState<string | null>(null);
   const [pendingTargets, setPendingTargets] = useState({ sets: "3", reps: "", weight: "" });
@@ -728,6 +735,41 @@ function WorkoutPlansContent({
     setPlanName("");
     setDescription("");
     setCreatePlanOpen(false);
+  };
+
+  const generateAiPlan = async () => {
+    const prompt = aiPrompt.trim();
+    if (prompt.length < 12) throw new Error("Tell the plan assistant a little more about the workout you want.");
+    setGeneratingPlan(true);
+    setNotice(null);
+    try {
+      const result = await generateAiWorkoutPlan(prompt);
+      setAiDraft(result.draft);
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "Unable to generate a workout plan.");
+    } finally {
+      setGeneratingPlan(false);
+    }
+  };
+
+  const importAiPlan = async () => {
+    if (!aiDraft) return;
+    setSaving(true);
+    setNotice(null);
+    try {
+      const result = await importAiWorkoutPlan(aiDraft);
+      await refresh();
+      setSelectedPlanId(result.plan.id);
+      setSelectedDayId(result.plan.days[0]?.id ?? null);
+      setAiDraft(null);
+      setAiPrompt("");
+      setAiPlanOpen(false);
+      setNotice("AI workout plan added. Review it before your first session.");
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "Unable to add this workout plan.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const addDay = async () => {
@@ -882,6 +924,9 @@ function WorkoutPlansContent({
             <Pressable accessibilityRole="button" onPress={() => setCreatePlanOpen(true)} style={styles.planSwitchAdd}>
               <Text style={styles.planSwitchAddText}>+ New plan</Text>
             </Pressable>
+            <Pressable accessibilityRole="button" onPress={() => setAiPlanOpen(true)} style={styles.planSwitchAdd}>
+              <Text style={styles.planSwitchAddText}>Plan with AI</Text>
+            </Pressable>
           </View>
           {selectedPlan ? (
             <>
@@ -992,6 +1037,9 @@ function WorkoutPlansContent({
           <Pressable onPress={() => setCreatePlanOpen(true)} style={styles.planPrimaryAction}>
             <Text style={styles.planPrimaryActionText}>Create plan</Text>
           </Pressable>
+          <Pressable onPress={() => setAiPlanOpen(true)} style={styles.planSecondaryAction}>
+            <Text style={styles.planSecondaryActionText}>Plan with AI</Text>
+          </Pressable>
         </View>
       )}
 
@@ -1097,6 +1145,40 @@ function WorkoutPlansContent({
             <TextInput value={planName} onChangeText={setPlanName} placeholder="Plan name" placeholderTextColor="#655D57" style={styles.input} returnKeyType="next" />
             <TextInput value={description} onChangeText={setDescription} placeholder="Description (optional)" placeholderTextColor="#655D57" style={styles.input} onSubmitEditing={() => void run(createPlan, "Workout plan created.")} returnKeyType="done" />
             <Pressable disabled={saving} onPress={() => void run(createPlan, "Workout plan created.")} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>Create plan</Text></Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal animationType="fade" transparent visible={aiPlanOpen} onRequestClose={() => setAiPlanOpen(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}>
+            <View style={styles.modalHeader}>
+              <View><Text style={styles.editorLabel}>PLAN ASSISTANT</Text><Text style={styles.modalTitle}>Describe the work.</Text></View>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close plan assistant" onPress={() => setAiPlanOpen(false)} style={styles.modalClose}><X color="#642D2A" size={19} strokeWidth={2.4} /></Pressable>
+            </View>
+            <Text style={styles.editorHint}>Tell it your goal, days available, experience, equipment, and any limits. It will build from your saved exercise library.</Text>
+            <TextInput value={aiPrompt} onChangeText={setAiPrompt} multiline placeholder="Example: I have three days, dumbbells and a bench. I want to build strength without aggravating my knee." placeholderTextColor="#655D57" style={[styles.input, styles.aiPromptInput]} textAlignVertical="top" />
+            {!aiDraft ? (
+              <Pressable disabled={generatingPlan} onPress={() => void generateAiPlan()} style={[styles.planPrimaryAction, generatingPlan && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{generatingPlan ? "Building plan…" : "Generate plan"}</Text></Pressable>
+            ) : (
+              <ScrollView style={styles.aiDraftScroll} contentContainerStyle={styles.aiDraft}>
+                <Text style={styles.editorLabel}>DRAFT PLAN</Text>
+                <Text style={styles.aiDraftTitle}>{aiDraft.name}</Text>
+                {aiDraft.description ? <Text style={styles.editorHint}>{aiDraft.description}</Text> : null}
+                {aiDraft.days.map((day) => (
+                  <View key={day.name} style={styles.aiDraftDay}>
+                    <Text style={styles.aiDraftDayTitle}>{day.name}</Text>
+                    {day.exercises.map((exercise, index) => {
+                      const catalogExercise = record.exercises.find((candidate) => candidate.id === exercise.exerciseId);
+                      const prescription = exercise.targetReps ? `${exercise.targetSets} × ${exercise.targetReps}` : `${exercise.targetSets} sets`;
+                      return <Text key={`${day.name}-${exercise.exerciseId}-${index}`} style={styles.aiDraftExercise}>{catalogExercise?.name ?? "Saved exercise"} · {prescription}{exercise.targetWeight ? ` · ${exercise.targetWeight} ${record.settings.weight_unit}` : ""}</Text>;
+                    })}
+                  </View>
+                ))}
+                <Pressable disabled={saving} onPress={() => void importAiPlan()} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{saving ? "Adding plan…" : "Add this plan"}</Text></Pressable>
+                <Pressable disabled={saving || generatingPlan} onPress={() => { setAiDraft(null); }} style={styles.planSecondaryAction}><Text style={styles.planSecondaryActionText}>Start over</Text></Pressable>
+              </ScrollView>
+            )}
           </View>
         </View>
       </Modal>
@@ -3202,6 +3284,13 @@ const styles = StyleSheet.create({
   modalTitle: { color: "#101015", fontSize: 25, fontWeight: "900", letterSpacing: -1, marginTop: 6 },
   modalPlanName: { color: "#655D57", fontSize: 14, marginTop: 5 },
   modalClose: { minHeight: 40, justifyContent: "center", paddingHorizontal: 4 },
+  aiPromptInput: { minHeight: 128, paddingTop: 12 },
+  aiDraftScroll: { maxHeight: 480 },
+  aiDraft: { gap: 12, paddingBottom: 4 },
+  aiDraftTitle: { color: "#101015", fontSize: 21, fontWeight: "900", letterSpacing: -0.7 },
+  aiDraftDay: { borderTopColor: "#D4C9B9", borderTopWidth: 1, gap: 5, paddingTop: 12 },
+  aiDraftDayTitle: { color: "#642D2A", fontFamily: "Courier", fontSize: 11, fontWeight: "800", letterSpacing: 1.2 },
+  aiDraftExercise: { color: "#2C2C31", fontSize: 14, lineHeight: 20 },
   searchInput: { backgroundColor: "#FBF7F0", borderColor: "#101015", borderWidth: 1, color: "#101015", fontSize: 16, minHeight: 48, paddingHorizontal: 12 },
   exerciseResults: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, borderTopColor: "#D4C9B9", borderTopWidth: 1, maxHeight: 280 },
   exerciseResult: { alignItems: "center", borderBottomColor: "#D4C9B9", borderBottomWidth: 1, flexDirection: "row", justifyContent: "space-between", minHeight: 58, paddingHorizontal: 4, paddingVertical: 8 },

@@ -1,0 +1,15 @@
+[Unit]
+Description=Transmute private Antigravity workout-plan worker
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/transmute-ai-worker.env
+ExecStart=/usr/bin/python3 /srv/transmute-ai/transmute_ai_worker.py
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
