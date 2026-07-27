@@ -208,7 +208,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             try:
-                result = run_agy(barcode_prompt(barcode))
+                # Barcode resolution needs the CLI's product-information
+                # capability, which headless sandbox mode blocks. The prompt
+                # contains only a validated numeric barcode and has no file
+                # access; do not pass the camera image here.
+                result = run_agy(barcode_prompt(barcode), sandbox=False)
             except subprocess.TimeoutExpired:
                 self.send_json(504, {"error": "The barcode assistant timed out. Try again shortly."})
                 return
