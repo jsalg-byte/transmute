@@ -4,10 +4,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AlchemySvg } from '../../../components/alchemy-svg';
 import { getWorkoutSession, type WorkoutSessionDetail } from '../../../lib/api';
 import { useTransmuteStyles, useTransmuteTheme } from '../../../theme/transmute-theme';
 
 type SetRecord = WorkoutSessionDetail['sets'][number];
+
+const ouroboros = require('../../../../assets/transmute/ouroboros.svg');
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat('en-US', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(value));
@@ -40,7 +43,7 @@ function summarizeSets(sets: SetRecord[], unit: WorkoutSessionDetail['session'][
 
 export default function WorkoutShareScreen() {
   const styles = useTransmuteStyles(baseStyles);
-  const { palette } = useTransmuteTheme();
+  const { mode, palette } = useTransmuteTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
   const { height, width } = useWindowDimensions();
   const [detail, setDetail] = useState<WorkoutSessionDetail | null>(null);
@@ -89,8 +92,8 @@ export default function WorkoutShareScreen() {
     return `${value} ${detail.session.weightUnit}`;
   }, [detail, totalWeight]);
 
-  const columns = width >= 680 || movements.length > 5 ? 2 : 1;
-  const dense = movements.length > 8 || (detail?.sets.length ?? 0) > 16 || height < 720;
+  const columns = width >= 960 ? 2 : 1;
+  const dense = movements.length > 5 || (detail?.sets.length ?? 0) > 16 || height < 720;
   const titleSize = dense ? 28 : 34;
   const movementSize = dense ? 13 : 15;
 
@@ -107,6 +110,10 @@ export default function WorkoutShareScreen() {
       ) : null}
       {detail ? (
         <View style={styles.screen}>
+          <View pointerEvents="none" style={styles.backgroundMark}>
+            <AlchemySvg monochrome={mode === 'dark' ? 'light' : undefined} source={ouroboros} width={540} height={540} />
+          </View>
+          <View style={styles.recordContent}>
           <View style={styles.topline}>
             <Text style={styles.brand}>TRANSMUTE</Text>
             <Text style={styles.recordLabel}>WORKOUT RECORD</Text>
@@ -131,7 +138,7 @@ export default function WorkoutShareScreen() {
               <View key={movement.id} style={[styles.movement, columns === 2 && styles.movementHalf]}>
                 <Text style={styles.movementIndex}>{String(index + 1).padStart(2, '0')}</Text>
                 <View style={styles.movementCopy}>
-                  <Text adjustsFontSizeToFit numberOfLines={1} style={[styles.movementName, { fontSize: movementSize }]}>{movement.name}</Text>
+                  <Text adjustsFontSizeToFit numberOfLines={columns === 1 ? 2 : 1} style={[styles.movementName, { fontSize: movementSize }, columns === 1 && styles.movementNameSingle]}>{movement.name}</Text>
                   <Text adjustsFontSizeToFit numberOfLines={dense ? 1 : 2} style={[styles.setSummary, dense && styles.setSummaryDense]}>{movement.summary}</Text>
                 </View>
               </View>
@@ -143,6 +150,7 @@ export default function WorkoutShareScreen() {
             <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.backButton}>
               <View style={styles.backButtonContent}><ArrowLeft color={palette.ink} size={16} strokeWidth={2.4} /><Text style={styles.backButtonText}>Back to session</Text></View>
             </Pressable>
+          </View>
           </View>
         </View>
       ) : null}
@@ -157,7 +165,9 @@ const baseStyles = StyleSheet.create({
   errorWrap: { flex: 1, gap: 18, justifyContent: 'center', padding: 28 },
   error: { color: '#642D2A', fontSize: 16, fontWeight: '800', lineHeight: 24 },
   backText: { color: '#642D2A', fontSize: 15, fontWeight: '800', textDecorationLine: 'underline' },
-  screen: { flex: 1, justifyContent: 'space-between', padding: 20 },
+  screen: { flex: 1, overflow: 'hidden', padding: 20, position: 'relative' },
+  backgroundMark: { opacity: 0.075, pointerEvents: 'none', position: 'absolute', right: -190, top: 82, transform: [{ rotate: '-12deg' }] },
+  recordContent: { flex: 1, justifyContent: 'space-between', zIndex: 1 },
   topline: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   brand: { color: '#101015', fontSize: 13, fontWeight: '900', letterSpacing: 2.4 },
   recordLabel: { color: '#642D2A', fontFamily: 'Courier', fontSize: 10, fontWeight: '800', letterSpacing: 1.4 },
@@ -168,13 +178,14 @@ const baseStyles = StyleSheet.create({
   evidenceValue: { color: '#101015', fontSize: 18, fontWeight: '900', textAlign: 'center' },
   evidenceLabel: { color: '#655D57', fontFamily: 'Courier', fontSize: 9, fontWeight: '800', letterSpacing: 1, marginTop: 2, textAlign: 'center' },
   divider: { backgroundColor: '#101015', height: 2, marginTop: 18 },
-  movementGrid: { flex: 1, justifyContent: 'center', marginTop: 6 },
+  movementGrid: { flex: 1, justifyContent: 'flex-start', marginTop: 6 },
   movementGridTwoColumns: { alignContent: 'center', flexDirection: 'row', flexWrap: 'wrap' },
   movement: { borderBottomColor: '#D4C9B9', borderBottomWidth: 1, flexDirection: 'row', gap: 10, paddingVertical: 8 },
   movementHalf: { flexBasis: '50%', paddingRight: 10 },
   movementIndex: { color: '#A95B5B', fontFamily: 'Courier', fontSize: 11, fontWeight: '800', paddingTop: 2 },
   movementCopy: { flex: 1 },
   movementName: { color: '#101015', fontWeight: '900', letterSpacing: -0.4 },
+  movementNameSingle: { lineHeight: 17 },
   setSummary: { color: '#2C2C31', fontSize: 12, lineHeight: 17, marginTop: 2 },
   setSummaryDense: { fontSize: 10, lineHeight: 13 },
   footer: { alignItems: 'center', gap: 12, marginTop: 12 },

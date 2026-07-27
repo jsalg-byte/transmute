@@ -6,28 +6,40 @@ export type RecoverySession = {
 
 export type RecoveryGroup = {
   name: string;
-  endsAt: string;
+  endedAt: string | null;
+  hoursSinceWorked: number | null;
   hoursRemaining: number;
+};
+
+export type RecoveryStage = "needs-rest" | "recovering" | "ready";
+
+export type RecoveryReadiness = {
+  name: string;
+  stage: RecoveryStage;
 };
 
 export type RecoverySummary = {
   hasCompletedWork: boolean;
-  heatmapMuscleGroups: string | null;
+  needsRest: RecoveryGroup[];
   recovering: RecoveryGroup[];
   ready: string[];
+  readiness: RecoveryReadiness[];
 };
 
 const RECOVERY_WINDOW_HOURS = 48;
-const BODY_GROUPS = ["Chest", "Shoulders", "Arms", "Back", "Core", "Legs"];
+export const BODY_GROUPS = ["Chest", "Shoulders", "Arms", "Back", "Core", "Legs"] as const;
 
-function bodyGroupsFor(muscleGroup: string | null) {
+export function bodyGroupsForMuscleGroup(muscleGroup: string | null) {
   const value = muscleGroup?.toLowerCase() ?? "";
   const groups = new Set<string>();
 
   if (/(chest|pectoral)/.test(value)) groups.add("Chest");
-  if (/(deltoid|shoulder)/.test(value)) groups.add("Shoulders");
+  // The library records lower-trapezius work for pressing movements. Treat it
+  // as shoulder-girdle work here, rather than reporting a full back recovery
+  // requirement after a push-only session.
+  if (/(deltoid|shoulder|trapezius)/.test(value)) groups.add("Shoulders");
   if (/(biceps|triceps|brachialis|forearm|wrist)/.test(value)) groups.add("Arms");
-  if (/(infraspinatus|teres|rhomboid|latissimus|\blat\b|trapezius|back)/.test(value)) groups.add("Back");
+  if (/(infraspinatus|teres|rhomboid|latissimus|\blat\b|back)/.test(value)) groups.add("Back");
   if (/(abdominal|rectus|oblique)/.test(value)) groups.add("Core");
   if (/(glute|quadriceps|\bquad\b|hamstring|calf|gastrocnemius|soleus|tibialis|adductor|legs|lower body)/.test(value)) groups.add("Legs");
 
@@ -39,42 +51,63 @@ export function deriveRecovery(
   now = new Date(),
 ): RecoverySummary {
   const nowMs = now.getTime();
-  const latestRecoveryEndByGroup = new Map<string, number>();
-  const heatmapGroups = new Set<string>();
+  const latestWorkedAtByGroup = new Map<string, number>();
   let hasCompletedWork = false;
 
   sessions.forEach((session) => {
     if (session.workingSetCount < 1) return;
     const endedAt = new Date(session.endedAt).getTime();
     if (Number.isNaN(endedAt)) return;
-    const groups = bodyGroupsFor(session.muscleGroup);
+    const groups = bodyGroupsForMuscleGroup(session.muscleGroup);
     if (!groups.length) return;
 
     hasCompletedWork = true;
-    const recoveryEnd = endedAt + RECOVERY_WINDOW_HOURS * 60 * 60 * 1000;
     groups.forEach((group) => {
-      if (recoveryEnd > nowMs) heatmapGroups.add(group);
-      latestRecoveryEndByGroup.set(
+      latestWorkedAtByGroup.set(
         group,
-        Math.max(latestRecoveryEndByGroup.get(group) ?? 0, recoveryEnd),
+        Math.max(latestWorkedAtByGroup.get(group) ?? 0, endedAt),
       );
     });
   });
 
-  const recovering = [...latestRecoveryEndByGroup.entries()]
-    .filter(([, endsAt]) => endsAt > nowMs)
-    .map(([name, endsAt]) => ({
+  const groups: (RecoveryGroup & { stage: RecoveryStage })[] = BODY_GROUPS.map((name) => {
+    const endedAt = latestWorkedAtByGroup.get(name);
+    if (!endedAt) {
+      return {
+        name,
+        endedAt: null,
+        hoursSinceWorked: null,
+        hoursRemaining: 0,
+        stage: "ready",
+      };
+    }
+
+    const hoursSinceWorked = Math.max(0, (nowMs - endedAt) / (60 * 60 * 1000));
+    const group = {
       name,
-      endsAt: new Date(endsAt).toISOString(),
-      hoursRemaining: Math.max(1, Math.ceil((endsAt - nowMs) / (60 * 60 * 1000))),
-    }))
+      endedAt: new Date(endedAt).toISOString(),
+      hoursSinceWorked,
+      hoursRemaining: Math.max(0, Math.ceil(RECOVERY_WINDOW_HOURS - hoursSinceWorked)),
+    };
+
+    if (hoursSinceWorked < 24) return { ...group, stage: "needs-rest" };
+    if (hoursSinceWorked < RECOVERY_WINDOW_HOURS) return { ...group, stage: "recovering" };
+    return { ...group, stage: "ready" };
+  });
+
+  const needsRest = groups
+    .filter((group) => group.stage === "needs-rest")
     .sort((left, right) => left.hoursRemaining - right.hoursRemaining);
-  const recoveringNames = new Set(recovering.map((group) => group.name));
+  const recovering = groups
+    .filter((group) => group.stage === "recovering")
+    .sort((left, right) => left.hoursRemaining - right.hoursRemaining);
+  const ready = groups.filter((group) => group.stage === "ready").map((group) => group.name);
 
   return {
     hasCompletedWork,
-    heatmapMuscleGroups: heatmapGroups.size ? [...heatmapGroups].join(", ") : null,
+    needsRest,
     recovering,
-    ready: BODY_GROUPS.filter((group) => !recoveringNames.has(group)),
+    ready,
+    readiness: groups.map(({ name, stage }) => ({ name, stage })),
   };
 }

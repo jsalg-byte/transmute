@@ -109,9 +109,11 @@ function formatTime(value: string) {
 export function NutritionContent({
   record,
   refresh,
+  focusMealId,
 }: {
   record: TransmuteRecord;
   refresh: () => Promise<void>;
+  focusMealId?: string;
 }) {
   const styles = useTransmuteStyles(baseStyles);
   const { palette } = useTransmuteTheme();
@@ -149,6 +151,7 @@ export function NutritionContent({
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scannerReady, setScannerReady] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const [focusedMealDismissed, setFocusedMealDismissed] = useState(false);
 
   const foodsById = useMemo(() => new Map(record.nutrition.foods.map((food) => [food.id, food])), [record.nutrition.foods]);
   const groups = useMemo(() => {
@@ -162,6 +165,12 @@ export function NutritionContent({
     }
     return [...byKey.values()].sort((left, right) => new Date(right.consumedAt).getTime() - new Date(left.consumedAt).getTime());
   }, [record.nutrition.meals]);
+  const focusedMealGroup = !focusedMealDismissed && focusMealId
+    ? groups.find((candidate) => candidate.items.some((item) => item.id === focusMealId)) ?? null
+    : null;
+  const displayedView = focusedMealGroup ? "history" : view;
+  const displayedHistoryRange = focusedMealGroup ? "custom" : historyRange;
+  const displayedCustomHistoryStart = focusedMealGroup ? dayKey(focusedMealGroup.consumedAt) : customHistoryStart;
   const today = dayKey(new Date().toISOString());
   const todayMeals = useMemo(() => groups.filter((meal) => dayKey(meal.consumedAt) === today), [groups, today]);
   const todayTotals = useMemo(() => todayMeals.reduce((totals, meal) => {
@@ -183,16 +192,16 @@ export function NutritionContent({
     return query ? record.nutrition.foods.filter((food) => food.name.toLowerCase().includes(query)) : record.nutrition.foods;
   }, [foodQuery, record.nutrition.foods]);
   const historyMeals = useMemo(() => {
-    if (historyRange === "custom") {
-      return /^\d{4}-\d{2}-\d{2}$/.test(customHistoryStart)
-        ? groups.filter((meal) => dayKey(meal.consumedAt) >= customHistoryStart)
+    if (displayedHistoryRange === "custom") {
+      return /^\d{4}-\d{2}-\d{2}$/.test(displayedCustomHistoryStart)
+        ? groups.filter((meal) => dayKey(meal.consumedAt) >= displayedCustomHistoryStart)
         : groups;
     }
     const start = new Date();
     start.setHours(0, 0, 0, 0);
-    start.setDate(start.getDate() - (Number(historyRange) - 1));
+    start.setDate(start.getDate() - (Number(displayedHistoryRange) - 1));
     return groups.filter((meal) => new Date(meal.consumedAt) >= start);
-  }, [customHistoryStart, groups, historyRange]);
+  }, [displayedCustomHistoryStart, displayedHistoryRange, groups]);
   const historyByDay = useMemo(() => {
     const grouped = new Map<string, MealGroup[]>();
     for (const meal of historyMeals) {
@@ -524,11 +533,11 @@ export function NutritionContent({
 
   const renderMealRow = (meal: MealGroup) => {
     const totals = mealTotals(meal);
-    const detailOpen = detailKey === meal.key;
+    const detailOpen = focusedMealGroup?.key === meal.key || detailKey === meal.key;
     const summary = meal.items.slice(0, 2).map((item) => item.name).join(" · ");
     const remaining = meal.items.length - 2;
     return <View key={meal.key} style={styles.mealRow}>
-      <Pressable accessibilityRole="button" accessibilityState={{ expanded: detailOpen }} onPress={() => setDetailKey((key) => key === meal.key ? null : meal.key)} style={styles.mealRowPressable}>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: detailOpen }} onPress={() => { setFocusedMealDismissed(true); setDetailKey((key) => key === meal.key ? null : meal.key); }} style={styles.mealRowPressable}>
         <View style={styles.mealRowCopy}>
           <Text style={styles.mealType}>{titleCase(meal.mealType)}</Text>
           <Text numberOfLines={1} style={styles.mealSummary}>{summary}{remaining > 0 ? ` · +${remaining} more` : ""}</Text>
@@ -560,10 +569,10 @@ export function NutritionContent({
     <Text style={styles.eyebrow}>THE FUEL</Text>
     <Text style={styles.title}>Nutrition</Text>
     <View accessibilityRole="tablist" style={styles.tabs}>
-      {(["today", "foods", "history"] as NutritionView[]).map((item) => <Pressable key={item} accessibilityRole="tab" accessibilityState={{ selected: view === item }} onPress={() => setView(item)} style={[styles.tab, view === item && styles.tabActive]}><Text style={[styles.tabText, view === item && styles.tabTextActive]}>{item}</Text></Pressable>)}
+      {(["today", "foods", "history"] as NutritionView[]).map((item) => <Pressable key={item} accessibilityRole="tab" accessibilityState={{ selected: displayedView === item }} onPress={() => { setFocusedMealDismissed(true); setView(item); }} style={[styles.tab, displayedView === item && styles.tabActive]}><Text style={[styles.tabText, displayedView === item && styles.tabTextActive]}>{item}</Text></Pressable>)}
     </View>
 
-    {view === "today" ? <View style={styles.todayLayout}>
+    {displayedView === "today" ? <View style={styles.todayLayout}>
       <View style={[styles.todayTop, isDesktop && styles.todayTopDesktop]}>
       <View style={styles.todaySummary}>
         <Text style={styles.sectionLabel}>TODAY</Text>
@@ -575,7 +584,7 @@ export function NutritionContent({
       <View style={styles.mealList}><Text style={styles.sectionLabel}>MEALS</Text>{todayMeals.length ? <View style={styles.ledger}>{todayMeals.map(renderMealRow)}</View> : <View style={styles.emptyState}><Text style={styles.emptyText}>Start with one meal. Your daily totals will appear here when food data supports them.</Text></View>}</View>
     </View> : null}
 
-    {view === "foods" ? <View style={[styles.focusedView, isDesktop && styles.focusedViewDesktop]}>
+    {displayedView === "foods" ? <View style={[styles.focusedView, isDesktop && styles.focusedViewDesktop]}>
       <Text style={styles.sectionLabel}>FOODS</Text>
       <View style={styles.searchField}><Search color={palette.muted} size={18} strokeWidth={2.2} /><TextInput value={foodQuery} onChangeText={(value) => { setFoodQuery(value); setFoodLimit(8); }} accessibilityLabel="Search saved foods" placeholder="Search your foods…" placeholderTextColor={palette.mutedSoft} style={styles.searchInput} /></View>
       <View style={styles.secondaryActions}><Pressable accessibilityRole="button" onPress={() => { resetFoodForm(); setNewFoodForMeal(false); setNewFoodOpen(true); }} style={styles.secondaryAction}><Plus color={palette.ink} size={17} strokeWidth={2.6} /><Text style={styles.secondaryActionText}>New food</Text></Pressable><Pressable accessibilityRole="button" onPress={() => { resetFoodForm(); setNewFoodForMeal(false); setNewFoodOpen(true); void openBarcodeScanner(); }} style={styles.secondaryAction}><Camera color={palette.ink} size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan barcode</Text></Pressable><Pressable accessibilityRole="button" onPress={() => { resetFoodForm(); setNewFoodForMeal(false); setNewFoodOpen(true); void readNutritionLabel(); }} style={styles.secondaryAction}><ImagePlus color={palette.ink} size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan label</Text></Pressable></View>
@@ -584,9 +593,9 @@ export function NutritionContent({
       {!foodQuery && visibleFoods.length < record.nutrition.foods.length ? <Pressable accessibilityRole="button" onPress={() => setFoodLimit((limit) => limit + 8)} style={styles.showMore}><Text style={styles.showMoreText}>Show more foods</Text></Pressable> : null}
     </View> : null}
 
-    {view === "history" ? <View style={[styles.focusedView, isDesktop && styles.focusedViewDesktop]}>
-      <View style={styles.historyHeader}><Text style={styles.sectionLabel}>HISTORY</Text><View style={styles.historyFilters}>{(["7", "30", "custom"] as const).map((item) => <Pressable key={item} accessibilityRole="button" accessibilityState={{ selected: historyRange === item }} onPress={() => { setHistoryRange(item); setHistoryDayLimit(7); }}><Text style={[styles.historyFilterText, historyRange === item && styles.historyFilterTextActive]}>{item === "custom" ? "Custom" : `${item} days`}</Text></Pressable>)}</View></View>
-      {historyRange === "custom" ? <TextInput value={customHistoryStart} onChangeText={setCustomHistoryStart} placeholder="Start date (YYYY-MM-DD)" placeholderTextColor={palette.mutedSoft} keyboardType="numbers-and-punctuation" style={styles.dateInput} /> : null}
+    {displayedView === "history" ? <View style={[styles.focusedView, isDesktop && styles.focusedViewDesktop]}>
+      <View style={styles.historyHeader}><Text style={styles.sectionLabel}>HISTORY</Text><View style={styles.historyFilters}>{(["7", "30", "custom"] as const).map((item) => <Pressable key={item} accessibilityRole="button" accessibilityState={{ selected: displayedHistoryRange === item }} onPress={() => { setFocusedMealDismissed(true); setHistoryRange(item); setHistoryDayLimit(7); }}><Text style={[styles.historyFilterText, displayedHistoryRange === item && styles.historyFilterTextActive]}>{item === "custom" ? "Custom" : `${item} days`}</Text></Pressable>)}</View></View>
+      {displayedHistoryRange === "custom" ? <TextInput value={displayedCustomHistoryStart} onChangeText={(value) => { setFocusedMealDismissed(true); setCustomHistoryStart(value); }} placeholder="Start date (YYYY-MM-DD)" placeholderTextColor={palette.mutedSoft} keyboardType="numbers-and-punctuation" style={styles.dateInput} /> : null}
       <View style={styles.historyList}>{historyByDay.slice(0, historyDayLimit).map(([day, meals]) => { const totals = meals.reduce((sum, meal) => sum + mealTotals(meal).calories, 0); return <View key={day} style={styles.historyDay}><View style={styles.historyDayHeader}><Text style={styles.historyDayTitle}>{formatDay(day)}</Text><Text style={styles.historyDayMeta}>{totals.toLocaleString()} kcal · {meals.length} {meals.length === 1 ? "meal" : "meals"}</Text></View><View style={styles.ledger}>{meals.map(renderMealRow)}</View></View>; })}{historyByDay.length === 0 ? <View style={styles.emptyState}><Text style={styles.emptyText}>No meals in this period.</Text></View> : null}</View>
       {historyByDay.length > historyDayLimit ? <Pressable accessibilityRole="button" onPress={() => setHistoryDayLimit((limit) => limit + 7)} style={styles.showMore}><Text style={styles.showMoreText}>Show more days</Text></Pressable> : null}
     </View> : null}

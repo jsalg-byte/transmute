@@ -22,7 +22,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { AlchemySvg } from "./alchemy-svg";
 import { FastingHourglass } from "./fasting-hourglass";
-import { MuscleHeatMap } from "./muscle-heat-map";
+import { RecoveryBodyMap } from "./muscle-heat-map";
 import { NutritionContent as NutritionWorkflow } from "./nutrition-content";
 import { createPaletteProxy, createThemedStyleProxy, transmuteThemeOptions, transmuteThemes, useTransmuteTheme } from "../theme/transmute-theme";
 import { deriveRecovery } from "../lib/recovery";
@@ -209,6 +209,7 @@ function Card({ title, meta, imageUrl }: { title: string; meta?: string; imageUr
 }
 
 export function RecordScreen({ area }: { area: Area }) {
+  const { mealId } = useLocalSearchParams<{ mealId?: string }>();
   const { mode, toggleMode } = useTransmuteTheme();
   const [themeTogglePosition] = useState(() => new Animated.Value(mode === "dark" ? 1 : 0));
   const [isThemeToggleAnimating, setIsThemeToggleAnimating] = useState(false);
@@ -358,7 +359,7 @@ export function RecordScreen({ area }: { area: Area }) {
               <Text style={styles.body}>Reading your record…</Text>
             </View>
           ) : (
-            <AreaContent area={area} record={record} refresh={refresh} isDesktop={isDesktop} />
+            <AreaContent area={area} record={record} refresh={refresh} isDesktop={isDesktop} focusMealId={mealId} />
           )}
         </ScrollView>
       </View>
@@ -439,6 +440,7 @@ type RecentRecordItem = {
   title: string;
   meta: string;
   timestamp: string;
+  destination?: { type: "session" | "meal"; id: string };
 };
 
 function DashboardContent({
@@ -486,12 +488,14 @@ function DashboardContent({
         session.status === "completed" ? "Session completed" : "Session recorded",
       meta: `${session.routine_name ?? "Workout plan"} · ${session.day_name ?? "Day"}`,
       timestamp: session.ended_at ?? session.started_at,
+      destination: { type: "session" as const, id: session.id },
     }));
     const meals = record.nutrition.meals.map((meal) => ({
       id: `meal-${meal.id}`,
       title: "Meal recorded",
       meta: meal.name,
       timestamp: meal.consumed_at,
+      destination: { type: "meal" as const, id: meal.id },
     }));
     const checkIns = record.progress.map((checkIn) => ({
       id: `progress-${checkIn.id}`,
@@ -508,10 +512,6 @@ function DashboardContent({
   }, [record.nutrition.meals, record.progress, record.sessions]);
   const welcome = firstName(record.user.name);
   const hasPlan = record.workoutPlans.length > 0;
-  const recoveringNames = recovery.recovering.map((group) => group.name);
-  const longestRecoveryHours = Math.max(...recovery.recovering.map((group) => group.hoursRemaining), 0);
-  const readyNames = recovery.ready.slice(0, 4);
-  const remainingReadyCount = Math.max(0, recovery.ready.length - readyNames.length);
   const isQuietWeek = weekly.sessions === 0 && weekly.meals === 0 && !recovery.hasCompletedWork;
 
   const beginNextSession = async () => {
@@ -599,32 +599,30 @@ function DashboardContent({
         {notice ? <Text accessibilityRole="alert" style={styles.notice}>{notice}</Text> : null}
       </View>
 
-      <View style={[styles.recoveryRecord, isDesktop && styles.recoveryRecordDesktop]}>
+      <View style={styles.recoveryRecord}>
         <Text style={styles.sectionLabel}>RECOVERY</Text>
-        {recovery.hasCompletedWork ? (
-          <>
-            <View style={styles.recoveryMap}>
-              <MuscleHeatMap
-                muscleGroups={recovery.heatmapMuscleGroups}
-                label="RECOVERING NOW"
-                legend="Recovering now"
-              />
+        <View style={[styles.recoveryContent, isDesktop && styles.recoveryContentDesktop]}>
+            <View style={[styles.recoveryMap, isDesktop && styles.recoveryMapDesktop]}>
+              <RecoveryBodyMap readiness={recovery.readiness} />
             </View>
-            <View style={styles.recoveryDetails}>
-              <Text style={styles.recoverySubhead}>RECOVERING</Text>
-              {recovery.recovering.length ? recovery.recovering.map((group) => (
+            <View style={[styles.recoveryDetails, isDesktop && styles.recoveryDetailsDesktop]}>
+              <Text style={styles.recoverySubhead}>NEEDS REST</Text>
+              {recovery.needsRest.length ? recovery.needsRest.map((group) => (
+                <View key={group.name} style={styles.recoveryRow}>
+                  <Text style={styles.recoveryGroup}>{group.name}</Text>
+                  <Text style={styles.recoveryRestEta}>Under 24h</Text>
+                </View>
+              )) : <Text style={styles.recoveryEmpty}>No groups need rest right now.</Text>}
+              {recovery.recovering.length ? <><Text style={styles.recoverySubhead}>RECOVERING</Text>{recovery.recovering.map((group) => (
                 <View key={group.name} style={styles.recoveryRow}>
                   <Text style={styles.recoveryGroup}>{group.name}</Text>
                   <Text style={styles.recoveryEta}>Ready in ~{group.hoursRemaining}h</Text>
                 </View>
-              )) : <Text style={styles.recoveryEmpty}>Everything is ready for another session.</Text>}
-              <Text style={[styles.recoverySubhead, styles.recoveryReadyLabel]}>READY NOW</Text>
+              ))}</> : null}
+              <Text style={[styles.recoverySubhead, styles.recoveryReadyLabel]}>READY TO TRAIN</Text>
               <Text style={styles.recoveryReady}>{recovery.ready.join(" · ")}</Text>
             </View>
-          </>
-        ) : (
-          <Text style={styles.recoveryEmpty}>Complete a working set to start a simple recovery readout.</Text>
-        )}
+          </View>
       </View>
 
       <View style={[styles.dashboardSecondary, isDesktop && styles.dashboardSecondaryDesktop]}>
@@ -643,11 +641,6 @@ function DashboardContent({
                 {weekly.meals ? <View style={styles.weeklyActivityMetric}><Text style={styles.weeklyActivityValue}>{weekly.meals}</Text><Text style={styles.weeklyActivityLabel}>{weekly.meals === 1 ? "MEAL" : "MEALS"}</Text></View> : null}
               </View>
               {weekly.meals > 0 && weekly.sessions === 0 ? <Text style={styles.weeklyContext}>Recovery begins after your first completed session.</Text> : null}
-              {recovery.hasCompletedWork ? <View style={styles.weeklyRecoverySummary}>
-                <Text style={styles.weeklySummaryLabel}>RECOVERY</Text>
-                {recoveringNames.length ? <><Text style={styles.weeklyMuscleNames} accessibilityLabel={`Recovering: ${recoveringNames.join(", ")}`}>{recoveringNames.join(" · ")}</Text><Text style={styles.weeklyRecoveryTiming}>Longest recovery: approximately {longestRecoveryHours}h</Text></> : <Text style={styles.weeklyContext}>Everything trained recently is ready again.</Text>}
-                {readyNames.length ? <><Text style={styles.weeklySummaryLabel}>READY NOW</Text><Text style={styles.weeklyMuscleNames} accessibilityLabel={`Ready now: ${recovery.ready.join(", ")}`}>{readyNames.join(" · ")}{remainingReadyCount ? ` · +${remainingReadyCount} more` : ""}</Text></> : null}
-              </View> : null}
             </>
           )}
         </View>
@@ -656,13 +649,27 @@ function DashboardContent({
           <View style={styles.recentRecord}>
             <Text style={styles.sectionLabel}>RECENT RECORD</Text>
             {recent.map((item) => (
-              <View key={item.id} style={styles.recentRow}>
+              <Pressable
+                key={item.id}
+                accessibilityRole={item.destination ? "link" : undefined}
+                disabled={!item.destination}
+                onPress={() => {
+                  if (item.destination?.type === "session") {
+                    router.push(`/sessions/${item.destination.id}`);
+                    return;
+                  }
+                  if (item.destination?.type === "meal") {
+                    router.push({ pathname: "/nutrition", params: { mealId: item.destination.id } });
+                  }
+                }}
+                style={({ pressed }) => [styles.recentRow, item.destination && pressed && styles.recentRowPressed]}
+              >
                 <View style={styles.recentCopy}>
                   <Text style={styles.recentTitle}>{item.title}</Text>
                   <Text style={styles.recentMeta}>{item.meta}</Text>
                 </View>
                 <Text style={styles.recentDate}>{date(item.timestamp)}</Text>
-              </View>
+              </Pressable>
             ))}
           </View>
         ) : null}
@@ -676,11 +683,13 @@ function AreaContent({
   record: r,
   refresh,
   isDesktop,
+  focusMealId,
 }: {
   area: Area;
   record: TransmuteRecord;
   refresh: () => Promise<void>;
   isDesktop: boolean;
+  focusMealId?: string;
 }) {
   if (area === "dashboard")
     return <DashboardContent record={r} isDesktop={isDesktop} />;
@@ -691,7 +700,7 @@ function AreaContent({
   if (area === "sessions")
     return <SessionsContent record={r} refresh={refresh} isDesktop={isDesktop} />;
   if (area === "nutrition")
-    return <NutritionWorkflow record={r} refresh={refresh} />;
+    return <NutritionWorkflow record={r} refresh={refresh} focusMealId={focusMealId} />;
   if (area === "fasting")
     return <FastingContent record={r} refresh={refresh} />;
   if (area === "progress")
@@ -3674,13 +3683,17 @@ const baseStyles = StyleSheet.create({
   dashboardPrimaryMeta: { color: "#655D57", fontSize: 15, lineHeight: 22, marginTop: 8 },
   dashboardMovementList: { color: "#2C2C31", fontSize: 14, lineHeight: 21, marginTop: 7 },
   recoveryRecord: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, borderTopColor: "#101015", borderTopWidth: 1, gap: 18, marginTop: 30, paddingVertical: 18 },
-  recoveryRecordDesktop: { alignItems: "flex-start", flexDirection: "row", flexWrap: "wrap", gap: 26 },
-  recoveryMap: { flex: 1, minWidth: 260 },
-  recoveryDetails: { flex: 1, gap: 0, minWidth: 240 },
+  recoveryContent: { gap: 22 },
+  recoveryContentDesktop: { alignItems: "flex-start", flexDirection: "row", gap: 26 },
+  recoveryMap: { width: "100%" },
+  recoveryMapDesktop: { flex: 1, minWidth: 260 },
+  recoveryDetails: { gap: 0, width: "100%" },
+  recoveryDetailsDesktop: { flex: 1, minWidth: 240 },
   recoverySubhead: { color: "#642D2A", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.25, marginBottom: 5 },
   recoveryRow: { alignItems: "center", borderBottomColor: "#D4C9B9", borderBottomWidth: 1, flexDirection: "row", justifyContent: "space-between", paddingVertical: 10 },
   recoveryGroup: { color: "#101015", fontSize: 16, fontWeight: "800" },
   recoveryEta: { color: "#642D2A", fontFamily: "Courier", fontSize: 11, fontWeight: "800", letterSpacing: 0.4 },
+  recoveryRestEta: { color: "#A92F38", fontFamily: "Courier", fontSize: 11, fontWeight: "800", letterSpacing: 0.4 },
   recoveryReadyLabel: { marginTop: 18 },
   recoveryReady: { color: "#2C2C31", fontSize: 14, fontWeight: "700", lineHeight: 21 },
   recoveryEmpty: { color: "#655D57", fontSize: 14, lineHeight: 21 },
@@ -3705,10 +3718,6 @@ const baseStyles = StyleSheet.create({
   weeklyActivityValue: { color: "#101015", fontSize: 28, fontWeight: "900", letterSpacing: -1.2 },
   weeklyActivityLabel: { color: "#655D57", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.1, marginTop: 3 },
   weeklyContext: { color: "#655D57", fontSize: 14, lineHeight: 20, marginTop: 16 },
-  weeklyRecoverySummary: { borderTopColor: "#D4C9B9", borderTopWidth: 1, gap: 5, marginTop: 18, paddingTop: 16 },
-  weeklySummaryLabel: { color: "#642D2A", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.25, marginTop: 10 },
-  weeklyMuscleNames: { color: "#101015", fontSize: 16, fontWeight: "800", lineHeight: 23 },
-  weeklyRecoveryTiming: { color: "#655D57", fontSize: 13, lineHeight: 19 },
   weeklyEmptyState: { gap: 8, marginTop: 14 },
   weeklyEmptyTitle: { color: "#101015", fontSize: 20, fontWeight: "900", letterSpacing: -0.6 },
   weeklyStartAction: { alignSelf: "flex-start", backgroundColor: "#101015", marginTop: 8, minHeight: 42, paddingHorizontal: 16, justifyContent: "center" },
@@ -3721,6 +3730,7 @@ const baseStyles = StyleSheet.create({
     justifyContent: "space-between",
     paddingVertical: 13,
   },
+  recentRowPressed: { opacity: 0.62 },
   recentCopy: { flex: 1 },
   recentTitle: { color: "#101015", fontSize: 15, fontWeight: "800" },
   recentMeta: { color: "#655D57", fontSize: 13, lineHeight: 19, marginTop: 3 },

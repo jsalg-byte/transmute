@@ -3,6 +3,7 @@ import Svg, { Path } from 'react-native-svg';
 import { bodyBack } from 'react-muscle-highlighter/dist/esm/assets/bodyBack';
 import { bodyFront } from 'react-muscle-highlighter/dist/esm/assets/bodyFront';
 import { type TransmutePalette, useTransmuteStyles, useTransmuteTheme } from '../theme/transmute-theme';
+import type { RecoveryReadiness, RecoveryStage } from '../lib/recovery';
 
 type Region =
   | 'abs' | 'adductors' | 'biceps' | 'calves' | 'chest' | 'deltoids' | 'forearm'
@@ -35,6 +36,21 @@ const REGION_MAP: { terms: string[]; regions: Region[] }[] = [
   { terms: ['full body'], regions: ['chest', 'deltoids', 'upper-back', 'biceps', 'triceps', 'forearm', 'abs', 'obliques', 'gluteal', 'quadriceps', 'hamstring', 'calves'] },
 ];
 
+const BODY_GROUP_REGION_MAP: Record<string, Region[]> = {
+  Chest: ['chest'],
+  Shoulders: ['deltoids', 'trapezius'],
+  Arms: ['biceps', 'triceps', 'forearm'],
+  Back: ['upper-back', 'lower-back', 'trapezius'],
+  Core: ['abs', 'obliques'],
+  Legs: ['adductors', 'calves', 'gluteal', 'hamstring', 'quadriceps', 'tibialis'],
+};
+
+const RECOVERY_COLORS: Record<RecoveryStage, { fill: string; stroke: string; label: string; timing: string }> = {
+  'needs-rest': { fill: '#D94F57', stroke: '#A92F38', label: 'Needs Rest', timing: 'Under 24h since work' },
+  recovering: { fill: '#8A69C4', stroke: '#65419E', label: 'Recovering', timing: '24–48h since work' },
+  ready: { fill: '#4E8DCA', stroke: '#2867A1', label: 'Ready to Train', timing: '48h+ since work' },
+};
+
 export function muscleRegionsFor(muscleGroups: string | null) {
   const text = muscleGroups?.toLowerCase() ?? '';
   const regions = new Set<Region>();
@@ -44,22 +60,34 @@ export function muscleRegionsFor(muscleGroups: string | null) {
   return [...regions];
 }
 
-function AnatomicalBody({ side, active, palette }: { side: 'front' | 'back'; active: Region[]; palette: TransmutePalette }) {
+function AnatomicalBody({ side, active, palette, stages }: { side: 'front' | 'back'; active: Region[]; palette: TransmutePalette; stages?: Partial<Record<Region, RecoveryStage>> }) {
   const body = (side === 'front' ? bodyFront : bodyBack) as MuscleShape[];
   const viewBox = side === 'front' ? '0 0 724 1448' : '724 0 724 1448';
   return <Svg width={112} height={224} viewBox={viewBox} accessibilityLabel={`${side === 'front' ? 'Front' : 'Back'} muscle emphasis`}>
     {body.flatMap((shape) => {
-      const highlighted = active.includes(shape.slug as Region);
+      const region = shape.slug as Region;
+      const highlighted = active.includes(region);
+      const recoveryColor = stages?.[region] ? RECOVERY_COLORS[stages[region]!] : null;
       const paths = [...(shape.path.common ?? []), ...(shape.path.left ?? []), ...(shape.path.right ?? [])];
       return paths.map((d, index) => <Path
         key={`${shape.slug}-${index}`}
         d={d}
-        fill={highlighted ? palette.oxideMuted : palette.raised}
-        stroke={highlighted ? palette.oxide : palette.divider}
+        fill={recoveryColor?.fill ?? (highlighted ? palette.oxideMuted : palette.raised)}
+        stroke={recoveryColor?.stroke ?? (highlighted ? palette.oxide : palette.divider)}
         strokeWidth={4}
       />);
     })}
   </Svg>;
+}
+
+function recoveryStagesForRegions(readiness: RecoveryReadiness[]) {
+  const stages: Partial<Record<Region, RecoveryStage>> = {};
+  readiness.forEach(({ name, stage }) => {
+    (BODY_GROUP_REGION_MAP[name] ?? []).forEach((region) => {
+      stages[region] = stage;
+    });
+  });
+  return stages;
 }
 
 export function MuscleHeatMap({
@@ -95,6 +123,31 @@ export function MuscleHeatMap({
   </View>;
 }
 
+export function RecoveryBodyMap({ readiness }: { readiness: RecoveryReadiness[] }) {
+  const styles = useTransmuteStyles(baseStyles);
+  const { palette } = useTransmuteTheme();
+  const stages = recoveryStagesForRegions(readiness);
+
+  return <View style={styles.wrap}>
+    <View style={styles.bodies}>
+      <AnatomicalBody side="front" active={[]} palette={palette} stages={stages} />
+      <AnatomicalBody side="back" active={[]} palette={palette} stages={stages} />
+    </View>
+    <View style={styles.recoveryLegend}>
+      {(Object.keys(RECOVERY_COLORS) as RecoveryStage[]).map((stage) => {
+        const status = RECOVERY_COLORS[stage];
+        return <View key={stage} style={styles.recoveryLegendItem}>
+          <View style={[styles.recoveryLegendMark, { backgroundColor: status.fill, borderColor: status.stroke }]} />
+          <View style={styles.recoveryLegendCopy}>
+            <Text style={styles.recoveryLegendLabel}>{status.label}</Text>
+            <Text style={styles.recoveryLegendTiming}>{status.timing}</Text>
+          </View>
+        </View>;
+      })}
+    </View>
+  </View>;
+}
+
 const baseStyles = StyleSheet.create({
   wrap: { alignItems: 'center', borderTopColor: '#D4C9B9', borderTopWidth: 1, gap: 10, paddingTop: 14 },
   bodies: { flexDirection: 'row', gap: 4 },
@@ -105,4 +158,10 @@ const baseStyles = StyleSheet.create({
   empty: { color: '#655D57', fontSize: 12, lineHeight: 18, textAlign: 'center' },
   legend: { color: '#655D57', fontSize: 11 },
   legendMark: { color: '#A95B5B' },
+  recoveryLegend: { borderTopColor: '#D4C9B9', borderTopWidth: 1, gap: 8, paddingTop: 12, width: '100%' },
+  recoveryLegendItem: { alignItems: 'center', flexDirection: 'row', gap: 8 },
+  recoveryLegendMark: { borderWidth: 1, height: 11, width: 11 },
+  recoveryLegendCopy: { flexDirection: 'row', flexGrow: 1, justifyContent: 'space-between' },
+  recoveryLegendLabel: { color: '#101015', fontSize: 12, fontWeight: '800' },
+  recoveryLegendTiming: { color: '#655D57', fontSize: 11 },
 });

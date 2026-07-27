@@ -8,6 +8,7 @@ import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, Text
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { MuscleHeatMap } from '../../components/muscle-heat-map';
+import { BODY_GROUPS, bodyGroupsForMuscleGroup } from '../../lib/recovery';
 import {
   addExerciseToWorkoutSession,
   addWorkoutSet,
@@ -134,7 +135,7 @@ function ExerciseDemoPlayer({ url, name }: { url: string; name: string }) {
 }
 
 export default function SessionDetailScreen() {
-  useTransmuteTheme();
+  const { mode, palette } = useTransmuteTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
   const { width } = useWindowDimensions();
   const isDesktop = width >= 920;
@@ -294,6 +295,15 @@ export default function SessionDetailScreen() {
     return Number.isFinite(weight) ? total + weight * set.reps : total;
   }, 0), [detail]);
   const formattedTotalWeight = useMemo(() => new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 }).format(totalWeight), [totalWeight]);
+  const workedMuscles = useMemo(() => {
+    const worked = new Set<string>();
+    activeExercises.forEach((exercise) => {
+      const hasWorkingSet = (setsByExercise.get(exercise.id) ?? []).some((set) => !set.isWarmup);
+      if (!hasWorkingSet) return;
+      bodyGroupsForMuscleGroup(exercise.muscleGroup).forEach((group) => worked.add(group));
+    });
+    return BODY_GROUPS.filter((group) => worked.has(group));
+  }, [activeExercises, setsByExercise]);
   const completedEvidence = useMemo(() => {
     if (!detail || detail.session.status !== 'completed') return null;
     const workingSets = detail.sets.filter((set) => !set.isWarmup);
@@ -477,14 +487,14 @@ export default function SessionDetailScreen() {
               <Text style={styles.title}>{detail.session.routineName ?? 'Workout plan'} · {detail.session.dayName ?? 'Day'}</Text>
               <Text style={styles.body}>{detail.session.status === 'active' ? 'Record the work as it happens. The evidence stays with you.' : 'This record is complete.'}</Text>
             </View>
-            <View style={styles.summaryRail}>
+            <View style={[styles.summaryRail, isDesktop && styles.summaryRailDesktop]}>
               <Stat value={String(completedSetCount)} label="SETS" />
               <Stat value={String(completedExerciseCount)} label="MOVEMENTS" />
-              <Stat value={formattedTotalWeight} label={`${weightUnit.toUpperCase()} TOTAL`} />
+              <Stat value={formattedTotalWeight} label={`${weightUnit.toUpperCase()} TOTAL`} wide />
             </View>
           </View>
 
-          {completedEvidence ? <View style={styles.evidence}><Text style={styles.evidenceLabel}>WORK RECORDED</Text><Text style={styles.evidenceTitle}>{completedEvidence.workingSets} working sets · {completedEvidence.repsLogged} reps</Text><Text style={styles.evidenceCopy}>{completedEvidence.durationMinutes} minutes of recorded effort. Weight entries use {weightUnit}.</Text></View> : null}
+          {completedEvidence ? <View style={[styles.evidence, mode === 'dark' && { backgroundColor: palette.raised, borderColor: palette.gold }]}><Text style={styles.evidenceLabel}>WORK RECORDED</Text><Text style={styles.evidenceTitle}>{completedEvidence.workingSets} working sets · {completedEvidence.repsLogged} reps</Text><Text style={styles.evidenceCopy}>{completedEvidence.durationMinutes} minutes of recorded effort.</Text>{workedMuscles.length ? <View style={styles.workedMuscles}><Text style={styles.evidenceLabel}>MUSCLES WORKED</Text><Text style={styles.workedMusclesText}>{workedMuscles.join(' · ')}</Text></View> : null}</View> : null}
           {personalRecord ? <View style={styles.personalRecord}><Text style={styles.evidenceLabel}>PERSONAL RECORD</Text><Text style={styles.evidenceTitle}>{personalRecord.exerciseName}</Text><Text style={styles.evidenceCopy}>{personalRecord.kind === 'estimated_1rm' ? 'Estimated 1RM improved' : 'Rep record improved'} from {personalRecord.previous.reps} reps{personalRecord.previous.weight ? ` @ ${personalRecord.previous.weight}` : ''} to {personalRecord.current.reps} reps{personalRecord.current.weight ? ` @ ${personalRecord.current.weight}` : ''}.</Text></View> : null}
 
           {detail.session.status === 'active' ? <View style={[styles.workspace, isDesktop && styles.workspaceDesktop]}>
@@ -523,7 +533,7 @@ export default function SessionDetailScreen() {
             </View>
           </View> : <View style={[styles.workspace, isDesktop && styles.workspaceDesktop]}>
             <View style={[styles.secondaryColumn, styles.completedLog]}><View style={styles.logPanel}><Text style={styles.sectionLabel}>SESSION EVIDENCE</Text>{activeExercises.length ? activeExercises.map((exercise) => <ExerciseLog key={exercise.id} exercise={exercise} exercises={detail.exercises} sets={setsByExercise.get(exercise.id) ?? []} weightUnit={weightUnit} canEdit={false} editableSetId={null} editExerciseId="" editReps="" editWeight="" editWarmup={false} saving={false} onEdit={() => undefined} onRemove={() => undefined} onCancelEdit={() => undefined} onSave={() => undefined} onChangeExercise={() => undefined} onChangeReps={() => undefined} onChangeWeight={() => undefined} onChangeWarmup={() => undefined} />) : <Text style={styles.emptyCopy}>No sets were recorded for this session.</Text>}</View></View>
-            <View style={styles.secondaryColumn}><View style={styles.completedActions}><Pressable onPress={() => router.push(`/sessions/${id}/share`)} style={styles.primaryButton}><Text style={styles.primaryButtonText}>Share workout</Text></Pressable><Pressable onPress={() => void shareWorkoutJson()} style={styles.outlineButton}><Text style={styles.outlineButtonText}>Copy workout JSON</Text></Pressable></View></View>
+            <View style={styles.secondaryColumn}>{workedMuscles.length ? <View style={styles.completedMusclePanel}><MuscleHeatMap muscleGroups={workedMuscles.join(', ')} label="MUSCLES WORKED" legend="Logged working sets" /></View> : null}<View style={styles.completedActions}><Pressable onPress={() => router.push(`/sessions/${id}/share`)} style={styles.primaryButton}><Text style={styles.primaryButtonText}>Share workout</Text></Pressable><Pressable onPress={() => void shareWorkoutJson()} style={styles.outlineButton}><Text style={styles.outlineButtonText}>Copy workout JSON</Text></Pressable></View></View>
           </View>}
         </> : null}
       </View>
@@ -540,8 +550,8 @@ export default function SessionDetailScreen() {
   </SafeAreaView>;
 }
 
-function Stat({ value, label, small = false }: { value: string; label: string; small?: boolean }) {
-  return <View style={styles.stat}><Text style={[styles.statValue, small && styles.statValueSmall]} numberOfLines={1}>{value}</Text><Text style={styles.statLabel}>{label}</Text></View>;
+function Stat({ value, label, small = false, wide = false }: { value: string; label: string; small?: boolean; wide?: boolean }) {
+  return <View style={[styles.stat, wide && styles.statWide]}><Text adjustsFontSizeToFit minimumFontScale={0.72} style={[styles.statValue, small && styles.statValueSmall]} numberOfLines={1}>{value}</Text><Text style={styles.statLabel}>{label}</Text></View>;
 }
 
 type MovementOption = { id: string; name: string; category: string; muscleGroup: string | null };
@@ -756,8 +766,8 @@ const baseStyles = StyleSheet.create({
   errorNotice: { borderColor: '#A95B5B', borderWidth: 1, marginTop: 20, padding: 14 }, errorText: { color: '#642D2A', fontSize: 14, fontWeight: '700', lineHeight: 21 },
   header: { borderBottomColor: '#D4C9B9', borderBottomWidth: 1, gap: 22, paddingBottom: 25, paddingTop: 28 }, headerDesktop: { alignItems: 'flex-end', flexDirection: 'row', justifyContent: 'space-between' }, headerCopy: { flexShrink: 1, maxWidth: 760 },
   eyebrow: { color: '#642D2A', fontFamily: 'Courier', fontSize: 12, fontWeight: '700', letterSpacing: 1.8 }, title: { color: '#101015', fontSize: 39, fontWeight: '900', letterSpacing: -1.8, lineHeight: 43, marginTop: 10 }, body: { color: '#2C2C31', fontSize: 17, lineHeight: 26, marginTop: 12 },
-  summaryRail: { borderColor: '#D4C9B9', borderWidth: 1, flexDirection: 'row' }, stat: { alignItems: 'center', borderRightColor: '#D4C9B9', borderRightWidth: 1, flex: 1, minWidth: 0, paddingHorizontal: 13, paddingVertical: 11 }, statValue: { color: '#101015', fontSize: 21, fontWeight: '900' }, statValueSmall: { fontSize: 14, marginTop: 4 }, statLabel: { color: '#642D2A', fontFamily: 'Courier', fontSize: 9, fontWeight: '800', letterSpacing: 1.1, marginTop: 4 },
-  evidence: { backgroundColor: '#E8D194', borderColor: '#C8A850', borderWidth: 1, gap: 5, marginTop: 22, padding: 17 }, personalRecord: { backgroundColor: '#E7D9D3', borderColor: '#A95B5B', borderWidth: 1, gap: 5, marginTop: 22, padding: 17 }, evidenceLabel: { color: '#642D2A', fontFamily: 'Courier', fontSize: 11, fontWeight: '800', letterSpacing: 1.4 }, evidenceTitle: { color: '#101015', fontSize: 20, fontWeight: '900' }, evidenceCopy: { color: '#2C2C31', fontSize: 14, lineHeight: 21 },
+  summaryRail: { borderColor: '#D4C9B9', borderWidth: 1, flexDirection: 'row', width: '100%' }, summaryRailDesktop: { width: 350 }, stat: { alignItems: 'center', borderRightColor: '#D4C9B9', borderRightWidth: 1, flex: 1, minWidth: 0, paddingHorizontal: 13, paddingVertical: 11 }, statWide: { flex: 1.75 }, statValue: { color: '#101015', fontSize: 21, fontWeight: '900' }, statValueSmall: { fontSize: 14, marginTop: 4 }, statLabel: { color: '#642D2A', fontFamily: 'Courier', fontSize: 9, fontWeight: '800', letterSpacing: 1.1, marginTop: 4 },
+  evidence: { backgroundColor: '#E8D194', borderColor: '#C8A850', borderWidth: 1, gap: 5, marginTop: 22, padding: 17 }, personalRecord: { backgroundColor: '#E7D9D3', borderColor: '#A95B5B', borderWidth: 1, gap: 5, marginTop: 22, padding: 17 }, evidenceLabel: { color: '#642D2A', fontFamily: 'Courier', fontSize: 11, fontWeight: '800', letterSpacing: 1.4 }, evidenceTitle: { color: '#101015', fontSize: 20, fontWeight: '900' }, evidenceCopy: { color: '#2C2C31', fontSize: 14, lineHeight: 21 }, workedMuscles: { borderTopColor: '#C8A850', borderTopWidth: 1, gap: 4, marginTop: 8, paddingTop: 11 }, workedMusclesText: { color: '#101015', fontSize: 15, fontWeight: '800', lineHeight: 22 }, completedMusclePanel: { borderColor: '#D4C9B9', borderWidth: 1, marginBottom: 12, padding: 14 },
   workspace: { gap: 22, marginTop: 28 }, workspaceDesktop: { alignItems: 'flex-start', flexDirection: 'row' }, primaryColumn: { flex: 1.2, minWidth: 0 }, secondaryColumn: { flex: 0.8, minWidth: 0 }, completedLog: { flex: 1.2 },
   sectionHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' }, sectionLabel: { color: '#642D2A', fontFamily: 'Courier', fontSize: 12, fontWeight: '800', letterSpacing: 1.55 }, sectionCount: { color: '#655D57', fontSize: 12, fontWeight: '700' },
   movementNavigator: { borderBottomColor: '#D4C9B9', borderBottomWidth: 1, paddingBottom: 13, paddingTop: 9 }, movementHeadingRow: { alignItems: 'center', flexDirection: 'row', gap: 8 }, movementDirection: { alignItems: 'center', justifyContent: 'center', minHeight: 44, minWidth: 32 }, movementDirectionDisabled: { opacity: 0.25 }, selectedMovementName: { color: '#101015', flex: 1, fontSize: 25, fontWeight: '900', letterSpacing: -1, lineHeight: 29, textAlign: 'center' }, movementStepperFrame: { alignSelf: 'center', maxWidth: 620, width: '100%' }, movementStepper: { gap: 8, paddingBottom: 12, paddingHorizontal: 2, paddingTop: 8 }, movementStepperCentered: { justifyContent: 'center', width: '100%' }, movementStepWrapExpanded: { flex: 1 }, movementStep: { backgroundColor: '#D4C9B9', height: 4, minWidth: 30 }, movementStepExpanded: { minWidth: 0, width: '100%' }, movementStepActive: { backgroundColor: '#642D2A', height: 5 }, movementStepComplete: { backgroundColor: '#81776D' }, selectedMovementHeading: { gap: 4, marginTop: 14 }, selectedMovementMeta: { color: '#655D57', fontSize: 14, textAlign: 'center', textTransform: 'capitalize' },
