@@ -494,12 +494,14 @@ export type ParsedNutritionLabel = {
   rawText: string;
 };
 
+export type NutritionLabelParseSource = 'ai' | 'ocr';
+
 export async function lookupBarcode(code: string) {
   return authenticatedRequest<BarcodeLookup>(`/v1/barcodes/${encodeURIComponent(code)}`);
 }
 
 export async function parseNutritionLabel(imageBase64: string) {
-  return authenticatedRequest<{ ok: true; parsed: ParsedNutritionLabel }>('/v1/nutrition-label/parse', {
+  return authenticatedRequest<{ ok: true; source: NutritionLabelParseSource; parsed: ParsedNutritionLabel }>('/v1/nutrition-label/parse', {
     method: 'POST',
     body: JSON.stringify({ imageBase64 }),
   });

@@ -10,7 +10,7 @@ import postgres from 'postgres';
 import type { Worker } from 'tesseract.js';
 import { z } from 'zod';
 
-import { requestAiWorkoutDraft } from './ai-workout.js';
+import { requestAiNutritionLabel, requestAiWorkoutDraft } from './ai-workout.js';
 import { getCalistreeCatalog, getCalistreeExerciseMetadata, searchCalistreeExercises } from './calistree.js';
 
 const envSchema = z.object({
@@ -106,6 +106,15 @@ const aiWorkoutDraftSchema = z.object({
     exercises: z.array(aiWorkoutExerciseSchema).min(1).max(12),
   })).min(1).max(7),
 });
+const aiNutritionLabelSchema = z.object({
+  name: z.string().trim().min(2).max(120).nullable(),
+  servingSizeG: z.number().positive().max(5_000).nullable(),
+  caloriesKcal: z.number().int().nonnegative().max(2_000).nullable(),
+  proteinG: z.number().nonnegative().max(500).nullable(),
+  carbsG: z.number().nonnegative().max(500).nullable(),
+  fatG: z.number().nonnegative().max(500).nullable(),
+  confidence: z.number().min(0).max(1),
+}).strict();
 const aiWorkoutImportSchema = z.object({ plan: aiWorkoutDraftSchema });
 const reorderSchema = z.object({ direction: z.enum(['up', 'down']) });
 const exerciseSchema = z.object({
@@ -640,6 +649,20 @@ function parseAiWorkoutDraft(response: string) {
   const parsed = aiWorkoutDraftSchema.safeParse(JSON.parse(unwrapped.slice(start, end + 1)));
   if (!parsed.success) throw new Error('The plan assistant returned an invalid workout draft. Please try again.');
   return parsed.data;
+}
+
+function parseAiNutritionLabel(response: string) {
+  const unwrapped = response.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  const start = unwrapped.indexOf('{');
+  const end = unwrapped.lastIndexOf('}');
+  if (start < 0 || end <= start) throw new Error('The label assistant did not return JSON.');
+  const parsed = aiNutritionLabelSchema.safeParse(JSON.parse(unwrapped.slice(start, end + 1)));
+  if (!parsed.success) throw new Error('The label assistant returned invalid nutrition data.');
+  const label = parsed.data;
+  if (![label.servingSizeG, label.caloriesKcal, label.proteinG, label.carbsG, label.fatG].some((value) => value !== null)) {
+    throw new Error('The label assistant could not find nutrition values.');
+  }
+  return label;
 }
 
 function aiExerciseNameKey(name: string) {
@@ -1465,6 +1488,36 @@ app.post('/v1/nutrition-label/parse', { bodyLimit: 13 * 1024 * 1024 }, async (re
   const parsed = nutritionLabelOcrSchema.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: 'Choose a readable nutrition-label image smaller than 9 MB.' });
   const encoded = parsed.data.imageBase64.replace(/^data:[^;]+;base64,/, '');
+
+  if (env.AI_WORKOUT_WORKER_URL && env.AI_WORKOUT_WORKER_TOKEN) {
+    try {
+      const response = await requestAiNutritionLabel({
+        workerUrl: env.AI_WORKOUT_WORKER_URL,
+        workerToken: env.AI_WORKOUT_WORKER_TOKEN,
+        imageBase64: encoded,
+      });
+      const label = parseAiNutritionLabel(response);
+      return reply.send({
+        ok: true,
+        source: 'ai',
+        parsed: {
+          name: label.name,
+          servingSizeText: label.servingSizeG === null ? null : `${label.servingSizeG} g`,
+          servingSizeG: label.servingSizeG,
+          servingsPerContainer: null,
+          caloriesKcal: label.caloriesKcal,
+          proteinG: label.proteinG,
+          carbsG: label.carbsG,
+          fatG: label.fatG,
+          parseConfidence: label.confidence,
+          rawText: '',
+        },
+      });
+    } catch (error) {
+      request.log.warn(error, 'Nutrition-label AI extraction failed; falling back to OCR');
+    }
+  }
+
   let worker: Worker | null = null;
   try {
     const { createWorker } = await import('tesseract.js');
@@ -1472,7 +1525,7 @@ app.post('/v1/nutrition-label/parse', { bodyLimit: 13 * 1024 * 1024 }, async (re
     const result = await worker.recognize(Buffer.from(encoded, 'base64'));
     const rawText = result.data.text.trim();
     if (!rawText) return reply.code(422).send({ error: 'No readable nutrition text was found in that image.' });
-    return reply.send({ ok: true, parsed: parseNutritionLabel(rawText, result.data.confidence / 100) });
+    return reply.send({ ok: true, source: 'ocr', parsed: parseNutritionLabel(rawText, result.data.confidence / 100) });
   } catch (error) {
     request.log.error(error, 'Nutrition-label OCR failed');
     return reply.code(422).send({ error: 'The nutrition label could not be read. Try a clearer, tightly cropped photo.' });

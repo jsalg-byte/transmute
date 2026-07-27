@@ -279,18 +279,19 @@ export function NutritionContent({
     setSaving(true);
     setNotice(null);
     try {
-      const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], base64: true, quality: 0.7, selectionLimit: 1 });
-      if (result.canceled) return;
-      const image = result.assets[0];
+      const pickerResult = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], base64: true, quality: 0.7, selectionLimit: 1 });
+      if (pickerResult.canceled) return;
+      const image = pickerResult.assets[0];
       if (!image?.base64) throw new Error("Choose a readable nutrition-label photo.");
-      const parsed = (await parseNutritionLabel(image.base64)).parsed;
+      const labelResponse = await parseNutritionLabel(image.base64);
+      const parsed = labelResponse.parsed;
       if (parsed.name) setName(parsed.name);
       if (parsed.servingSizeG) setServingSizeG(String(parsed.servingSizeG));
       if (parsed.caloriesKcal !== null) setCalories(String(parsed.caloriesKcal));
       if (parsed.proteinG !== null) setProtein(String(parsed.proteinG));
       if (parsed.carbsG !== null) setCarbs(String(parsed.carbsG));
       if (parsed.fatG !== null) setFat(String(parsed.fatG));
-      setNotice(`Label read at ${Math.round(parsed.parseConfidence * 100)}% confidence. Review the values before saving.`);
+      setNotice(`${labelResponse.source === 'ai' ? 'AI' : 'OCR fallback'} read the label at ${Math.round(parsed.parseConfidence * 100)}% confidence. Review the values before saving.`);
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : "Unable to read that nutrition label.");
     } finally {

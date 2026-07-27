@@ -33,3 +33,30 @@ export async function requestAiWorkoutDraft({
   }
   return body.text;
 }
+
+export async function requestAiNutritionLabel({
+  workerUrl,
+  workerToken,
+  imageBase64,
+}: { workerUrl: string; workerToken: string; imageBase64: string }) {
+  const response = await fetch(`${workerUrl.replace(/\/$/, '')}/nutrition-label`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${workerToken}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ imageBase64 }),
+    signal: AbortSignal.timeout(120_000),
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error || 'The label assistant could not respond right now.');
+  }
+
+  const body = await response.json().catch(() => null) as { text?: unknown } | null;
+  if (typeof body?.text !== 'string' || !body.text.trim()) {
+    throw new Error('The label assistant returned an empty response.');
+  }
+  return body.text;
+}
