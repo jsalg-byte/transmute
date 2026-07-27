@@ -5,7 +5,6 @@ import { useMemo, useState } from "react";
 import {
   Image,
   ActivityIndicator,
-  Alert,
   Modal,
   Pressable,
   ScrollView,
@@ -136,6 +135,7 @@ export function NutritionContent({
   const [consumedAt, setConsumedAt] = useState("");
   const [mealPhoto, setMealPhoto] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [editingMeal, setEditingMeal] = useState<MealLog | null>(null);
+  const [mealPendingDeletion, setMealPendingDeletion] = useState<MealLog | null>(null);
   const [editMealType, setEditMealType] = useState<MealType>("snack");
   const [editMealGrams, setEditMealGrams] = useState("");
   const [editConsumedAt, setEditConsumedAt] = useState("");
@@ -500,35 +500,27 @@ export function NutritionContent({
     }
   };
 
-  const deleteLoggedFood = (meal: MealLog) => {
-    if (saving) return;
-    Alert.alert(
-      "Delete logged food?",
-      `Remove ${meal.name} from your ${titleCase(meal.meal_type)} log? This cannot be undone.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: () => {
-            void (async () => {
-              setSaving(true);
-              setNotice(null);
-              try {
-                await deleteMealLog(meal.id);
-                if (editingMeal?.id === meal.id) setEditingMeal(null);
-                await refresh();
-                setNotice("Logged food deleted.");
-              } catch (reason) {
-                setNotice(reason instanceof Error ? reason.message : "Unable to delete the logged food.");
-              } finally {
-                setSaving(false);
-              }
-            })();
-          },
-        },
-      ],
-    );
+  const requestMealDeletion = (meal: MealLog) => {
+    if (!saving) setMealPendingDeletion(meal);
+  };
+
+  const confirmMealDeletion = async () => {
+    const meal = mealPendingDeletion;
+    if (!meal || saving) return;
+
+    setSaving(true);
+    setNotice(null);
+    try {
+      await deleteMealLog(meal.id);
+      if (editingMeal?.id === meal.id) setEditingMeal(null);
+      setMealPendingDeletion(null);
+      await refresh();
+      setNotice("Logged food deleted.");
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "Unable to delete the logged food.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const renderMealRow = (meal: MealGroup) => {
@@ -556,7 +548,7 @@ export function NutritionContent({
             <View style={styles.detailItemCopy}><Text style={styles.detailItemName}>{item.name}</Text><Text style={styles.detailItemMeta}>{formatNumber(numeric(item.quantity))}g · {item.calories_kcal} kcal</Text><Text style={styles.detailItemMacro}>{formatNumber(numeric(item.protein_g) * multiplier)}p · {formatNumber(numeric(item.carbs_g) * multiplier)}c · {formatNumber(numeric(item.fat_g) * multiplier)}f</Text></View>
             <View style={styles.detailItemActions}>
               <Pressable accessibilityRole="button" accessibilityLabel={`Edit ${item.name}`} disabled={saving} onPress={() => openMealEditor(item)} hitSlop={9} style={styles.detailIconButton}><Pencil color={palette.oxide} size={17} strokeWidth={2.3} /></Pressable>
-              <Pressable accessibilityRole="button" accessibilityLabel={`Delete ${item.name}`} disabled={saving} onPress={() => deleteLoggedFood(item)} hitSlop={9} style={styles.detailIconButton}><Trash2 color={palette.destructive} size={17} strokeWidth={2.3} /></Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel={`Delete ${item.name}`} disabled={saving} onPress={() => requestMealDeletion(item)} hitSlop={9} style={styles.detailIconButton}><Trash2 color={palette.destructive} size={17} strokeWidth={2.3} /></Pressable>
             </View>
           </View>;
         })}
@@ -650,11 +642,29 @@ export function NutritionContent({
           <Pressable accessibilityRole="button" disabled={saving} onPress={() => void saveMealEdit()} style={[styles.primaryAction, saving && styles.disabled]}>
             <Text style={styles.primaryActionText}>{saving ? "Saving…" : "Save changes"}</Text>
           </Pressable>
-          <Pressable accessibilityRole="button" disabled={saving} onPress={() => editingMeal && deleteLoggedFood(editingMeal)} style={[styles.destructiveAction, saving && styles.disabled]}>
+          <Pressable accessibilityRole="button" disabled={saving} onPress={() => editingMeal && requestMealDeletion(editingMeal)} style={[styles.destructiveAction, saving && styles.disabled]}>
             <Trash2 color={palette.destructive} size={18} strokeWidth={2.3} />
             <Text style={styles.destructiveActionText}>Delete logged food</Text>
           </Pressable>
         </ScrollView>
+      </View>
+    </Modal>
+
+    <Modal transparent animationType="fade" visible={Boolean(mealPendingDeletion)} onRequestClose={() => !saving && setMealPendingDeletion(null)}>
+      <View style={styles.confirmationScrim}>
+        <View accessibilityRole="alert" style={styles.confirmationDialog}>
+          <Text style={styles.sectionLabel}>REMOVE LOGGED FOOD</Text>
+          <Text style={styles.confirmationTitle}>Delete {mealPendingDeletion?.name ?? "this food"}?</Text>
+          <Text style={styles.confirmationCopy}>This removes it from your {mealPendingDeletion ? titleCase(mealPendingDeletion.meal_type) : "meal"} log. This cannot be undone.</Text>
+          <View style={styles.confirmationActions}>
+            <Pressable accessibilityRole="button" disabled={saving} onPress={() => setMealPendingDeletion(null)} style={[styles.confirmationCancel, saving && styles.disabled]}>
+              <Text style={styles.confirmationCancelText}>Cancel</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" disabled={saving} onPress={() => void confirmMealDeletion()} style={[styles.confirmationDelete, saving && styles.disabled]}>
+              <Text style={styles.confirmationDeleteText}>{saving ? "Deleting…" : "Delete"}</Text>
+            </Pressable>
+          </View>
+        </View>
       </View>
     </Modal>
   </>;
@@ -744,6 +754,15 @@ const baseStyles = StyleSheet.create({
   closeButton: { alignItems: "center", height: 44, justifyContent: "center", width: 44 },
   destructiveAction: { alignItems: "center", alignSelf: "flex-start", flexDirection: "row", gap: 8, marginTop: 22, minHeight: 44, paddingHorizontal: 4 },
   destructiveActionText: { color: "#A33B36", fontSize: 14, fontWeight: "900", textDecorationLine: "underline" },
+  confirmationScrim: { alignItems: "center", backgroundColor: "rgba(16, 16, 21, 0.52)", flex: 1, justifyContent: "center", padding: 22 },
+  confirmationDialog: { backgroundColor: "#F4EFE7", borderColor: "#101015", borderWidth: 1, gap: 14, maxWidth: 430, padding: 22, width: "100%" },
+  confirmationTitle: { color: "#101015", fontSize: 23, fontWeight: "900", letterSpacing: -0.7 },
+  confirmationCopy: { color: "#655D57", fontSize: 14, lineHeight: 21 },
+  confirmationActions: { flexDirection: "row", gap: 10, justifyContent: "flex-end", marginTop: 4 },
+  confirmationCancel: { alignItems: "center", borderColor: "#101015", borderWidth: 1, justifyContent: "center", minHeight: 44, paddingHorizontal: 16 },
+  confirmationCancelText: { color: "#101015", fontSize: 13, fontWeight: "900" },
+  confirmationDelete: { alignItems: "center", backgroundColor: "#A33B36", justifyContent: "center", minHeight: 44, paddingHorizontal: 16 },
+  confirmationDeleteText: { color: "#F4EFE7", fontSize: 13, fontWeight: "900" },
   modalScroll: { paddingHorizontal: 20, paddingTop: 22 },
   mealTypeRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 },
   mealTypeButton: { borderColor: "#D4C9B9", borderWidth: 1, minHeight: 44, paddingHorizontal: 13, justifyContent: "center" },
