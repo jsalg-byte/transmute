@@ -84,7 +84,6 @@ const nav = [
   ["progress", "Progress"],
   ["arcana", "Arcana"],
   ["friends", "Friends"],
-  ["arcana", "Arcana"],
   ["settings", "Settings"],
   ["admin", "Admin"],
 ] as const;
@@ -346,6 +345,7 @@ export function RecordScreen({ area }: { area: Area }) {
           contentContainerStyle={[
             styles.content,
             area === "workout-plans" && isDesktop && styles.planPageContent,
+            area === "arcana" && styles.planPageContent,
             !isDesktop && {
               paddingBottom: BOTTOM_NAV_HEIGHT + insets.bottom + 28,
             },

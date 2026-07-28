@@ -1,95 +1,91 @@
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
 
-import { createGoal, createTrainingBlock, createWeeklyReview, getArcana, pinArcana, saveRecoveryCheckin, type ArcanaCard, type ArcanaData } from "../lib/api";
+import { AlchemySvg } from "./alchemy-svg";
+import { createGoal, createTrainingBlock, createWeeklyReview, getArcana, pinArcana, saveRecoveryCheckin, type ArcanaCard, type ArcanaData, type ArcanaStage } from "../lib/api";
 import { useTransmuteTheme } from "../theme/transmute-theme";
 
-const today = () => new Date().toISOString().slice(0, 10);
-const weekStart = () => {
-  const day = new Date();
-  day.setDate(day.getDate() - day.getDay());
-  return day.toISOString().slice(0, 10);
+const cardArt: Partial<Record<string, number>> = {
+  fool: require("../../assets/transmute/arcana/fool.svg"),
+  chariot: require("../../assets/transmute/arcana/chariot.svg"),
+  strength: require("../../assets/transmute/arcana/strength.svg"),
+  tower: require("../../assets/transmute/arcana/tower.svg"),
+  star: require("../../assets/transmute/arcana/star.svg"),
 };
+const stageOrder: ArcanaStage[] = ["unrevealed", "revealed", "refined", "illuminated", "mastered"];
+const today = () => new Date().toISOString().slice(0, 10);
+const weekStart = () => { const day = new Date(); day.setDate(day.getDate() - day.getDay()); return day.toISOString().slice(0, 10); };
+const titleCase = (value: string) => value.replace(/(^|\s)\S/g, (letter) => letter.toUpperCase());
+const stageColor = (stage: ArcanaStage, palette: ReturnType<typeof useTransmuteTheme>["palette"]) => stage === "mastered" ? palette.gold : stage === "unrevealed" ? palette.divider : palette.oxide;
 
 function CardDetail({ card, data, close, reload }: { card: ArcanaCard; data: ArcanaData; close: () => void; reload: (data?: ArcanaData) => void }) {
   const { palette } = useTransmuteTheme();
   const evidence = card.stageEvidence[card.stage];
-  const pin = async (slot: "past" | "present" | "becoming") => {
-    reload(await pinArcana(slot, card.id));
-    close();
-  };
-  return <Modal transparent animationType="fade" onRequestClose={close}>
-    <View style={detailStyles.backdrop}>
-      <View style={[detailStyles.sheet, { backgroundColor: palette.raised, borderColor: palette.divider }]}>
-        <Text style={[detailStyles.overline, { color: palette.muted }]}>ARCANA {String(card.number).padStart(2, "0")}</Text>
-        <Text style={[detailStyles.title, { color: palette.ink }]}>{card.name}</Text>
-        <Text style={[detailStyles.copy, { color: palette.body }]}>{card.focus}</Text>
-        <Text style={[detailStyles.stage, { color: palette.gold }]}>{card.stage.toUpperCase()}</Text>
-        {card.earnedAt ? <Text style={[detailStyles.copy, { color: palette.muted }]}>Earned {new Date(card.earnedAt).toLocaleDateString()}</Text> : null}
-        {evidence?.summary ? <Text style={[detailStyles.evidence, { color: palette.body }]}>{evidence.summary}</Text> : <Text style={[detailStyles.evidence, { color: palette.muted }]}>No qualifying evidence has been recorded yet.</Text>}
-        {card.nextMilestone ? <Text style={[detailStyles.next, { color: palette.ink }]}>Next: {card.nextMilestone.description} · {card.nextMilestone.current}/{card.nextMilestone.target}</Text> : <Text style={[detailStyles.next, { color: palette.gold }]}>All four stages are earned.</Text>}
-        {card.stage !== "unrevealed" ? <View style={detailStyles.pinRow}>{(["past", "present", "becoming"] as const).map((slot) => <Pressable key={slot} onPress={() => void pin(slot)} style={[detailStyles.pinButton, { borderColor: data.pins[slot] === card.id ? palette.gold : palette.divider }]}><Text style={[detailStyles.pinText, { color: palette.ink }]}>{slot}</Text></Pressable>)}</View> : null}
-        <Pressable onPress={close} style={[detailStyles.close, { backgroundColor: palette.oxide }]}><Text style={[detailStyles.closeText, { color: palette.surface }]}>Close</Text></Pressable>
-      </View>
-    </View>
-  </Modal>;
+  const pin = async (slot: "past" | "present" | "becoming") => { reload(await pinArcana(slot, card.id)); close(); };
+  return <Modal transparent animationType="fade" onRequestClose={close}><View style={detailStyles.backdrop}><View style={[detailStyles.sheet, { backgroundColor: palette.raised, borderColor: palette.divider }]}>
+    <Text style={[detailStyles.roman, { color: palette.divider }]}>{card.number}</Text>
+    <Text style={[detailStyles.overline, { color: palette.oxide }]}>ARCANA / {card.number}</Text><Text style={[detailStyles.title, { color: palette.ink }]}>{card.name}</Text>
+    <Text style={[detailStyles.stage, { color: stageColor(card.stage, palette) }]}>{titleCase(card.stage)}</Text><Text style={[detailStyles.copy, { color: palette.body }]}>{card.focus}</Text>
+    {evidence?.summary ? <Text style={[detailStyles.evidence, { color: palette.body }]}>{evidence.summary}</Text> : <Text style={[detailStyles.evidence, { color: palette.muted }]}>No qualifying evidence has been recorded yet.</Text>}
+    {card.nextMilestone ? <Text style={[detailStyles.next, { color: palette.ink }]}>Next: {card.nextMilestone.description}</Text> : <Text style={[detailStyles.next, { color: palette.gold }]}>All four stages are earned.</Text>}
+    {card.stage !== "unrevealed" ? <View style={detailStyles.pinRow}>{(["past", "present", "becoming"] as const).map((slot) => <Pressable key={slot} onPress={() => void pin(slot)} style={[detailStyles.pinButton, { borderColor: data.pins[slot] === card.id ? palette.oxide : palette.divider }]}><Text style={[detailStyles.pinText, { color: palette.ink }]}>{slot}</Text></Pressable>)}</View> : null}
+    <Pressable onPress={close} style={[detailStyles.close, { backgroundColor: palette.oxide }]}><Text style={[detailStyles.closeText, { color: palette.surface }]}>Close</Text></Pressable>
+  </View></View></Modal>;
+}
+
+function ThreadCard({ slot, card, onPress }: { slot: "past" | "present" | "becoming"; card?: ArcanaCard; onPress: () => void }) {
+  const { palette } = useTransmuteTheme();
+  const empty = !card;
+  return <Pressable disabled={empty} onPress={onPress} style={[styles.threadCard, { backgroundColor: palette.raised, borderColor: palette.divider }, !empty && { borderLeftColor: stageColor(card.stage, palette), borderLeftWidth: 3 }]}>
+    <Text style={[styles.threadLabel, { color: palette.muted }]}>{slot.toUpperCase()}</Text><Text style={[styles.threadName, { color: palette.ink }, empty && { color: palette.muted, fontStyle: "italic" }]}>{card?.name ?? "No card chosen"}</Text>
+    <Text style={[styles.threadMeta, { color: palette.body }]}>{card ? `${titleCase(card.stage)} · ${Object.keys(card.stageEvidence).length} evidence records` : "Pin an Arcana that represents where you are heading."}</Text>
+    <Text style={[styles.threadAction, { color: palette.oxide }]}>{card ? "Change" : "Reveal a card to choose"}</Text>
+  </Pressable>;
 }
 
 export function ArcanaContent() {
   const { palette } = useTransmuteTheme();
-  const [data, setData] = useState<ArcanaData | null>(null);
-  const [selected, setSelected] = useState<ArcanaCard | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState<string | null>(null);
-  const [recovery, setRecovery] = useState("3");
-  const [block, setBlock] = useState("");
-  const [review, setReview] = useState("");
-  const [goal, setGoal] = useState("");
-  const reload = (next?: ArcanaData) => {
-    if (next) { setData(next); return; }
-    getArcana().then(setData).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Unable to read Arcana."));
-  };
-  useEffect(() => {
-    let active = true;
-    getArcana().then((result) => { if (active) setData(result); }).catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : "Unable to read Arcana."); });
-    return () => { active = false; };
-  }, []);
+  const { width } = useWindowDimensions();
+  const [data, setData] = useState<ArcanaData | null>(null); const [selected, setSelected] = useState<ArcanaCard | null>(null); const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<"all" | "revealed" | "progress" | "unrevealed">("all"); const [sortByStage, setSortByStage] = useState(false); const [journalOpen, setJournalOpen] = useState(false);
+  const [saving, setSaving] = useState<string | null>(null); const [recovery, setRecovery] = useState("3"); const [block, setBlock] = useState(""); const [review, setReview] = useState(""); const [goal, setGoal] = useState("");
+  const reload = (next?: ArcanaData) => { if (next) { setData(next); return; } getArcana().then(setData).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Unable to read Arcana.")); };
+  useEffect(() => { let active = true; getArcana().then((result) => { if (active) setData(result); }).catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : "Unable to read Arcana."); }); return () => { active = false; }; }, []);
   const revealed = useMemo(() => data?.cards.filter((card) => card.stage !== "unrevealed").length ?? 0, [data]);
-  const save = async (key: string, action: () => Promise<unknown>) => {
-    setSaving(key); setError(null);
-    try { await action(); reload(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to save that record."); } finally { setSaving(null); }
-  };
-  if (!data) return <View style={arcanaStyles.loading}><ActivityIndicator color={palette.oxide} /><Text style={{ color: palette.body }}>Reading the Arcana…</Text>{error ? <Text style={{ color: palette.destructive }}>{error}</Text> : null}</View>;
-  const pinned = (["past", "present", "becoming"] as const).map((slot) => ({ slot, card: data.cards.find((card) => card.id === data.pins[slot]) }));
-  return <>
-    <Text style={[arcanaStyles.eyebrow, { color: palette.muted }]}>PERSONAL ARCANA · RULES V{data.ruleVersion}</Text>
-    <Text style={[arcanaStyles.title, { color: palette.ink }]}>A truthful record of your work.</Text>
-    <Text style={[arcanaStyles.copy, { color: palette.body }]}>{revealed} of 15 cards revealed. Stages are permanent; the evidence remains attached to the work that earned it.</Text>
-    <View style={arcanaStyles.spread}>{pinned.map(({ slot, card }) => <View key={slot} style={[arcanaStyles.spreadCell, { borderColor: palette.divider, backgroundColor: palette.raised }]}><Text style={[arcanaStyles.spreadLabel, { color: palette.muted }]}>{slot.toUpperCase()}</Text><Text style={[arcanaStyles.spreadName, { color: palette.ink }]}>{card?.name ?? "Unpinned"}</Text></View>)}</View>
-    <View style={arcanaStyles.grid}>{data.cards.map((card) => <Pressable key={card.id} onPress={() => setSelected(card)} style={[arcanaStyles.card, { backgroundColor: palette.raised, borderColor: card.stage === "unrevealed" ? palette.divider : palette.gold }]}><Text style={[arcanaStyles.number, { color: card.stage === "unrevealed" ? palette.mutedSoft : palette.gold }]}>{String(card.number).padStart(2, "0")}</Text><Text style={[arcanaStyles.cardName, { color: palette.ink }]}>{card.stage === "unrevealed" ? "—" : card.name}</Text><Text style={[arcanaStyles.cardStage, { color: palette.muted }]}>{card.stage}</Text></Pressable>)}</View>
-    <Text style={[arcanaStyles.section, { color: palette.ink }]}>Record where the work happens</Text>
-    <Text style={[arcanaStyles.copy, { color: palette.body }]}>These are small journal inputs, not a competing dashboard. They make recovery, planning, reflection, and reassessment visible to the Arcana.</Text>
-    <View style={[arcanaStyles.tracker, { borderColor: palette.divider, backgroundColor: palette.raised }]}>
-      <Text style={[arcanaStyles.trackerTitle, { color: palette.ink }]}>Daily recovery</Text><Text style={[arcanaStyles.trackerHelp, { color: palette.muted }]}>1–5 readiness score for today.</Text>
-      <TextInput value={recovery} onChangeText={setRecovery} keyboardType="number-pad" style={[arcanaStyles.input, { color: palette.ink, borderColor: palette.divider }]} />
-      <Pressable onPress={() => void save("recovery", () => saveRecoveryCheckin(today(), { recoveryScore: Number(recovery) }))} style={[arcanaStyles.action, { backgroundColor: palette.oxide }]}><Text style={[arcanaStyles.actionText, { color: palette.surface }]}>{saving === "recovery" ? "Saving…" : "Save check-in"}</Text></Pressable>
-    </View>
-    <View style={[arcanaStyles.tracker, { borderColor: palette.divider, backgroundColor: palette.raised }]}>
-      <Text style={[arcanaStyles.trackerTitle, { color: palette.ink }]}>Training block</Text><TextInput value={block} onChangeText={setBlock} placeholder="Block name" placeholderTextColor={palette.mutedSoft} style={[arcanaStyles.input, { color: palette.ink, borderColor: palette.divider }]} />
-      <Pressable onPress={() => void save("block", () => createTrainingBlock({ name: block, startDate: today(), endDate: new Date(Date.now() + 27 * 864e5).toISOString().slice(0, 10), targetSessionsPerWeek: 3 }))} style={[arcanaStyles.action, { backgroundColor: palette.oxide }]}><Text style={[arcanaStyles.actionText, { color: palette.surface }]}>{saving === "block" ? "Saving…" : "Start four-week block"}</Text></Pressable>
-    </View>
-    <View style={[arcanaStyles.tracker, { borderColor: palette.divider, backgroundColor: palette.raised }]}>
-      <Text style={[arcanaStyles.trackerTitle, { color: palette.ink }]}>Weekly review</Text><TextInput value={review} onChangeText={setReview} multiline placeholder="What did you learn?" placeholderTextColor={palette.mutedSoft} style={[arcanaStyles.input, arcanaStyles.multiline, { color: palette.ink, borderColor: palette.divider }]} />
-      <Pressable onPress={() => void save("review", () => createWeeklyReview({ weekStart: weekStart(), weekEnd: today(), reflection: review }))} style={[arcanaStyles.action, { backgroundColor: palette.oxide }]}><Text style={[arcanaStyles.actionText, { color: palette.surface }]}>{saving === "review" ? "Saving…" : "Save review"}</Text></Pressable>
-    </View>
-    <View style={[arcanaStyles.tracker, { borderColor: palette.divider, backgroundColor: palette.raised }]}>
-      <Text style={[arcanaStyles.trackerTitle, { color: palette.ink }]}>Goal and reassessment</Text><TextInput value={goal} onChangeText={setGoal} placeholder="A concrete goal" placeholderTextColor={palette.mutedSoft} style={[arcanaStyles.input, { color: palette.ink, borderColor: palette.divider }]} />
-      <Pressable onPress={() => void save("goal", () => createGoal({ title: goal, category: "habit" }))} style={[arcanaStyles.action, { backgroundColor: palette.oxide }]}><Text style={[arcanaStyles.actionText, { color: palette.surface }]}>{saving === "goal" ? "Saving…" : "Add goal"}</Text></Pressable>
-    </View>
-    {error ? <Text accessibilityRole="alert" style={{ color: palette.destructive }}>{error}</Text> : null}
-    {selected ? <CardDetail card={selected} data={data} close={() => setSelected(null)} reload={reload} /> : null}
-  </>;
+  const cards = useMemo(() => {
+    const allCards = data?.cards ?? [];
+    const numberPosition = (card: ArcanaCard) => allCards.findIndex(({ id }) => id === card.id);
+
+    return allCards
+      .filter((card) => filter === "all" || (filter === "revealed" && stageOrder.indexOf(card.stage) >= 2) || (filter === "progress" && card.stage === "revealed") || (filter === "unrevealed" && card.stage === "unrevealed"))
+      .sort((left, right) => {
+        if (sortByStage) {
+          const stageDifference = stageOrder.indexOf(right.stage) - stageOrder.indexOf(left.stage);
+          if (stageDifference !== 0) return stageDifference;
+        }
+
+        return numberPosition(left) - numberPosition(right);
+      });
+  }, [data?.cards, filter, sortByStage]);
+  const save = async (key: string, action: () => Promise<unknown>) => { setSaving(key); setError(null); try { await action(); reload(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to save that record."); } finally { setSaving(null); } };
+  if (!data) return <View style={styles.loading}><ActivityIndicator color={palette.oxide} /><Text style={{ color: palette.body }}>Reading the Arcana…</Text>{error ? <Text style={{ color: palette.destructive }}>{error}</Text> : null}</View>;
+  const columns = width >= 1040 ? 4 : width >= 760 ? 3 : width >= 510 ? 2 : 1; const cardWidth = columns === 4 ? "23.7%" : columns === 3 ? "31.9%" : columns === 2 ? "48.8%" : "100%";
+  const pinned = (["past", "present", "becoming"] as const).map((slot) => ({ slot, card: data.cards.find((card) => card.id === data.pins[slot]) })); const progress = `${Math.round((revealed / data.cards.length) * 100)}%` as `${number}%`;
+  return <View style={styles.page}>
+    <View style={styles.header}><View><Text style={[styles.eyebrow, { color: palette.oxide }]}>PERSONAL ARCANA / RULES V{data.ruleVersion}</Text><Text style={[styles.title, { color: palette.ink }]}>Your work leaves a record.</Text><Text style={[styles.copy, { color: palette.body }]}>{revealed} of {data.cards.length} Arcana revealed. Every stage remains attached to the evidence that earned it.</Text></View><View style={[styles.revealPanel, { borderColor: palette.divider, backgroundColor: palette.raised }]}><Text style={[styles.revealLabel, { color: palette.muted }]}>ARCANA REVEALED</Text><Text style={[styles.revealValue, { color: palette.oxide }]}>{revealed} / {data.cards.length}</Text><Text style={[styles.revealPercent, { color: palette.ink }]}>{progress}</Text><View style={[styles.track, { backgroundColor: palette.divider }]}><View style={[styles.fill, { backgroundColor: palette.oxide, width: progress }]} /></View></View></View>
+    <Text style={[styles.sectionLabel, { color: palette.ink }]}>CURRENT THREAD</Text><View style={styles.thread}>{pinned.map(({ slot, card }) => <ThreadCard key={slot} slot={slot} card={card} onPress={() => card && setSelected(card)} />)}</View>
+    <View style={[styles.collectionHeader, { borderTopColor: palette.divider }]}><View><Text style={[styles.sectionLabel, { color: palette.ink }]}>THE MAJOR ARCANA</Text><Text style={[styles.collectionMeta, { color: palette.oxide }]}>{revealed} OF {data.cards.length} REVEALED</Text></View><Text style={[styles.collectionPercent, { color: palette.ink }]}>{progress}</Text></View><View style={[styles.track, { backgroundColor: palette.divider }]}><View style={[styles.fill, { backgroundColor: palette.oxide, width: progress }]} /></View>
+    <View style={styles.toolbar}><View style={styles.tabs}>{(["all", "revealed", "progress", "unrevealed"] as const).map((option) => <Pressable key={option} onPress={() => setFilter(option)} style={[styles.tab, { borderColor: palette.divider }, filter === option && { borderColor: palette.oxide, backgroundColor: palette.raised }]}><Text style={[styles.tabText, { color: filter === option ? palette.ink : palette.muted }]}>{option === "progress" ? "In progress" : titleCase(option)}</Text></Pressable>)}</View><Pressable onPress={() => setSortByStage((value) => !value)} style={[styles.sort, { borderColor: palette.divider }]}><Text style={[styles.sortText, { color: palette.ink }]}>Sort: {sortByStage ? "Stage" : "Number"}</Text></Pressable></View>
+    <View style={styles.grid}>{cards.map((card) => { const isRevealed = card.stage !== "unrevealed"; const art = cardArt[card.id]; const evidenceCount = Object.keys(card.stageEvidence).length; return <Pressable key={card.id} onPress={() => setSelected(card)} style={[styles.card, { width: cardWidth, backgroundColor: isRevealed ? palette.raised : palette.surface, borderColor: palette.divider }, isRevealed && { borderLeftColor: stageColor(card.stage, palette), borderLeftWidth: 3 }]}>
+      {isRevealed && art ? <View pointerEvents="none" style={styles.art}><AlchemySvg source={art} width={250} height={335} style={styles.artwork} /></View> : null}<Text style={[styles.watermark, { color: isRevealed ? palette.divider : palette.mutedSoft }]}>{card.number}</Text><View style={styles.cardCopy}><Text style={[styles.cardNumber, { color: stageColor(card.stage, palette) }]}>{card.number}</Text><Text style={[styles.cardName, { color: palette.ink }, !isRevealed && { color: palette.muted }]}>{isRevealed ? card.name : "UNREVEALED"}</Text>{isRevealed ? <><Text style={[styles.badge, { color: stageColor(card.stage, palette), borderColor: stageColor(card.stage, palette) }]}>{titleCase(card.stage)}</Text><Text style={[styles.cardMeta, { color: palette.body }]}>{evidenceCount} {evidenceCount === 1 ? "evidence record" : "evidence records"}</Text><Text style={[styles.cardDate, { color: palette.muted }]}>{card.earnedAt ? `Advanced ${new Date(card.earnedAt).toLocaleDateString()}` : "Evidence retained"}</Text></> : <Text style={[styles.cardRequirement, { color: palette.body }]}>{card.nextMilestone?.description ?? "Continue the work to discover."}</Text>}</View></Pressable>; })}</View>
+    <View style={[styles.journal, { borderTopColor: palette.divider }]}><Pressable onPress={() => setJournalOpen((open) => !open)} style={styles.journalTrigger}><View><Text style={[styles.sectionLabel, { color: palette.ink }]}>RECORD THE WORK</Text><Text style={[styles.journalHint, { color: palette.muted }]}>Recovery, plans, reviews, and goals feed the evidence engine.</Text></View><Text style={[styles.journalAction, { color: palette.oxide }]}>{journalOpen ? "Close" : "Add record"}</Text></Pressable>{journalOpen ? <View style={styles.journalGrid}>
+      <View style={[styles.tracker, { borderColor: palette.divider, backgroundColor: palette.raised }]}><Text style={[styles.trackerTitle, { color: palette.ink }]}>Daily recovery</Text><TextInput value={recovery} onChangeText={setRecovery} keyboardType="number-pad" style={[styles.input, { color: palette.ink, borderColor: palette.divider }]} /><Pressable onPress={() => void save("recovery", () => saveRecoveryCheckin(today(), { recoveryScore: Number(recovery) }))} style={[styles.action, { backgroundColor: palette.oxide }]}><Text style={[styles.actionText, { color: palette.surface }]}>{saving === "recovery" ? "Saving…" : "Save check-in"}</Text></Pressable></View>
+      <View style={[styles.tracker, { borderColor: palette.divider, backgroundColor: palette.raised }]}><Text style={[styles.trackerTitle, { color: palette.ink }]}>Training block</Text><TextInput value={block} onChangeText={setBlock} placeholder="Block name" placeholderTextColor={palette.mutedSoft} style={[styles.input, { color: palette.ink, borderColor: palette.divider }]} /><Pressable onPress={() => void save("block", () => createTrainingBlock({ name: block, startDate: today(), endDate: new Date(Date.now() + 27 * 864e5).toISOString().slice(0, 10), targetSessionsPerWeek: 3 }))} style={[styles.action, { backgroundColor: palette.oxide }]}><Text style={[styles.actionText, { color: palette.surface }]}>{saving === "block" ? "Saving…" : "Start block"}</Text></Pressable></View>
+      <View style={[styles.tracker, { borderColor: palette.divider, backgroundColor: palette.raised }]}><Text style={[styles.trackerTitle, { color: palette.ink }]}>Weekly review</Text><TextInput value={review} onChangeText={setReview} multiline placeholder="What did you learn?" placeholderTextColor={palette.mutedSoft} style={[styles.input, styles.multiline, { color: palette.ink, borderColor: palette.divider }]} /><Pressable onPress={() => void save("review", () => createWeeklyReview({ weekStart: weekStart(), weekEnd: today(), reflection: review }))} style={[styles.action, { backgroundColor: palette.oxide }]}><Text style={[styles.actionText, { color: palette.surface }]}>{saving === "review" ? "Saving…" : "Save review"}</Text></Pressable></View>
+      <View style={[styles.tracker, { borderColor: palette.divider, backgroundColor: palette.raised }]}><Text style={[styles.trackerTitle, { color: palette.ink }]}>Goal</Text><TextInput value={goal} onChangeText={setGoal} placeholder="A concrete goal" placeholderTextColor={palette.mutedSoft} style={[styles.input, { color: palette.ink, borderColor: palette.divider }]} /><Pressable onPress={() => void save("goal", () => createGoal({ title: goal, category: "habit" }))} style={[styles.action, { backgroundColor: palette.oxide }]}><Text style={[styles.actionText, { color: palette.surface }]}>{saving === "goal" ? "Saving…" : "Add goal"}</Text></Pressable></View>
+    </View> : null}</View>{error ? <Text accessibilityRole="alert" style={{ color: palette.destructive }}>{error}</Text> : null}{selected ? <CardDetail card={selected} data={data} close={() => setSelected(null)} reload={reload} /> : null}
+  </View>;
 }
 
-const arcanaStyles = StyleSheet.create({ loading: { gap: 10, padding: 30, alignItems: "center" }, eyebrow: { fontSize: 11, fontWeight: "800", letterSpacing: 1.4 }, title: { fontSize: 29, fontWeight: "900", marginTop: 8 }, copy: { fontSize: 15, lineHeight: 22, marginTop: 8 }, spread: { flexDirection: "row", gap: 8, marginTop: 20 }, spreadCell: { flex: 1, borderWidth: 1, padding: 10, minHeight: 72 }, spreadLabel: { fontSize: 10, letterSpacing: 1, fontWeight: "800" }, spreadName: { fontSize: 14, fontWeight: "800", marginTop: 8 }, grid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 18 }, card: { width: "31%", minHeight: 112, borderWidth: 1, padding: 11, justifyContent: "space-between" }, number: { fontSize: 12, fontWeight: "900", letterSpacing: 1 }, cardName: { fontSize: 16, fontWeight: "900" }, cardStage: { fontSize: 11, textTransform: "uppercase" }, section: { fontSize: 22, fontWeight: "900", marginTop: 30 }, tracker: { borderWidth: 1, padding: 14, marginTop: 14 }, trackerTitle: { fontSize: 17, fontWeight: "900" }, trackerHelp: { fontSize: 13, marginTop: 4 }, input: { borderWidth: 1, marginTop: 10, minHeight: 42, paddingHorizontal: 10, fontSize: 15 }, multiline: { minHeight: 80, paddingTop: 10, textAlignVertical: "top" }, action: { alignSelf: "flex-start", paddingHorizontal: 14, paddingVertical: 10, marginTop: 10 }, actionText: { fontSize: 13, fontWeight: "900" }, });
-const detailStyles = StyleSheet.create({ backdrop: { flex: 1, backgroundColor: "#00000099", justifyContent: "flex-end" }, sheet: { borderWidth: 1, padding: 22, gap: 10 }, overline: { fontSize: 11, fontWeight: "900", letterSpacing: 1.5 }, title: { fontSize: 27, fontWeight: "900" }, copy: { fontSize: 15, lineHeight: 21 }, stage: { fontSize: 13, fontWeight: "900", letterSpacing: 1.3 }, evidence: { fontSize: 14, lineHeight: 20, marginTop: 4 }, next: { fontSize: 14, fontWeight: "800", lineHeight: 20 }, pinRow: { flexDirection: "row", gap: 8, marginTop: 4 }, pinButton: { borderWidth: 1, paddingHorizontal: 10, paddingVertical: 8 }, pinText: { fontSize: 12, fontWeight: "900", textTransform: "capitalize" }, close: { alignItems: "center", padding: 12, marginTop: 4 }, closeText: { fontWeight: "900" }, });
+const styles = StyleSheet.create({ page: { width: "100%" }, loading: { alignItems: "center", gap: 10, padding: 30 }, header: { flexDirection: "row", gap: 24, justifyContent: "space-between" }, eyebrow: { fontSize: 11, fontWeight: "900", letterSpacing: 1.7 }, title: { fontFamily: "Georgia", fontSize: 34, letterSpacing: -1.2, lineHeight: 39, marginTop: 9 }, copy: { fontSize: 15, lineHeight: 22, marginTop: 9, maxWidth: 560 }, revealPanel: { borderWidth: 1, minWidth: 220, padding: 15 }, revealLabel: { fontSize: 10, fontWeight: "900", letterSpacing: 1.4 }, revealValue: { fontSize: 26, fontWeight: "900", marginTop: 8 }, revealPercent: { fontSize: 14, fontWeight: "900", position: "absolute", right: 15, top: 37 }, track: { height: 3, marginTop: 10, overflow: "hidden" }, fill: { height: "100%" }, sectionLabel: { fontSize: 12, fontWeight: "900", letterSpacing: 1.8 }, thread: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 12 }, threadCard: { flexGrow: 1, flexBasis: 240, borderWidth: 1, minHeight: 142, padding: 16 }, threadLabel: { fontSize: 10, fontWeight: "900", letterSpacing: 1.5 }, threadName: { fontFamily: "Georgia", fontSize: 24, marginTop: 11 }, threadMeta: { fontSize: 13, lineHeight: 18, marginTop: 7 }, threadAction: { bottom: 14, fontSize: 12, fontWeight: "900", position: "absolute", right: 15 }, collectionHeader: { alignItems: "flex-end", borderTopWidth: 1, flexDirection: "row", justifyContent: "space-between", marginTop: 30, paddingTop: 18 }, collectionMeta: { fontSize: 11, fontWeight: "900", letterSpacing: 1.2, marginTop: 6 }, collectionPercent: { fontSize: 15, fontWeight: "900" }, toolbar: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: 12, justifyContent: "space-between", marginTop: 14 }, tabs: { flexDirection: "row", flexWrap: "wrap", gap: 6 }, tab: { borderWidth: 1, minHeight: 34, justifyContent: "center", paddingHorizontal: 11 }, tabText: { fontSize: 12, fontWeight: "800" }, sort: { borderWidth: 1, minHeight: 34, justifyContent: "center", paddingHorizontal: 11 }, sortText: { fontSize: 12, fontWeight: "800" }, grid: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 15 }, card: { borderWidth: 1, minHeight: 242, overflow: "hidden", padding: 14, position: "relative" }, art: { bottom: 0, opacity: 0.26, position: "absolute", right: -20 }, artwork: { opacity: 0.95 }, watermark: { fontFamily: "Georgia", fontSize: 94, lineHeight: 96, position: "absolute", right: 8, top: 3 }, cardCopy: { flex: 1, justifyContent: "flex-end" }, cardNumber: { fontSize: 12, fontWeight: "900", letterSpacing: 1.5, position: "absolute", top: 0 }, cardName: { fontFamily: "Georgia", fontSize: 25, lineHeight: 29 }, badge: { alignSelf: "flex-start", borderWidth: 1, fontSize: 10, fontWeight: "900", letterSpacing: 1, marginTop: 9, paddingHorizontal: 6, paddingVertical: 3, textTransform: "uppercase" }, cardMeta: { fontSize: 12, marginTop: 9 }, cardDate: { fontSize: 11, marginTop: 5 }, cardRequirement: { fontSize: 13, lineHeight: 19, marginTop: 10, maxWidth: "78%" }, journal: { borderTopWidth: 1, marginTop: 32, paddingTop: 17 }, journalTrigger: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" }, journalHint: { fontSize: 13, marginTop: 5 }, journalAction: { fontSize: 12, fontWeight: "900" }, journalGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 14 }, tracker: { borderWidth: 1, flexBasis: 250, flexGrow: 1, minHeight: 154, padding: 13 }, trackerTitle: { fontSize: 16, fontWeight: "900" }, input: { borderWidth: 1, fontSize: 14, marginTop: 10, minHeight: 38, paddingHorizontal: 9 }, multiline: { minHeight: 66, paddingTop: 8, textAlignVertical: "top" }, action: { alignSelf: "flex-start", marginTop: 9, paddingHorizontal: 11, paddingVertical: 8 }, actionText: { fontSize: 12, fontWeight: "900" }, });
+const detailStyles = StyleSheet.create({ backdrop: { backgroundColor: "#000000AA", flex: 1, justifyContent: "flex-end" }, sheet: { borderWidth: 1, gap: 10, overflow: "hidden", padding: 22 }, roman: { fontFamily: "Georgia", fontSize: 120, position: "absolute", right: 13, top: -12 }, overline: { fontSize: 11, fontWeight: "900", letterSpacing: 1.5 }, title: { fontFamily: "Georgia", fontSize: 30 }, stage: { fontSize: 12, fontWeight: "900", letterSpacing: 1.2 }, copy: { fontSize: 15, lineHeight: 21 }, evidence: { fontSize: 14, lineHeight: 20, marginTop: 5 }, next: { fontSize: 14, fontWeight: "800", lineHeight: 20 }, pinRow: { flexDirection: "row", gap: 8, marginTop: 4 }, pinButton: { borderWidth: 1, paddingHorizontal: 10, paddingVertical: 8 }, pinText: { fontSize: 12, fontWeight: "900", textTransform: "capitalize" }, close: { alignItems: "center", marginTop: 4, padding: 12 }, closeText: { fontWeight: "900" }, });
