@@ -246,20 +246,25 @@ const trainingBlockSchema = z.object({
 const trainingBlockUpdateSchema = z.object({
   status: z.enum(['draft', 'active', 'completed', 'archived']).optional(),
   note: z.string().trim().max(600).optional(),
+  endedReason: z.string().trim().max(600).optional(),
   replacementBlockId: z.string().uuid().nullable().optional(),
 });
 const scheduledBlockSessionSchema = z.object({
   scheduledFor: recordDateSchema,
   routineDayId: z.string().uuid().optional(),
-  status: z.enum(['planned', 'rescheduled', 'completed', 'skipped']).default('planned'),
+  status: z.enum(['planned', 'rescheduled', 'completed', 'skipped', 'recovery']).default('planned'),
   rescheduledFromId: z.string().uuid().optional(),
+  isDeload: z.boolean().optional(),
+  isRecoverySession: z.boolean().optional(),
   note: z.string().trim().max(500).optional(),
 });
 const scheduledBlockSessionUpdateSchema = z.object({
   scheduledFor: recordDateSchema.optional(),
-  status: z.enum(['planned', 'rescheduled', 'completed', 'skipped']).optional(),
+  status: z.enum(['planned', 'rescheduled', 'completed', 'skipped', 'recovery']).optional(),
   rescheduledFromId: z.string().uuid().nullable().optional(),
   completedSessionId: z.string().uuid().nullable().optional(),
+  isDeload: z.boolean().optional(),
+  isRecoverySession: z.boolean().optional(),
   note: z.string().trim().max(500).optional(),
 });
 const weeklyReviewSchema = z.object({
@@ -2010,7 +2015,7 @@ app.patch('/v1/training-blocks/:id', async (request, reply) => {
   const parsed = trainingBlockUpdateSchema.safeParse(request.body);
   if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid training block update.' });
   const [block] = await sql`
-    UPDATE training_blocks SET status = coalesce(${parsed.data.status ?? null}, status), primary_goal = coalesce(${parsed.data.note ?? null}, primary_goal), replacement_block_id = ${parsed.data.replacementBlockId ?? null}, updated_at = now()
+    UPDATE training_blocks SET status = coalesce(${parsed.data.status ?? null}, status), primary_goal = coalesce(${parsed.data.note ?? null}, primary_goal), ended_reason = coalesce(${parsed.data.endedReason ?? null}, ended_reason), replacement_block_id = ${parsed.data.replacementBlockId ?? null}, updated_at = now()
     WHERE id = ${params.data.id} AND user_id = ${userId} RETURNING *
   `;
   if (!block) return reply.code(404).send({ error: 'Training block not found.' });
@@ -2027,8 +2032,8 @@ app.post('/v1/training-blocks/:id/sessions', async (request, reply) => {
   const [block] = await sql<{ id: string }[]>`SELECT id FROM training_blocks WHERE id = ${params.data.id} AND user_id = ${userId} LIMIT 1`;
   if (!block) return reply.code(404).send({ error: 'Training block not found.' });
   const [session] = await sql`
-    INSERT INTO training_block_sessions (id, block_id, scheduled_on, routine_day_id, status, rescheduled_from_id, skip_reason, created_at, updated_at)
-    VALUES (${randomUUID()}, ${block.id}, ${parsed.data.scheduledFor}, ${parsed.data.routineDayId ?? null}, ${parsed.data.status}, ${parsed.data.rescheduledFromId ?? null}, ${parsed.data.note ?? null}, now(), now()) RETURNING *
+    INSERT INTO training_block_sessions (id, block_id, scheduled_on, routine_day_id, status, rescheduled_from_id, is_deload, is_recovery_session, skip_reason, created_at, updated_at)
+    VALUES (${randomUUID()}, ${block.id}, ${parsed.data.scheduledFor}, ${parsed.data.routineDayId ?? null}, ${parsed.data.status}, ${parsed.data.rescheduledFromId ?? null}, ${parsed.data.isDeload ?? false}, ${parsed.data.isRecoverySession ?? false}, ${parsed.data.note ?? null}, now(), now()) RETURNING *
   `;
   await recordProgressionEvent(sql, userId, 'training_session_scheduled', 'training_block_session', session.id, { blockId: block.id, status: session.status, scheduledFor: session.scheduled_on });
   return reply.code(201).send({ session, arcana: await evaluateArcanaForUser(sql, userId) });
@@ -2041,7 +2046,7 @@ app.patch('/v1/training-block-sessions/:id', async (request, reply) => {
   const parsed = scheduledBlockSessionUpdateSchema.safeParse(request.body);
   if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid scheduled-session update.' });
   const [session] = await sql`
-    UPDATE training_block_sessions s SET scheduled_on = coalesce(${parsed.data.scheduledFor ?? null}, s.scheduled_on), status = coalesce(${parsed.data.status ?? null}, s.status), rescheduled_from_id = ${parsed.data.rescheduledFromId ?? null}, completed_session_id = ${parsed.data.completedSessionId ?? null}, skip_reason = coalesce(${parsed.data.note ?? null}, s.skip_reason), updated_at = now()
+    UPDATE training_block_sessions s SET scheduled_on = coalesce(${parsed.data.scheduledFor ?? null}, s.scheduled_on), status = coalesce(${parsed.data.status ?? null}, s.status), rescheduled_from_id = ${parsed.data.rescheduledFromId ?? null}, completed_session_id = ${parsed.data.completedSessionId ?? null}, is_deload = coalesce(${parsed.data.isDeload ?? null}, s.is_deload), is_recovery_session = coalesce(${parsed.data.isRecoverySession ?? null}, s.is_recovery_session), skip_reason = coalesce(${parsed.data.note ?? null}, s.skip_reason), updated_at = now()
     FROM training_blocks b WHERE s.id = ${params.data.id} AND s.block_id = b.id AND b.user_id = ${userId} RETURNING s.*
   `;
   if (!session) return reply.code(404).send({ error: 'Scheduled session not found.' });
