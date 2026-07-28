@@ -67,8 +67,13 @@ function longestRun(weeks: string[]) {
   return longest;
 }
 
-function stageFor(thresholds: boolean[]) {
-  return thresholds.reduce((stage, complete, index) => complete ? index + 1 : stage, 0);
+export function stageFor(thresholds: boolean[]) {
+  let stage = 0;
+  for (const complete of thresholds) {
+    if (!complete) break;
+    stage += 1;
+  }
+  return stage;
 }
 
 export function resolvePermanentStage(previousStage: number, calculatedStage: number) {
