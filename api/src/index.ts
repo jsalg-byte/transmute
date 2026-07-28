@@ -108,7 +108,9 @@ const aiWorkoutDraftSchema = z.object({
 });
 const aiNutritionLabelSchema = z.object({
   name: z.string().trim().min(2).max(120).nullable(),
-  servingSizeG: z.number().positive().max(5_000).nullable(),
+  servingSizeValue: z.number().positive().max(5_000).nullable(),
+  servingSizeUnit: z.enum(['g', 'ml', 'oz', 'fl oz', 'cup', 'tbsp', 'tsp', 'piece', 'bottle', 'can', 'packet', 'slice', 'serving']).nullable(),
+  servingSizeText: z.string().trim().min(1).max(120).nullable(),
   caloriesKcal: z.number().int().nonnegative().max(2_000).nullable(),
   proteinG: z.number().nonnegative().max(500).nullable(),
   carbsG: z.number().nonnegative().max(500).nullable(),
@@ -117,7 +119,9 @@ const aiNutritionLabelSchema = z.object({
 }).strict();
 const aiBarcodeFoodSchema = z.object({
   name: z.string().trim().min(2).max(120),
-  servingSizeG: z.number().positive().max(5_000).nullable(),
+  servingSizeValue: z.number().positive().max(5_000).nullable(),
+  servingSizeUnit: z.enum(['g', 'ml', 'oz', 'fl oz', 'cup', 'tbsp', 'tsp', 'piece', 'bottle', 'can', 'packet', 'slice', 'serving']).nullable(),
+  servingSizeText: z.string().trim().min(1).max(120).nullable(),
   caloriesKcal: z.number().int().nonnegative().max(2_000),
   proteinG: z.number().nonnegative().max(500),
   carbsG: z.number().nonnegative().max(500),
@@ -160,6 +164,9 @@ const foodSchema = z.object({
   barcodeUpc: z.string().trim().regex(/^\d+$/).min(8).max(14).optional(),
   caloriesKcal: z.number().int().nonnegative().max(2000),
   servingSizeG: z.number().positive().max(5000).optional(),
+  servingSizeValue: z.number().positive().max(5000).optional(),
+  servingSizeUnit: z.enum(['g', 'ml', 'oz', 'fl oz', 'cup', 'tbsp', 'tsp', 'piece', 'bottle', 'can', 'packet', 'slice', 'serving']).optional(),
+  servingSizeText: z.string().trim().min(1).max(120).optional(),
   proteinG: z.number().nonnegative().max(500).optional(),
   carbsG: z.number().nonnegative().max(500).optional(),
   fatG: z.number().nonnegative().max(500).optional(),
@@ -376,11 +383,29 @@ function numericValue(value: unknown, fallback = 0) {
   return Number.isFinite(number) ? number : fallback;
 }
 
-function gramsFromServingSize(value: string | undefined) {
-  const match = value?.match(/(\d+(?:[.,]\d+)?)\s*g\b/i);
+const servingUnits = ['g', 'ml', 'oz', 'fl oz', 'cup', 'tbsp', 'tsp', 'piece', 'bottle', 'can', 'packet', 'slice', 'serving'] as const;
+type ServingUnit = typeof servingUnits[number];
+
+function parseServingSize(value: string | undefined) {
+  const match = value?.match(/(\d+(?:[.,]\d+)?)\s*(fl\.?\s*oz|grams?|g|millilit(?:er|re)s?|ml|ounces?|oz|cups?|tbsp|tablespoons?|tsp|teaspoons?|pieces?|bottles?|cans?|packets?|slices?|servings?)/i);
   if (!match) return null;
-  const grams = Number(match[1].replace(',', '.'));
-  return Number.isFinite(grams) && grams > 0 ? grams : null;
+  const amount = Number(match[1].replace(',', '.'));
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const rawUnit = match[2].toLowerCase().replace('.', '').replace(/\s+/g, ' ');
+  const unit: ServingUnit | null = rawUnit.startsWith('g') ? 'g'
+    : rawUnit.startsWith('ml') || rawUnit.startsWith('millil') ? 'ml'
+      : rawUnit === 'fl oz' ? 'fl oz'
+        : rawUnit.startsWith('oz') || rawUnit.startsWith('ounce') ? 'oz'
+          : rawUnit.startsWith('cup') ? 'cup'
+            : rawUnit.startsWith('tbsp') || rawUnit.startsWith('table') ? 'tbsp'
+              : rawUnit.startsWith('tsp') || rawUnit.startsWith('tea') ? 'tsp'
+                : rawUnit.startsWith('piece') ? 'piece'
+                  : rawUnit.startsWith('bottle') ? 'bottle'
+                    : rawUnit.startsWith('can') ? 'can'
+                      : rawUnit.startsWith('packet') ? 'packet'
+                        : rawUnit.startsWith('slice') ? 'slice'
+                          : rawUnit.startsWith('serving') ? 'serving' : null;
+  return unit ? { value: amount, unit, text: value?.trim() ?? `${amount} ${unit}` } : null;
 }
 
 async function lookupOpenFoodFacts(code: string) {
@@ -399,13 +424,31 @@ async function lookupOpenFoodFacts(code: string) {
         serving_size?: string;
         nutriments?: {
           'energy-kcal_100g'?: number;
+          'energy-kcal_serving'?: number;
           proteins_100g?: number;
+          proteins_serving?: number;
           carbohydrates_100g?: number;
+          carbohydrates_serving?: number;
           fat_100g?: number;
+          fat_serving?: number;
         };
       };
     };
     if (payload.status !== 1 || !payload.product) return { found: false as const, source: 'none' as const };
+    const serving = parseServingSize(payload.product.serving_size);
+    const servingCalories = payload.product.nutriments?.['energy-kcal_serving'];
+    const servingProtein = payload.product.nutriments?.proteins_serving;
+    const servingCarbs = payload.product.nutriments?.carbohydrates_serving;
+    const servingFat = payload.product.nutriments?.fat_serving;
+    const hasProviderServingNutrition = [servingCalories, servingProtein, servingCarbs, servingFat].every((value) => typeof value === 'number' && Number.isFinite(value));
+    // Open Food Facts' *_100g fields are not a product-serving amount. Only
+    // scale them when the label gives a gram serving; otherwise preserve 100 g
+    // as the reference instead of silently treating a bottle/cup as 100 g.
+    const gramServing = serving?.unit === 'g' ? serving : null;
+    const reference = hasProviderServingNutrition && serving
+      ? serving
+      : gramServing ?? { value: 100, unit: 'g' as const, text: '100 g reference' };
+    const scale = hasProviderServingNutrition ? 1 : reference.value / 100;
     return {
       found: true as const,
       source: 'openfoodfacts' as const,
@@ -413,13 +456,13 @@ async function lookupOpenFoodFacts(code: string) {
         id: null,
         name: payload.product.product_name ?? `UPC ${code}`,
         barcodeUpc: code,
-        // Nutrition values are per 100g. That is not necessarily the food's
-        // serving size, so only prefill a serving when the provider states one.
-        servingSizeG: gramsFromServingSize(payload.product.serving_size),
-        caloriesKcal: numericValue(payload.product.nutriments?.['energy-kcal_100g']),
-        proteinG: numericValue(payload.product.nutriments?.proteins_100g),
-        carbsG: numericValue(payload.product.nutriments?.carbohydrates_100g),
-        fatG: numericValue(payload.product.nutriments?.fat_100g),
+        servingSizeValue: reference.value,
+        servingSizeUnit: reference.unit,
+        servingSizeText: reference.text,
+        caloriesKcal: Math.round(numericValue(hasProviderServingNutrition ? servingCalories : payload.product.nutriments?.['energy-kcal_100g']) * scale),
+        proteinG: numericValue(hasProviderServingNutrition ? servingProtein : payload.product.nutriments?.proteins_100g) * scale,
+        carbsG: numericValue(hasProviderServingNutrition ? servingCarbs : payload.product.nutriments?.carbohydrates_100g) * scale,
+        fatG: numericValue(hasProviderServingNutrition ? servingFat : payload.product.nutriments?.fat_100g) * scale,
       },
     };
   } catch {
@@ -445,7 +488,9 @@ async function lookupBarcodeWithAi(code: string, log: { warn: (error: unknown, m
         id: null,
         name: food.name,
         barcodeUpc: code,
-        servingSizeG: food.servingSizeG,
+        servingSizeValue: food.servingSizeValue,
+        servingSizeUnit: food.servingSizeUnit,
+        servingSizeText: food.servingSizeText,
         caloriesKcal: food.caloriesKcal,
         proteinG: food.proteinG,
         carbsG: food.carbsG,
@@ -476,7 +521,7 @@ function parseNutritionLabel(rawText: string, ocrConfidence: number) {
     ? lines.slice(0, nutritionFactsIndex).reverse().find((line) => /[a-z]/i.test(line) && !/serving|calories/i.test(line)) ?? null
     : lines.find((line) => /[a-z]/i.test(line) && !/nutrition\s+facts/i.test(line)) ?? null;
   const servingLine = text.match(/serving\s*size\s*[:\-]?\s*([^\n]+)/i)?.[1] ?? null;
-  const servingSizeG = servingLine ? nutritionNumber(servingLine, [/(\d+(?:\.\d+)?)\s*g\b/i]) : null;
+  const serving = parseServingSize(servingLine ?? undefined);
   const servingsPerContainer = nutritionNumber(text, [/servings?\s+per\s+container\s*[:\-]?\s*(\d+(?:\.\d+)?)/i, /about\s+(\d+(?:\.\d+)?)\s+servings?/i]);
   const caloriesKcal = nutritionNumber(text, [/calories\s*[:\-]?\s*(\d{1,4})\b/i]);
   const fatG = nutritionNumber(text, [/(?:total\s+)?fat[^\d\n]{0,18}(\d+(?:\.\d+)?)\s*(?:g|mg)?/i]);
@@ -485,7 +530,8 @@ function parseNutritionLabel(rawText: string, ocrConfidence: number) {
   return {
     name,
     servingSizeText: servingLine?.trim() ?? null,
-    servingSizeG,
+    servingSizeValue: serving?.value ?? null,
+    servingSizeUnit: serving?.unit ?? null,
     servingsPerContainer,
     caloriesKcal,
     fatG,
@@ -706,7 +752,7 @@ function parseAiNutritionLabel(response: string) {
   const parsed = aiNutritionLabelSchema.safeParse(JSON.parse(unwrapped.slice(start, end + 1)));
   if (!parsed.success) throw new Error('The label assistant returned invalid nutrition data.');
   const label = parsed.data;
-  if (![label.servingSizeG, label.caloriesKcal, label.proteinG, label.carbsG, label.fatG].some((value) => value !== null)) {
+  if (![label.servingSizeValue, label.caloriesKcal, label.proteinG, label.carbsG, label.fatG].some((value) => value !== null)) {
     throw new Error('The label assistant could not find nutrition values.');
   }
   return label;
@@ -1512,12 +1558,14 @@ app.get('/v1/barcodes/:code', async (request, reply) => {
     name: string;
     barcode_upc: string | null;
     serving_size_g: string | null;
+    serving_size_unit: ServingUnit | null;
+    serving_size_text: string | null;
     calories_kcal: number;
     protein_g: string;
     carbs_g: string;
     fat_g: string;
   }[]>`
-    SELECT id, name, barcode_upc, serving_size_g, calories_kcal, protein_g, carbs_g, fat_g
+    SELECT id, name, barcode_upc, serving_size_g, serving_size_unit, serving_size_text, calories_kcal, protein_g, carbs_g, fat_g
     FROM foods WHERE barcode_upc = ${params.data.code} LIMIT 1
   `;
   if (localFood) {
@@ -1528,7 +1576,9 @@ app.get('/v1/barcodes/:code', async (request, reply) => {
         id: localFood.id,
         name: localFood.name,
         barcodeUpc: localFood.barcode_upc,
-        servingSizeG: localFood.serving_size_g ? numericValue(localFood.serving_size_g) : null,
+        servingSizeValue: localFood.serving_size_g ? numericValue(localFood.serving_size_g) : null,
+        servingSizeUnit: localFood.serving_size_unit ?? 'g',
+        servingSizeText: localFood.serving_size_text,
         caloriesKcal: localFood.calories_kcal,
         proteinG: numericValue(localFood.protein_g),
         carbsG: numericValue(localFood.carbs_g),
@@ -1563,8 +1613,9 @@ app.post('/v1/nutrition-label/parse', { bodyLimit: 13 * 1024 * 1024 }, async (re
         source: 'ai',
         parsed: {
           name: label.name,
-          servingSizeText: label.servingSizeG === null ? null : `${label.servingSizeG} g`,
-          servingSizeG: label.servingSizeG,
+          servingSizeText: label.servingSizeText,
+          servingSizeValue: label.servingSizeValue,
+          servingSizeUnit: label.servingSizeUnit,
           servingsPerContainer: null,
           caloriesKcal: label.caloriesKcal,
           proteinG: label.proteinG,
@@ -1600,10 +1651,13 @@ app.post('/v1/foods', async (request, reply) => {
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
   const parsed = foodSchema.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: 'Invalid food payload.' });
+  const servingSizeValue = parsed.data.servingSizeValue ?? parsed.data.servingSizeG;
+  const servingSizeUnit = parsed.data.servingSizeUnit ?? 'g';
+  const servingSizeText = parsed.data.servingSizeText ?? (servingSizeValue ? `${servingSizeValue} ${servingSizeUnit}` : null);
   try {
     const [food] = await sql<{ id: string; name: string; calories_kcal: number; protein_g: string; carbs_g: string; fat_g: string }[]>`
-      INSERT INTO foods (id, name, barcode_upc, calories_kcal, serving_size_g, protein_g, carbs_g, fat_g, created_by_user_id, created_at)
-      VALUES (${randomUUID()}, ${parsed.data.name}, ${parsed.data.barcodeUpc ?? null}, ${parsed.data.caloriesKcal}, ${parsed.data.servingSizeG?.toString() ?? null}, ${parsed.data.proteinG?.toString() ?? '0'}, ${parsed.data.carbsG?.toString() ?? '0'}, ${parsed.data.fatG?.toString() ?? '0'}, ${userId}, now())
+      INSERT INTO foods (id, name, barcode_upc, calories_kcal, serving_size_g, serving_size_unit, serving_size_text, protein_g, carbs_g, fat_g, created_by_user_id, created_at)
+      VALUES (${randomUUID()}, ${parsed.data.name}, ${parsed.data.barcodeUpc ?? null}, ${parsed.data.caloriesKcal}, ${servingSizeValue?.toString() ?? null}, ${servingSizeUnit}, ${servingSizeText}, ${parsed.data.proteinG?.toString() ?? '0'}, ${parsed.data.carbsG?.toString() ?? '0'}, ${parsed.data.fatG?.toString() ?? '0'}, ${userId}, now())
       RETURNING id, name, calories_kcal, protein_g, carbs_g, fat_g
     `;
     return reply.code(201).send({ food });
@@ -2097,11 +2151,11 @@ app.get('/v1/record', async (request, reply) => {
       GROUP BY ws.id, ws.ended_at, e.muscle_group
       ORDER BY ws.ended_at DESC
     `,
-    sql`SELECT id, name, barcode_upc, calories_kcal, protein_g, carbs_g, fat_g, serving_size_g, serving_size_text FROM foods ORDER BY name ASC LIMIT 300`,
+    sql`SELECT id, name, barcode_upc, calories_kcal, protein_g, carbs_g, fat_g, serving_size_g, serving_size_unit, serving_size_text FROM foods ORDER BY name ASC LIMIT 300`,
     sql`
       SELECT ml.id, ml.meal_type, ml.quantity, ml.consumed_at, f.id AS food_id, f.name,
         round(f.calories_kcal * (ml.quantity / coalesce(nullif(f.serving_size_g, 0), 100)))::int AS calories_kcal,
-        f.protein_g, f.carbs_g, f.fat_g, f.serving_size_g
+        f.protein_g, f.carbs_g, f.fat_g, f.serving_size_g, f.serving_size_unit, f.serving_size_text
       FROM meal_logs ml INNER JOIN foods f ON f.id = ml.food_id
       WHERE ml.user_id = ${userId} ORDER BY ml.consumed_at DESC LIMIT 100
     `,

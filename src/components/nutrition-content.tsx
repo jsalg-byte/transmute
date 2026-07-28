@@ -22,8 +22,10 @@ import {
   deleteMealLog,
   lookupBarcode,
   parseNutritionLabel,
+  servingSizeUnits,
   updateMealLog,
   uploadMealPhoto,
+  type ServingSizeUnit,
   type TransmuteRecord,
 } from "../lib/api";
 import { useTransmuteStyles, useTransmuteTheme } from "../theme/transmute-theme";
@@ -33,6 +35,7 @@ type MealLog = TransmuteRecord["nutrition"]["meals"][number];
 type MealType = "breakfast" | "lunch" | "dinner" | "snack";
 type NutritionView = "today" | "foods" | "history";
 type SelectedFood = { foodId: string; grams: string };
+type ServingData = Pick<Food, "serving_size_g" | "serving_size_unit" | "serving_size_text">;
 
 type MealGroup = {
   key: string;
@@ -57,9 +60,22 @@ function formatNumber(value: number) {
   return Math.round(value * 10) / 10;
 }
 
+function servingUnit(food: ServingData) {
+  const unit = food.serving_size_unit as ServingSizeUnit | null;
+  return unit && servingSizeUnits.includes(unit) ? unit : "g";
+}
+
+function servingValue(food: ServingData) {
+  return numeric(food.serving_size_g) || 100;
+}
+
+function servingLabel(food: ServingData) {
+  return food.serving_size_text?.trim() || `${formatNumber(servingValue(food))} ${servingUnit(food)}`;
+}
+
 function foodTotals(food: Food, grams: number) {
-  const servingGrams = numeric(food.serving_size_g) || 100;
-  const multiplier = grams / servingGrams;
+  const servingAmount = servingValue(food);
+  const multiplier = grams / servingAmount;
   return {
     calories: Math.round(numeric(food.calories_kcal) * multiplier),
     protein: formatNumber(numeric(food.protein_g) * multiplier),
@@ -72,8 +88,8 @@ function mealTotals(meal: MealGroup) {
   return meal.items.reduce(
     (totals, item) => {
       const grams = numeric(item.quantity);
-      const servingGrams = numeric(item.serving_size_g) || 100;
-      const multiplier = grams / servingGrams;
+      const servingAmount = servingValue(item);
+      const multiplier = grams / servingAmount;
       return {
         calories: totals.calories + numeric(item.calories_kcal),
         protein: totals.protein + numeric(item.protein_g) * multiplier,
@@ -144,6 +160,8 @@ export function NutritionContent({
   const [name, setName] = useState("");
   const [barcode, setBarcode] = useState("");
   const [servingSizeG, setServingSizeG] = useState("");
+  const [servingSizeUnit, setServingSizeUnit] = useState<ServingSizeUnit>("g");
+  const [servingSizeText, setServingSizeText] = useState("");
   const [calories, setCalories] = useState("");
   const [protein, setProtein] = useState("");
   const [carbs, setCarbs] = useState("");
@@ -226,6 +244,8 @@ export function NutritionContent({
     setName("");
     setBarcode("");
     setServingSizeG("");
+    setServingSizeUnit("g");
+    setServingSizeText("");
     setCalories("");
     setProtein("");
     setCarbs("");
@@ -260,7 +280,7 @@ export function NutritionContent({
       return;
     }
     const food = foodsById.get(foodId);
-    setSelectedFoods((items) => [...items, { foodId, grams: grams !== undefined ? String(grams) : food?.serving_size_g ? String(food.serving_size_g) : "" }]);
+    setSelectedFoods((items) => [...items, { foodId, grams: grams !== undefined ? String(grams) : food ? String(servingValue(food)) : "" }]);
     setNotice(null);
   };
   const lookupFoodBarcode = async (candidate = barcode) => {
@@ -286,7 +306,9 @@ export function NutritionContent({
       }
       setName(food.name);
       setBarcode(food.barcodeUpc ?? code);
-      setServingSizeG(food.servingSizeG ? String(food.servingSizeG) : "");
+      setServingSizeG(food.servingSizeValue ? String(food.servingSizeValue) : "");
+      setServingSizeUnit(food.servingSizeUnit ?? "g");
+      setServingSizeText(food.servingSizeText ?? "");
       setCalories(String(food.caloriesKcal));
       setProtein(String(food.proteinG));
       setCarbs(String(food.carbsG));
@@ -320,7 +342,9 @@ export function NutritionContent({
       const labelResponse = await parseNutritionLabel(image.base64);
       const parsed = labelResponse.parsed;
       if (parsed.name) setName(parsed.name);
-      if (parsed.servingSizeG) setServingSizeG(String(parsed.servingSizeG));
+      if (parsed.servingSizeValue) setServingSizeG(String(parsed.servingSizeValue));
+      if (parsed.servingSizeUnit) setServingSizeUnit(parsed.servingSizeUnit);
+      if (parsed.servingSizeText) setServingSizeText(parsed.servingSizeText);
       if (parsed.caloriesKcal !== null) setCalories(String(parsed.caloriesKcal));
       if (parsed.proteinG !== null) setProtein(String(parsed.proteinG));
       if (parsed.carbsG !== null) setCarbs(String(parsed.carbsG));
@@ -336,7 +360,7 @@ export function NutritionContent({
     const caloriesKcal = Number(calories);
     const referenceGrams = Number(servingSizeG);
     if (name.trim().length < 2 || !Number.isInteger(caloriesKcal) || caloriesKcal < 0 || !Number.isFinite(referenceGrams) || referenceGrams <= 0) {
-      setNotice("Enter a food name, whole calories, and reference grams.");
+      setNotice("Enter a food name, whole calories, and a reference serving amount.");
       return;
     }
     let consumedAtIso: string | undefined;
@@ -355,7 +379,9 @@ export function NutritionContent({
         proteinG: protein.trim() ? Number(protein) : undefined,
         carbsG: carbs.trim() ? Number(carbs) : undefined,
         fatG: fat.trim() ? Number(fat) : undefined,
-        servingSizeG: referenceGrams,
+        servingSizeValue: referenceGrams,
+        servingSizeUnit,
+        servingSizeText: servingSizeText.trim() || `${referenceGrams} ${servingSizeUnit}`,
         barcodeUpc: barcode.trim() || undefined,
       });
       if (newFoodForMeal) {
@@ -478,7 +504,7 @@ export function NutritionContent({
     const grams = Number(editMealGrams);
     const consumedAt = new Date(editConsumedAt);
     if (!Number.isFinite(grams) || grams <= 0 || grams > 5000) {
-      setNotice("Enter an amount between 0 and 5,000 grams.");
+      setNotice("Enter an amount between 0 and 5,000 reference units.");
       return;
     }
     if (Number.isNaN(consumedAt.getTime())) {
@@ -542,10 +568,10 @@ export function NutritionContent({
       </Pressable>
       {detailOpen ? <View style={styles.mealDetail}>
         {meal.items.map((item) => {
-          const servingGrams = numeric(item.serving_size_g) || 100;
-          const multiplier = numeric(item.quantity) / servingGrams;
+          const servingAmount = servingValue(item);
+          const multiplier = numeric(item.quantity) / servingAmount;
           return <View key={item.id} style={styles.detailItem}>
-            <View style={styles.detailItemCopy}><Text style={styles.detailItemName}>{item.name}</Text><Text style={styles.detailItemMeta}>{formatNumber(numeric(item.quantity))}g · {item.calories_kcal} kcal</Text><Text style={styles.detailItemMacro}>{formatNumber(numeric(item.protein_g) * multiplier)}p · {formatNumber(numeric(item.carbs_g) * multiplier)}c · {formatNumber(numeric(item.fat_g) * multiplier)}f</Text></View>
+            <View style={styles.detailItemCopy}><Text style={styles.detailItemName}>{item.name}</Text><Text style={styles.detailItemMeta}>{formatNumber(numeric(item.quantity))} {servingUnit(item)} · {item.calories_kcal} kcal</Text><Text style={styles.detailItemMacro}>Protein (g) {formatNumber(numeric(item.protein_g) * multiplier)} · Carbs (g) {formatNumber(numeric(item.carbs_g) * multiplier)} · Fat (g) {formatNumber(numeric(item.fat_g) * multiplier)}</Text></View>
             <View style={styles.detailItemActions}>
               <Pressable accessibilityRole="button" accessibilityLabel={`Edit ${item.name}`} disabled={saving} onPress={() => openMealEditor(item)} hitSlop={9} style={styles.detailIconButton}><Pencil color={palette.oxide} size={17} strokeWidth={2.3} /></Pressable>
               <Pressable accessibilityRole="button" accessibilityLabel={`Delete ${item.name}`} disabled={saving} onPress={() => requestMealDeletion(item)} hitSlop={9} style={styles.detailIconButton}><Trash2 color={palette.destructive} size={17} strokeWidth={2.3} /></Pressable>
@@ -581,7 +607,7 @@ export function NutritionContent({
       <View style={styles.searchField}><Search color={palette.muted} size={18} strokeWidth={2.2} /><TextInput value={foodQuery} onChangeText={(value) => { setFoodQuery(value); setFoodLimit(8); }} accessibilityLabel="Search saved foods" placeholder="Search your foods…" placeholderTextColor={palette.mutedSoft} style={styles.searchInput} /></View>
       <View style={styles.secondaryActions}><Pressable accessibilityRole="button" onPress={() => { resetFoodForm(); setNewFoodForMeal(false); setNewFoodOpen(true); }} style={styles.secondaryAction}><Plus color={palette.ink} size={17} strokeWidth={2.6} /><Text style={styles.secondaryActionText}>New food</Text></Pressable><Pressable accessibilityRole="button" onPress={() => { resetFoodForm(); setNewFoodForMeal(false); setNewFoodOpen(true); void openBarcodeScanner(); }} style={styles.secondaryAction}><Camera color={palette.ink} size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan barcode</Text></Pressable><Pressable accessibilityRole="button" onPress={() => { resetFoodForm(); setNewFoodForMeal(false); setNewFoodOpen(true); void readNutritionLabel(); }} style={styles.secondaryAction}><ImagePlus color={palette.ink} size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan label</Text></Pressable></View>
       <Text style={styles.listLabel}>{foodQuery ? "RESULTS" : "SAVED FOODS"}</Text>
-      <View style={styles.ledger}>{visibleFoods.map((food) => <View key={food.id} style={styles.foodRow}><View style={styles.foodCopy}><Text style={styles.foodName}>{food.name}</Text><Text style={styles.foodMeta}>{numeric(food.serving_size_g) || 100}g serving · {food.calories_kcal} kcal</Text></View><Pressable accessibilityRole="button" accessibilityLabel={`Add ${food.name} to meal`} onPress={() => openBuilder(food.id)} hitSlop={8}><Text style={styles.addText}>Add</Text></Pressable></View>)}{visibleFoods.length === 0 ? <View style={styles.emptyState}><Text style={styles.emptyText}>{foodQuery ? "No saved foods match this search." : "Create your first food, or scan a barcode or label."}</Text></View> : null}</View>
+      <View style={styles.ledger}>{visibleFoods.map((food) => <View key={food.id} style={styles.foodRow}><View style={styles.foodCopy}><Text style={styles.foodName}>{food.name}</Text><Text style={styles.foodMeta}>{servingLabel(food)} per serving · {food.calories_kcal} kcal</Text></View><Pressable accessibilityRole="button" accessibilityLabel={`Add ${food.name} to meal`} onPress={() => openBuilder(food.id)} hitSlop={8}><Text style={styles.addText}>Add</Text></Pressable></View>)}{visibleFoods.length === 0 ? <View style={styles.emptyState}><Text style={styles.emptyText}>{foodQuery ? "No saved foods match this search." : "Create your first food, or scan a barcode or label."}</Text></View> : null}</View>
       {!foodQuery && visibleFoods.length < record.nutrition.foods.length ? <Pressable accessibilityRole="button" onPress={() => setFoodLimit((limit) => limit + 8)} style={styles.showMore}><Text style={styles.showMoreText}>Show more foods</Text></Pressable> : null}
     </View> : null}
 
@@ -600,16 +626,20 @@ export function NutritionContent({
       <TextInput value={consumedAt} onChangeText={setConsumedAt} placeholder="Date/time (optional)" placeholderTextColor={palette.mutedSoft} style={styles.dateInput} />
       <Text style={styles.inputHint}>Use a date and time such as Jul 27, 2026 6:30 PM, or leave blank for now.</Text>
       <Text style={[styles.sectionLabel, styles.modalSection]}>SELECT A SAVED FOOD</Text><Pressable accessibilityRole="button" accessibilityState={{ expanded: foodPickerOpen }} accessibilityLabel="Select a saved food" onPress={() => setFoodPickerOpen((open) => !open)} style={styles.foodSelectTrigger}><Text style={styles.foodSelectPlaceholder}>Choose a saved food</Text><ChevronDown color={palette.oxide} size={20} strokeWidth={2.4} /></Pressable>
-      {foodPickerOpen ? <View style={styles.foodSelectPanel}><View style={styles.searchField}><Search color={palette.muted} size={18} strokeWidth={2.2} /><TextInput value={foodQuery} onChangeText={setFoodQuery} accessibilityLabel="Search saved foods to add" placeholder="Search saved foods…" placeholderTextColor={palette.mutedSoft} style={styles.searchInput} /></View><ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled" style={styles.foodSelectList}>{matchingSavedFoods.map((food) => <View key={food.id} style={styles.foodRow}><View style={styles.foodCopy}><Text style={styles.foodName}>{food.name}</Text><Text style={styles.foodMeta}>{numeric(food.serving_size_g) || 100}g serving · {food.calories_kcal} kcal</Text></View><Pressable accessibilityRole="button" onPress={() => { addFood(food.id); setFoodPickerOpen(false); setFoodQuery(""); }} hitSlop={8}><Text style={styles.addText}>{selectedFoods.some((item) => item.foodId === food.id) ? "Added" : "Add"}</Text></Pressable></View>)}{matchingSavedFoods.length === 0 ? <View style={styles.foodSelectEmpty}><Text style={styles.emptyText}>No saved foods match this search.</Text></View> : null}</ScrollView></View> : null}
+      {foodPickerOpen ? <View style={styles.foodSelectPanel}><View style={styles.searchField}><Search color={palette.muted} size={18} strokeWidth={2.2} /><TextInput value={foodQuery} onChangeText={setFoodQuery} accessibilityLabel="Search saved foods to add" placeholder="Search saved foods…" placeholderTextColor={palette.mutedSoft} style={styles.searchInput} /></View><ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled" style={styles.foodSelectList}>{matchingSavedFoods.map((food) => <View key={food.id} style={styles.foodRow}><View style={styles.foodCopy}><Text style={styles.foodName}>{food.name}</Text><Text style={styles.foodMeta}>{servingLabel(food)} per serving · {food.calories_kcal} kcal</Text></View><Pressable accessibilityRole="button" onPress={() => { addFood(food.id); setFoodPickerOpen(false); setFoodQuery(""); }} hitSlop={8}><Text style={styles.addText}>{selectedFoods.some((item) => item.foodId === food.id) ? "Added" : "Add"}</Text></Pressable></View>)}{matchingSavedFoods.length === 0 ? <View style={styles.foodSelectEmpty}><Text style={styles.emptyText}>No saved foods match this search.</Text></View> : null}</ScrollView></View> : null}
       <View style={styles.selectedHeader}><Text style={styles.sectionLabel}>SELECTED</Text></View>
-      {selectedSummaries.length ? <View style={styles.ledger}>{selectedSummaries.map((item, index) => <View key={item.foodId} style={styles.selectedRow}><View style={styles.selectedRowTop}><View style={styles.foodCopy}><Text style={styles.foodName}>{item.food?.name ?? "Unavailable food"}</Text><Text style={styles.foodMeta}>{item.totals ? `${item.totals.calories} kcal · ${item.totals.protein}g protein · ${item.totals.carbs}g carbs · ${item.totals.fat}g fat` : "Enter a valid amount"}</Text></View><Pressable accessibilityRole="button" accessibilityLabel={`Remove ${item.food?.name ?? "food"}`} disabled={saving} onPress={() => setSelectedFoods((items) => items.filter((_, itemIndex) => itemIndex !== index))}><Text style={styles.removeText}>Remove</Text></Pressable></View><View style={styles.amountRow}><TextInput value={String(item.grams)} onChangeText={(grams) => setSelectedFoods((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, grams } : row))} accessibilityLabel={`${item.food?.name ?? "Food"} grams`} keyboardType="decimal-pad" placeholder="Amount" placeholderTextColor={palette.mutedSoft} style={styles.amountInput} /><Text style={styles.amountUnit}>g</Text></View></View>)}</View> : <View style={styles.emptyState}><Text style={styles.emptyText}>Search and add foods to build this meal.</Text></View>}
+      {selectedSummaries.length ? <View style={styles.ledger}>{selectedSummaries.map((item, index) => {
+        const referenceAmount = item.food ? servingValue(item.food) : 1;
+        const unit = item.food ? servingUnit(item.food) : "g";
+        return <View key={item.foodId} style={styles.selectedRow}><View style={styles.selectedRowTop}><View style={styles.foodCopy}><Text style={styles.foodName}>{item.food?.name ?? "Unavailable food"}</Text><Text style={styles.foodMeta}>{item.food ? `Nutrition per ${servingLabel(item.food)}` : "Serving unavailable"}</Text><Text style={styles.foodMeta}>{item.totals ? `${item.totals.calories} kcal · Protein (g) ${item.totals.protein} · Carbs (g) ${item.totals.carbs} · Fat (g) ${item.totals.fat}` : "Enter a valid amount"}</Text></View><Pressable accessibilityRole="button" accessibilityLabel={`Remove ${item.food?.name ?? "food"}`} disabled={saving} onPress={() => setSelectedFoods((items) => items.filter((_, itemIndex) => itemIndex !== index))}><Text style={styles.removeText}>Remove</Text></Pressable></View><Text style={styles.amountPrompt}>HOW MUCH DID YOU HAVE?</Text><View style={styles.amountChoices}>{[["Full serving", 1], ["Half", 0.5], ["Quarter", 0.25]].map(([label, multiplier]) => <Pressable key={String(label)} accessibilityRole="button" onPress={() => setSelectedFoods((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, grams: String(formatNumber(referenceAmount * Number(multiplier))) } : row))} style={styles.amountChoice}><Text style={styles.amountChoiceText}>{label}</Text></Pressable>)}</View><View style={styles.amountRow}><TextInput value={String(item.grams)} onChangeText={(grams) => setSelectedFoods((items) => items.map((row, rowIndex) => rowIndex === index ? { ...row, grams } : row))} accessibilityLabel={`${item.food?.name ?? "Food"} amount in ${unit}`} keyboardType="decimal-pad" placeholder={`Amount in ${unit}`} placeholderTextColor={palette.mutedSoft} style={styles.amountInput} /><Text style={styles.amountUnit}>{unit}</Text></View></View>;
+      })}</View> : <View style={styles.emptyState}><Text style={styles.emptyText}>Search and add foods to build this meal.</Text></View>}
       <View style={styles.photoAction}><Pressable accessibilityRole="button" onPress={() => void chooseMealPhoto()}><Text style={styles.addText}>{mealPhoto ? "Replace meal photo" : "Add meal photo"}</Text></Pressable>{mealPhoto ? <Pressable accessibilityRole="button" onPress={() => setMealPhoto(null)}><Text style={styles.removeText}>Remove</Text></Pressable> : null}</View>{mealPhoto ? <Image accessibilityLabel="Selected meal photo" source={{ uri: mealPhoto.uri }} style={styles.photoPreview} /> : null}
-    </ScrollView><View style={[styles.stickyAction, { paddingBottom: Math.max(insets.bottom, 16) }]}><View><Text style={styles.stickyTotalLabel}>TOTAL</Text><Text style={styles.stickyTotal}>{selectedTotals.calories.toLocaleString()} kcal · {formatNumber(selectedTotals.protein)}p · {formatNumber(selectedTotals.carbs)}c · {formatNumber(selectedTotals.fat)}f</Text></View><Pressable accessibilityRole="button" disabled={saving || !selectedFoods.length} onPress={() => void saveMeal()} style={[styles.stickyButton, (saving || !selectedFoods.length) && styles.disabled]}><Text style={styles.stickyButtonText}>{saving ? "Logging…" : "Log meal"}</Text></Pressable></View></View></Modal>
+    </ScrollView><View style={[styles.stickyAction, { paddingBottom: Math.max(insets.bottom, 16) }]}><View style={styles.stickyCopy}><Text style={styles.stickyTotalLabel}>TOTAL</Text><Text style={styles.stickyTotal}>{selectedTotals.calories.toLocaleString()} kcal · Protein (g) {formatNumber(selectedTotals.protein)} · Carbs (g) {formatNumber(selectedTotals.carbs)} · Fat (g) {formatNumber(selectedTotals.fat)}</Text></View><Pressable accessibilityRole="button" disabled={saving || !selectedFoods.length} onPress={() => void saveMeal()} style={[styles.stickyButton, (saving || !selectedFoods.length) && styles.disabled]}><Text style={styles.stickyButtonText}>{saving ? "Logging…" : "Log meal"}</Text></Pressable></View></View></Modal>
 
     <Modal animationType="slide" visible={newFoodOpen} onRequestClose={() => !saving && closeNewFood()}><View style={styles.modalPage}><View style={[styles.modalHeader, { paddingTop: Math.max(insets.top, 18) }]}><View><Text style={styles.sectionLabel}>NEW FOOD</Text><Text style={styles.modalTitle}>Add to the library.</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Close new food" disabled={saving} onPress={closeNewFood} style={styles.closeButton}><X color={palette.oxide} size={21} strokeWidth={2.5} /></Pressable></View><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.modalScroll, { paddingBottom: 40 + insets.bottom }]}>
       {scannerOpen ? <View style={styles.scanner}><View style={styles.scannerViewport}><CameraView facing="back" barcodeScannerSettings={{ barcodeTypes: ["ean13", "ean8", "upc_a", "upc_e", "code128"] }} onCameraReady={() => setScannerReady(true)} onMountError={({ message }) => { setScannerReady(false); setScannerOpen(false); setNotice(message || "The camera preview could not start. Enter the barcode manually instead."); }} onBarcodeScanned={({ data }) => { if (!data || saving) return; setBarcode(data); setScannerReady(false); setScannerOpen(false); void lookupFoodBarcode(data); }} style={styles.scannerCamera} />{!scannerReady ? <View pointerEvents="none" style={styles.scannerLoading}><ActivityIndicator color={palette.surface} /><Text style={styles.scannerLoadingText}>Opening rear camera…</Text></View> : null}</View><Pressable accessibilityRole="button" onPress={() => { setScannerReady(false); setScannerOpen(false); }} style={styles.scannerClose}><Text style={styles.scannerCloseText}>Close scanner</Text></Pressable></View> : null}
       <View style={styles.barcodeField}><TextInput value={barcode} onChangeText={setBarcode} keyboardType="number-pad" placeholder="Barcode (optional)" placeholderTextColor={palette.mutedSoft} style={styles.barcodeInput} onSubmitEditing={() => void lookupFoodBarcode()} /><Pressable accessibilityRole="button" disabled={saving} onPress={() => void lookupFoodBarcode()}><Text style={styles.addText}>Look up</Text></Pressable></View><View style={styles.secondaryActions}><Pressable accessibilityRole="button" disabled={saving} onPress={() => void openBarcodeScanner()} style={styles.secondaryAction}><Camera color={palette.ink} size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan barcode</Text></Pressable><Pressable accessibilityRole="button" disabled={saving} onPress={() => void readNutritionLabel()} style={styles.secondaryAction}><ImagePlus color={palette.ink} size={17} strokeWidth={2.3} /><Text style={styles.secondaryActionText}>Scan label</Text></Pressable></View>
-      <TextInput value={name} onChangeText={setName} placeholder="Food name" placeholderTextColor={palette.mutedSoft} style={styles.formInput} returnKeyType="next" /><TextInput value={servingSizeG} onChangeText={setServingSizeG} keyboardType="decimal-pad" placeholder="g" placeholderTextColor={palette.mutedSoft} style={styles.formInput} returnKeyType="next" /><TextInput value={calories} onChangeText={setCalories} keyboardType="number-pad" placeholder="Calories per reference amount" placeholderTextColor={palette.mutedSoft} style={styles.formInput} returnKeyType="next" /><View style={[styles.macroFields, !isDesktop && styles.macroFieldsMobile]}><TextInput value={protein} onChangeText={setProtein} keyboardType="decimal-pad" placeholder="Protein g" placeholderTextColor={palette.mutedSoft} style={[styles.formInput, styles.macroInput, !isDesktop && styles.macroInputMobile]} /><TextInput value={carbs} onChangeText={setCarbs} keyboardType="decimal-pad" placeholder="Carbs g" placeholderTextColor={palette.mutedSoft} style={[styles.formInput, styles.macroInput, !isDesktop && styles.macroInputMobile]} /><TextInput value={fat} onChangeText={setFat} keyboardType="decimal-pad" placeholder="Fat g" placeholderTextColor={palette.mutedSoft} style={[styles.formInput, styles.macroInput, !isDesktop && styles.macroInputMobile]} /></View>
+      <Text style={[styles.inputLabel, styles.formFieldLabel]}>FOOD NAME</Text><TextInput value={name} onChangeText={setName} placeholder="Food name" placeholderTextColor={palette.mutedSoft} style={styles.formInput} returnKeyType="next" /><Text style={[styles.inputLabel, styles.formFieldLabel]}>REFERENCE SERVING</Text><View style={styles.referenceServingRow}><TextInput value={servingSizeG} onChangeText={setServingSizeG} keyboardType="decimal-pad" placeholder="Amount" placeholderTextColor={palette.mutedSoft} style={[styles.formInput, styles.referenceServingInput]} returnKeyType="next" /><Text style={styles.referenceServingUnit}>{servingSizeUnit}</Text></View><View style={styles.servingUnitChoices}>{servingSizeUnits.map((unit) => <Pressable key={unit} accessibilityRole="button" accessibilityState={{ selected: servingSizeUnit === unit }} onPress={() => { setServingSizeUnit(unit); setServingSizeText(""); }} style={[styles.servingUnitChoice, servingSizeUnit === unit && styles.servingUnitChoiceActive]}><Text style={[styles.servingUnitChoiceText, servingSizeUnit === unit && styles.servingUnitChoiceTextActive]}>{unit}</Text></Pressable>)}</View><TextInput value={servingSizeText} onChangeText={setServingSizeText} placeholder="Label wording (optional, e.g. 1 bottle)" placeholderTextColor={palette.mutedSoft} style={styles.formInput} /><Text style={[styles.inputLabel, styles.formFieldLabel]}>CALORIES (KCAL) PER REFERENCE SERVING</Text><TextInput value={calories} onChangeText={setCalories} keyboardType="number-pad" placeholder="Calories" placeholderTextColor={palette.mutedSoft} style={styles.formInput} returnKeyType="next" /><View style={[styles.macroFields, !isDesktop && styles.macroFieldsMobile]}><View style={styles.macroField}><Text style={[styles.inputLabel, styles.formFieldLabel]}>PROTEIN (G)</Text><TextInput value={protein} onChangeText={setProtein} keyboardType="decimal-pad" placeholder="Protein" placeholderTextColor={palette.mutedSoft} style={[styles.formInput, styles.macroInput, !isDesktop && styles.macroInputMobile]} /></View><View style={styles.macroField}><Text style={[styles.inputLabel, styles.formFieldLabel]}>CARBS (G)</Text><TextInput value={carbs} onChangeText={setCarbs} keyboardType="decimal-pad" placeholder="Carbs" placeholderTextColor={palette.mutedSoft} style={[styles.formInput, styles.macroInput, !isDesktop && styles.macroInputMobile]} /></View><View style={styles.macroField}><Text style={[styles.inputLabel, styles.formFieldLabel]}>FAT (G)</Text><TextInput value={fat} onChangeText={setFat} keyboardType="decimal-pad" placeholder="Fat" placeholderTextColor={palette.mutedSoft} style={[styles.formInput, styles.macroInput, !isDesktop && styles.macroInputMobile]} /></View></View>
       {notice ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}<Pressable accessibilityRole="button" disabled={saving} onPress={() => void saveFood()} style={[styles.primaryAction, saving && styles.disabled]}><Text style={styles.primaryActionText}>{saving ? "Saving…" : "Save food"}</Text></Pressable>
     </ScrollView></View></Modal>
 
@@ -633,8 +663,8 @@ export function NutritionContent({
               </Pressable>
             ))}
           </View>
-          <Text style={[styles.inputLabel, styles.editorFieldLabel]}>AMOUNT (GRAMS)</Text>
-          <TextInput value={editMealGrams} onChangeText={setEditMealGrams} accessibilityLabel="Logged food amount in grams" keyboardType="decimal-pad" placeholder="Amount in grams" placeholderTextColor={palette.mutedSoft} style={styles.formInput} />
+          <Text style={[styles.inputLabel, styles.editorFieldLabel]}>AMOUNT ({editingMeal ? servingUnit(editingMeal).toUpperCase() : "G"})</Text>
+          <TextInput value={editMealGrams} onChangeText={setEditMealGrams} accessibilityLabel={`Logged food amount in ${editingMeal ? servingUnit(editingMeal) : "g"}`} keyboardType="decimal-pad" placeholder={`Amount in ${editingMeal ? servingUnit(editingMeal) : "g"}`} placeholderTextColor={palette.mutedSoft} style={styles.formInput} />
           <Text style={[styles.inputLabel, styles.editorFieldLabel]}>WHEN</Text>
           <TextInput value={editConsumedAt} onChangeText={setEditConsumedAt} accessibilityLabel="Logged food date and time" placeholder="Jul 27, 2026 6:30 PM" placeholderTextColor={palette.mutedSoft} style={styles.formInput} />
           <Text style={styles.inputHint}>Use a date and time such as Jul 27, 2026 6:30 PM.</Text>
@@ -776,12 +806,17 @@ const baseStyles = StyleSheet.create({
   selectedRowTop: { alignItems: "flex-start", flexDirection: "row", gap: 12 },
   removeText: { color: "#655D57", fontSize: 12, fontWeight: "800", textDecorationLine: "underline" },
   amountRow: { alignItems: "center", flexDirection: "row", gap: 8, marginTop: 12 },
+  amountPrompt: { color: "#642D2A", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.1, marginTop: 15 },
+  amountChoices: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 8 },
+  amountChoice: { borderColor: "#D4C9B9", borderWidth: 1, minHeight: 34, justifyContent: "center", paddingHorizontal: 10 },
+  amountChoiceText: { color: "#101015", fontSize: 12, fontWeight: "800" },
   amountInput: { borderBottomColor: "#6A7CA0", borderBottomWidth: 1, color: "#101015", fontSize: 16, minHeight: 40, paddingHorizontal: 2, width: 104 },
   amountUnit: { color: "#655D57", fontSize: 14, fontWeight: "800" },
   photoAction: { flexDirection: "row", gap: 18, marginTop: 23 },
   photoPreview: { height: 170, marginTop: 12, width: "100%" },
   stickyAction: { alignItems: "center", backgroundColor: "#F4EFE7", borderTopColor: "#D4C9B9", borderTopWidth: 1, bottom: 0, flexDirection: "row", gap: 14, justifyContent: "space-between", left: 0, paddingHorizontal: 20, paddingTop: 14, position: "absolute", right: 0 },
   stickyTotalLabel: { color: "#642D2A", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },
+  stickyCopy: { flex: 1, minWidth: 0 },
   stickyTotal: { color: "#101015", fontSize: 13, fontWeight: "900", marginTop: 3 },
   stickyButton: { alignItems: "center", backgroundColor: "#101015", justifyContent: "center", minHeight: 48, paddingHorizontal: 18 },
   stickyButtonText: { color: "#F4EFE7", fontSize: 14, fontWeight: "900" },
@@ -796,7 +831,17 @@ const baseStyles = StyleSheet.create({
   barcodeField: { alignItems: "center", borderBottomColor: "#6A7CA0", borderBottomWidth: 1, flexDirection: "row", gap: 12, minHeight: 50 },
   barcodeInput: { color: "#101015", flex: 1, fontSize: 16, paddingVertical: 9 },
   formInput: { borderBottomColor: "#6A7CA0", borderBottomWidth: 1, color: "#101015", fontSize: 16, marginTop: 19, minHeight: 48, paddingVertical: 9 },
+  formFieldLabel: { marginTop: 24 },
+  referenceServingRow: { alignItems: "center", flexDirection: "row", gap: 9 },
+  referenceServingInput: { flex: 1 },
+  referenceServingUnit: { color: "#655D57", fontSize: 15, fontWeight: "800", minWidth: 42 },
+  servingUnitChoices: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 12 },
+  servingUnitChoice: { borderColor: "#D4C9B9", borderWidth: 1, minHeight: 34, justifyContent: "center", paddingHorizontal: 9 },
+  servingUnitChoiceActive: { backgroundColor: "#101015", borderColor: "#101015" },
+  servingUnitChoiceText: { color: "#101015", fontSize: 12, fontWeight: "800" },
+  servingUnitChoiceTextActive: { color: "#F4EFE7" },
   macroFields: { flexDirection: "row", gap: 10 },
+  macroField: { flex: 1 },
   macroFieldsMobile: { flexDirection: "column", gap: 0 },
   macroInput: { flex: 1 },
   macroInputMobile: { flex: 0, width: "100%" },

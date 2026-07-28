@@ -113,6 +113,8 @@ export type TransmuteRecord = {
       carbs_g: string;
       fat_g: string;
       serving_size_g: string | null;
+      serving_size_unit: string | null;
+      serving_size_text: string | null;
     }[];
     meals: {
       id: string;
@@ -126,6 +128,8 @@ export type TransmuteRecord = {
       carbs_g: string;
       fat_g: string;
       serving_size_g: string | null;
+      serving_size_unit: string | null;
+      serving_size_text: string | null;
       imageUrl: string | null;
     }[];
   };
@@ -470,7 +474,7 @@ export async function deleteWorkoutSession(sessionId: string) {
   return authenticatedRequest(`/v1/sessions/${sessionId}`, { method: 'DELETE' });
 }
 
-export async function createFood(payload: { name: string; caloriesKcal: number; proteinG?: number; carbsG?: number; fatG?: number; servingSizeG?: number; barcodeUpc?: string }) {
+export async function createFood(payload: { name: string; caloriesKcal: number; proteinG?: number; carbsG?: number; fatG?: number; servingSizeValue?: number; servingSizeUnit?: ServingSizeUnit; servingSizeText?: string; barcodeUpc?: string }) {
   return authenticatedRequest<{ food: { id: string } }>('/v1/foods', { method: 'POST', body: JSON.stringify(payload) });
 }
 
@@ -481,7 +485,9 @@ export type BarcodeLookup = {
     id: string | null;
     name: string;
     barcodeUpc: string | null;
-    servingSizeG: number | null;
+    servingSizeValue: number | null;
+    servingSizeUnit: ServingSizeUnit | null;
+    servingSizeText: string | null;
     caloriesKcal: number;
     proteinG: number;
     carbsG: number;
@@ -492,7 +498,8 @@ export type BarcodeLookup = {
 export type ParsedNutritionLabel = {
   name: string | null;
   servingSizeText: string | null;
-  servingSizeG: number | null;
+  servingSizeValue: number | null;
+  servingSizeUnit: ServingSizeUnit | null;
   servingsPerContainer: number | null;
   caloriesKcal: number | null;
   fatG: number | null;
@@ -501,6 +508,9 @@ export type ParsedNutritionLabel = {
   parseConfidence: number;
   rawText: string;
 };
+
+export const servingSizeUnits = ['g', 'ml', 'oz', 'fl oz', 'cup', 'tbsp', 'tsp', 'piece', 'bottle', 'can', 'packet', 'slice', 'serving'] as const;
+export type ServingSizeUnit = typeof servingSizeUnits[number];
 
 export type NutritionLabelParseSource = 'ai' | 'ocr';
 
