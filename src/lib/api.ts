@@ -22,6 +22,24 @@ export type ThemePreference = {
   mode: 'light' | 'dark';
 };
 
+export type ArcanaStage = 'unrevealed' | 'revealed' | 'refined' | 'illuminated' | 'mastered';
+export type ArcanaCard = {
+  id: string;
+  number: string;
+  name: string;
+  focus: string;
+  source: string;
+  stage: ArcanaStage;
+  earnedAt: string | null;
+  stageEvidence: Record<string, { summary?: string; stats?: Record<string, number | string>; earnedAt?: string }>;
+  nextMilestone: { stage: ArcanaStage; description: string; current: number; target: number } | null;
+};
+export type ArcanaData = {
+  ruleVersion: number;
+  cards: ArcanaCard[];
+  pins: { past: string | null; present: string | null; becoming: string | null };
+};
+
 export type AiWorkoutPlanDraft = {
   name: string;
   description?: string;
@@ -687,4 +705,28 @@ export async function updateProgressPhoto(progressId: string, payload: { capture
     method: 'PATCH',
     body: JSON.stringify(payload),
   });
+}
+
+export async function getArcana() {
+  return authenticatedRequest<ArcanaData>('/v1/arcana');
+}
+
+export async function pinArcana(slot: 'past' | 'present' | 'becoming', cardId: string) {
+  return authenticatedRequest<ArcanaData>('/v1/arcana/pins', { method: 'PUT', body: JSON.stringify({ slot, cardId }) });
+}
+
+export async function saveRecoveryCheckin(date: string, payload: { sleepHours?: number; recoveryScore: number; sorenessScore?: number; stressScore?: number; note?: string }) {
+  return authenticatedRequest(`/v1/recovery-checkins/${date}`, { method: 'PUT', body: JSON.stringify(payload) });
+}
+
+export async function createTrainingBlock(payload: { name: string; startDate: string; endDate: string; targetSessionsPerWeek: number; note?: string }) {
+  return authenticatedRequest('/v1/training-blocks', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function createWeeklyReview(payload: { weekStart: string; weekEnd: string; reflection: string; adjustments?: string; decision?: string }) {
+  return authenticatedRequest('/v1/weekly-reviews', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function createGoal(payload: { title: string; category: 'strength' | 'nutrition' | 'recovery' | 'body' | 'habit' | 'other'; baselineValue?: number; targetValue?: number; unit?: string; targetDate?: string; note?: string }) {
+  return authenticatedRequest('/v1/goals', { method: 'POST', body: JSON.stringify(payload) });
 }

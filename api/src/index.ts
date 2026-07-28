@@ -12,6 +12,7 @@ import { z } from 'zod';
 
 import { requestAiBarcodeLookup, requestAiNutritionLabel, requestAiWorkoutDraft } from './ai-workout.js';
 import { getCalistreeCatalog, getCalistreeExerciseMetadata, searchCalistreeExercises } from './calistree.js';
+import { arcanaDefinitions, evaluateArcanaForUser, recordProgressionEvent } from './arcana.js';
 
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
@@ -224,6 +225,62 @@ const mealPhotoCreateSchema = z.object({
   mimeType: z.string().min(3).max(128),
   sizeBytes: z.number().int().positive().max(20 * 1024 * 1024),
 });
+const recordDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const recoveryCheckinSchema = z.object({
+  sleepHours: z.number().min(0).max(24).optional(),
+  recoveryScore: z.number().int().min(1).max(5),
+  sorenessScore: z.number().int().min(1).max(5).optional(),
+  stressScore: z.number().int().min(1).max(5).optional(),
+  note: z.string().trim().max(500).optional(),
+});
+const nutritionTargetSchema = z.object({ targetMealDays: z.number().int().min(1).max(7) });
+const trainingBlockSchema = z.object({
+  name: z.string().trim().min(2).max(100),
+  startDate: recordDateSchema,
+  endDate: recordDateSchema,
+  targetSessionsPerWeek: z.number().int().min(1).max(7),
+  routineId: z.string().uuid().optional(),
+  deloadWeek: z.number().int().min(1).max(16).optional(),
+  note: z.string().trim().max(600).optional(),
+}).refine((value) => value.endDate >= value.startDate, 'The block end must be after its start.');
+const trainingBlockUpdateSchema = z.object({
+  status: z.enum(['draft', 'active', 'completed', 'archived']).optional(),
+  note: z.string().trim().max(600).optional(),
+  replacementBlockId: z.string().uuid().nullable().optional(),
+});
+const scheduledBlockSessionSchema = z.object({
+  scheduledFor: recordDateSchema,
+  routineDayId: z.string().uuid().optional(),
+  status: z.enum(['planned', 'rescheduled', 'completed', 'skipped']).default('planned'),
+  rescheduledFromId: z.string().uuid().optional(),
+  note: z.string().trim().max(500).optional(),
+});
+const scheduledBlockSessionUpdateSchema = z.object({
+  scheduledFor: recordDateSchema.optional(),
+  status: z.enum(['planned', 'rescheduled', 'completed', 'skipped']).optional(),
+  rescheduledFromId: z.string().uuid().nullable().optional(),
+  completedSessionId: z.string().uuid().nullable().optional(),
+  note: z.string().trim().max(500).optional(),
+});
+const weeklyReviewSchema = z.object({
+  weekStart: recordDateSchema,
+  weekEnd: recordDateSchema,
+  reflection: z.string().trim().min(2).max(1500),
+  adjustments: z.string().trim().max(1500).optional(),
+  decision: z.string().trim().max(500).optional(),
+}).refine((value) => value.weekEnd >= value.weekStart, 'The review end must be after its start.');
+const goalSchema = z.object({
+  title: z.string().trim().min(2).max(160),
+  category: z.enum(['strength', 'nutrition', 'recovery', 'body', 'habit', 'other']),
+  baselineValue: z.number().finite().default(0),
+  targetValue: z.number().finite().default(1),
+  unit: z.string().trim().max(32).default('count'),
+  targetDate: recordDateSchema.default(() => new Date(Date.now() + 90 * 86_400_000).toISOString().slice(0, 10)),
+  note: z.string().trim().max(800).optional(),
+});
+const goalUpdateSchema = goalSchema.partial().extend({ status: z.enum(['active', 'completed', 'archived']).optional() });
+const goalAssessmentSchema = z.object({ value: z.number().finite(), note: z.string().trim().min(2).max(1000), decision: z.string().trim().max(500).optional(), assessedAt: recordDateSchema.optional() });
+const pinArcanaSchema = z.object({ slot: z.enum(['past', 'present', 'becoming']), cardId: z.string().min(1).max(32) });
 
 type UserRow = {
   id: string;
@@ -1479,6 +1536,12 @@ app.post('/v1/sessions/:id/sets', async (request, reply) => {
         previousSets,
         exercise[0].name,
       );
+  await recordProgressionEvent(sql, userId, 'workout_set_logged', 'workout_set', set.id, {
+    sessionId: currentSession.id,
+    exerciseId: parsed.data.exerciseId,
+    isWarmup: parsed.data.isWarmup ?? false,
+  });
+  await evaluateArcanaForUser(sql, userId);
   return reply.code(201).send({
     set: { id: set.id, exerciseId: parsed.data.exerciseId, setOrder: set.set_order, reps: parsed.data.reps, weight: parsed.data.weight ?? null, isWarmup: parsed.data.isWarmup ?? false, createdAt: set.created_at },
     personalRecord,
@@ -1498,6 +1561,8 @@ app.patch('/v1/sets/:id', async (request, reply) => {
     RETURNING wset.id, wset.session_id
   `;
   if (!updated) return reply.code(404).send({ error: 'Workout set not found.' });
+  await recordProgressionEvent(sql, userId, 'workout_set_updated', 'workout_set', updated.id, { sessionId: updated.session_id });
+  await evaluateArcanaForUser(sql, userId);
   return reply.send({ set: { id: updated.id, sessionId: updated.session_id } });
 });
 
@@ -1521,6 +1586,8 @@ app.delete('/v1/sets/:id', async (request, reply) => {
     return ownedSet;
   });
   if (!result) return reply.code(404).send({ error: 'Workout set not found.' });
+  await recordProgressionEvent(sql, userId, 'workout_set_deleted', 'workout_set', result.id, { sessionId: result.session_id });
+  await evaluateArcanaForUser(sql, userId);
   return reply.code(204).send();
 });
 
@@ -1535,6 +1602,8 @@ app.post('/v1/sessions/:id/complete', async (request, reply) => {
     RETURNING id, ended_at
   `;
   if (!updated) return reply.code(404).send({ error: 'Workout session not found.' });
+  await recordProgressionEvent(sql, userId, 'workout_session_completed', 'workout_session', updated.id, { endedAt: updated.ended_at });
+  await evaluateArcanaForUser(sql, userId);
   return reply.send({ session: { id: updated.id, status: 'completed', endedAt: updated.ended_at } });
 });
 
@@ -1690,6 +1759,8 @@ app.post('/v1/meals', async (request, reply) => {
     }
     return created;
   });
+  await Promise.all(meals.map((meal) => recordProgressionEvent(sql, userId, 'meal_logged', 'meal_log', meal.id, { mealType: parsed.data.mealType, consumedAt: meal.consumed_at })));
+  await evaluateArcanaForUser(sql, userId);
   return reply.code(201).send({ meals: meals.map((meal) => ({ id: meal.id, consumedAt: meal.consumed_at })) });
 });
 
@@ -1707,6 +1778,8 @@ app.patch('/v1/meals/:id', async (request, reply) => {
     RETURNING id
   `;
   if (!meal) return reply.code(404).send({ error: 'Logged food not found.' });
+  await recordProgressionEvent(sql, userId, 'meal_updated', 'meal_log', meal.id, { mealType: parsed.data.mealType });
+  await evaluateArcanaForUser(sql, userId);
   return reply.send({ meal: { id: meal.id } });
 });
 
@@ -1734,6 +1807,8 @@ app.delete('/v1/meals/:id', async (request, reply) => {
   await Promise.all(
     deleted.map((photo) => storage.send(new DeleteObjectCommand({ Bucket: env.S3_BUCKET, Key: photo.object_key })).catch(() => undefined)),
   );
+  await recordProgressionEvent(sql, userId, 'meal_deleted', 'meal_log', params.data.id, {});
+  await evaluateArcanaForUser(sql, userId);
   return reply.code(204).send();
 });
 
@@ -1829,6 +1904,222 @@ app.delete('/v1/fasting/:id', async (request, reply) => {
   `;
   if (!removed) return reply.code(404).send({ error: 'Fasting record not found.' });
   return reply.code(204).send();
+});
+
+app.get('/v1/arcana', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  return reply.send(await evaluateArcanaForUser(sql, userId, 'recovered'));
+});
+
+app.post('/v1/arcana/reconcile', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  // Reconciliation re-reads factual history under the server-owned rule
+  // version. It can advance a card with durable evidence, never retract one.
+  return reply.send({ reconciled: true, arcana: await evaluateArcanaForUser(sql, userId, 'recovered') });
+});
+
+app.put('/v1/arcana/pins', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = pinArcanaSchema.safeParse(request.body);
+  if (!parsed.success || !arcanaDefinitions.some((card) => card.id === parsed.data.cardId)) return reply.code(400).send({ error: 'Choose a valid Arcana card and spread position.' });
+  const [state] = await sql<{ highest_stage: number }[]>`SELECT highest_stage FROM user_arcana_states WHERE user_id = ${userId} AND card_id = ${parsed.data.cardId} LIMIT 1`;
+  if (!state || state.highest_stage < 1) return reply.code(409).send({ error: 'Only revealed cards can be pinned.' });
+  await sql`
+    INSERT INTO user_arcana_pins (user_id, slot, card_id, updated_at)
+    VALUES (${userId}, ${parsed.data.slot}, ${parsed.data.cardId}, now())
+    ON CONFLICT (user_id, slot) DO UPDATE SET card_id = EXCLUDED.card_id, updated_at = now()
+  `;
+  return reply.send(await evaluateArcanaForUser(sql, userId));
+});
+
+app.get('/v1/recovery-checkins', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const checkins = await sql`
+    SELECT checked_on, sleep_duration_minutes, energy, soreness, stress, note, created_at, updated_at
+    FROM recovery_checkins WHERE user_id = ${userId} ORDER BY checked_on DESC LIMIT 90
+  `;
+  return reply.send({ checkins });
+});
+
+app.put('/v1/recovery-checkins/:date', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = z.object({ date: recordDateSchema }).safeParse(request.params);
+  const parsed = recoveryCheckinSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid recovery check-in.' });
+  const [checkin] = await sql`
+    INSERT INTO recovery_checkins (id, user_id, checked_on, sleep_duration_minutes, energy, soreness, stress, note, created_at, updated_at)
+    VALUES (${randomUUID()}, ${userId}, ${params.data.date}, ${parsed.data.sleepHours ? Math.round(parsed.data.sleepHours * 60) : null}, ${parsed.data.recoveryScore}, ${parsed.data.sorenessScore ?? null}, ${parsed.data.stressScore ?? null}, ${parsed.data.note ?? null}, now(), now())
+    ON CONFLICT (user_id, checked_on) DO UPDATE SET sleep_duration_minutes = EXCLUDED.sleep_duration_minutes, energy = EXCLUDED.energy, soreness = EXCLUDED.soreness, stress = EXCLUDED.stress, note = EXCLUDED.note, updated_at = now()
+    RETURNING id, checked_on, energy
+  `;
+  await recordProgressionEvent(sql, userId, 'recovery_checkin_recorded', 'recovery_checkin', checkin.id, { date: checkin.checked_on, recoveryScore: checkin.energy });
+  return reply.send({ checkin, arcana: await evaluateArcanaForUser(sql, userId) });
+});
+
+app.put('/v1/nutrition-adherence-target', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = nutritionTargetSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid nutrition target.' });
+  await sql`
+    INSERT INTO nutrition_adherence_targets (user_id, meal_days_per_week, updated_at)
+    VALUES (${userId}, ${parsed.data.targetMealDays}, now())
+    ON CONFLICT (user_id) DO UPDATE SET meal_days_per_week = EXCLUDED.meal_days_per_week, updated_at = now()
+  `;
+  await recordProgressionEvent(sql, userId, 'nutrition_target_set', 'nutrition_adherence_target', userId, parsed.data);
+  return reply.send({ targetMealDays: parsed.data.targetMealDays, arcana: await evaluateArcanaForUser(sql, userId) });
+});
+
+app.get('/v1/training-blocks', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const blocks = await sql`
+    SELECT b.*, coalesce(json_agg(s ORDER BY s.scheduled_on) FILTER (WHERE s.id IS NOT NULL), '[]'::json) AS sessions
+    FROM training_blocks b LEFT JOIN training_block_sessions s ON s.block_id = b.id
+    WHERE b.user_id = ${userId} GROUP BY b.id ORDER BY b.start_date DESC
+  `;
+  return reply.send({ blocks });
+});
+
+app.post('/v1/training-blocks', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = trainingBlockSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid training block.' });
+  if (parsed.data.routineId) {
+    const [routine] = await sql<{ id: string }[]>`SELECT id FROM routines WHERE id = ${parsed.data.routineId} AND user_id = ${userId} LIMIT 1`;
+    if (!routine) return reply.code(404).send({ error: 'Workout plan not found.' });
+  }
+  const [block] = await sql`
+    INSERT INTO training_blocks (id, user_id, routine_id, title, primary_goal, start_date, end_date, weekly_target, status, created_at, updated_at)
+    VALUES (${randomUUID()}, ${userId}, ${parsed.data.routineId ?? null}, ${parsed.data.name}, ${parsed.data.note ?? null}, ${parsed.data.startDate}, ${parsed.data.endDate}, ${parsed.data.targetSessionsPerWeek}, 'active', now(), now()) RETURNING *
+  `;
+  await recordProgressionEvent(sql, userId, 'training_block_created', 'training_block', block.id, { name: block.title, startDate: block.start_date, endDate: block.end_date });
+  return reply.code(201).send({ block, arcana: await evaluateArcanaForUser(sql, userId) });
+});
+
+app.patch('/v1/training-blocks/:id', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = trainingBlockUpdateSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid training block update.' });
+  const [block] = await sql`
+    UPDATE training_blocks SET status = coalesce(${parsed.data.status ?? null}, status), primary_goal = coalesce(${parsed.data.note ?? null}, primary_goal), replacement_block_id = ${parsed.data.replacementBlockId ?? null}, updated_at = now()
+    WHERE id = ${params.data.id} AND user_id = ${userId} RETURNING *
+  `;
+  if (!block) return reply.code(404).send({ error: 'Training block not found.' });
+  await recordProgressionEvent(sql, userId, 'training_block_updated', 'training_block', block.id, { status: block.status });
+  return reply.send({ block, arcana: await evaluateArcanaForUser(sql, userId) });
+});
+
+app.post('/v1/training-blocks/:id/sessions', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = scheduledBlockSessionSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid scheduled session.' });
+  const [block] = await sql<{ id: string }[]>`SELECT id FROM training_blocks WHERE id = ${params.data.id} AND user_id = ${userId} LIMIT 1`;
+  if (!block) return reply.code(404).send({ error: 'Training block not found.' });
+  const [session] = await sql`
+    INSERT INTO training_block_sessions (id, block_id, scheduled_on, routine_day_id, status, rescheduled_from_id, skip_reason, created_at, updated_at)
+    VALUES (${randomUUID()}, ${block.id}, ${parsed.data.scheduledFor}, ${parsed.data.routineDayId ?? null}, ${parsed.data.status}, ${parsed.data.rescheduledFromId ?? null}, ${parsed.data.note ?? null}, now(), now()) RETURNING *
+  `;
+  await recordProgressionEvent(sql, userId, 'training_session_scheduled', 'training_block_session', session.id, { blockId: block.id, status: session.status, scheduledFor: session.scheduled_on });
+  return reply.code(201).send({ session, arcana: await evaluateArcanaForUser(sql, userId) });
+});
+
+app.patch('/v1/training-block-sessions/:id', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = scheduledBlockSessionUpdateSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid scheduled-session update.' });
+  const [session] = await sql`
+    UPDATE training_block_sessions s SET scheduled_on = coalesce(${parsed.data.scheduledFor ?? null}, s.scheduled_on), status = coalesce(${parsed.data.status ?? null}, s.status), rescheduled_from_id = ${parsed.data.rescheduledFromId ?? null}, completed_session_id = ${parsed.data.completedSessionId ?? null}, skip_reason = coalesce(${parsed.data.note ?? null}, s.skip_reason), updated_at = now()
+    FROM training_blocks b WHERE s.id = ${params.data.id} AND s.block_id = b.id AND b.user_id = ${userId} RETURNING s.*
+  `;
+  if (!session) return reply.code(404).send({ error: 'Scheduled session not found.' });
+  await recordProgressionEvent(sql, userId, 'training_session_updated', 'training_block_session', session.id, { status: session.status, scheduledFor: session.scheduled_on });
+  return reply.send({ session, arcana: await evaluateArcanaForUser(sql, userId) });
+});
+
+app.get('/v1/weekly-reviews', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  return reply.send({ reviews: await sql`SELECT * FROM weekly_reviews WHERE user_id = ${userId} ORDER BY period_start DESC LIMIT 52` });
+});
+
+app.post('/v1/weekly-reviews', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = weeklyReviewSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid weekly review.' });
+  const [review] = await sql`
+    INSERT INTO weekly_reviews (id, user_id, period_start, period_end, what_worked, what_did_not, decision, created_at)
+    VALUES (${randomUUID()}, ${userId}, ${parsed.data.weekStart}, ${parsed.data.weekEnd}, ${parsed.data.reflection}, ${parsed.data.adjustments ?? null}, ${parsed.data.decision ?? 'Continue with the next planned action.'}, now()) RETURNING *
+  `;
+  await recordProgressionEvent(sql, userId, 'weekly_review_recorded', 'weekly_review', review.id, { weekStart: review.period_start, hasAdjustment: Boolean(review.what_did_not) });
+  return reply.code(201).send({ review, arcana: await evaluateArcanaForUser(sql, userId) });
+});
+
+app.get('/v1/goals', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const goals = await sql`
+    SELECT g.*, coalesce(json_agg(a ORDER BY a.assessed_on DESC) FILTER (WHERE a.id IS NOT NULL), '[]'::json) AS assessments
+    FROM goals g LEFT JOIN goal_assessments a ON a.goal_id = g.id WHERE g.user_id = ${userId} GROUP BY g.id ORDER BY g.created_at DESC
+  `;
+  return reply.send({ goals });
+});
+
+app.post('/v1/goals', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = goalSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid goal.' });
+  const [goal] = await sql`
+    INSERT INTO goals (id, user_id, domain, metric_type, baseline_value, target_value, measurement_method, target_date, status, created_at)
+    VALUES (${randomUUID()}, ${userId}, ${parsed.data.category}, ${parsed.data.title}, ${parsed.data.baselineValue}, ${parsed.data.targetValue}, ${parsed.data.unit}, ${parsed.data.targetDate}, 'active', now()) RETURNING *
+  `;
+  await recordProgressionEvent(sql, userId, 'goal_created', 'goal', goal.id, { category: goal.domain, title: goal.metric_type });
+  return reply.code(201).send({ goal, arcana: await evaluateArcanaForUser(sql, userId) });
+});
+
+app.patch('/v1/goals/:id', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = goalUpdateSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid goal update.' });
+  const [goal] = await sql`
+    UPDATE goals SET domain = coalesce(${parsed.data.category ?? null}, domain), metric_type = coalesce(${parsed.data.title ?? null}, metric_type), baseline_value = coalesce(${parsed.data.baselineValue ?? null}, baseline_value), target_value = coalesce(${parsed.data.targetValue ?? null}, target_value), measurement_method = coalesce(${parsed.data.unit ?? null}, measurement_method), target_date = coalesce(${parsed.data.targetDate ?? null}, target_date), status = coalesce(${parsed.data.status ?? null}, status), completed_at = CASE WHEN ${parsed.data.status ?? null} = 'completed' THEN now() ELSE completed_at END
+    WHERE id = ${params.data.id} AND user_id = ${userId} RETURNING *
+  `;
+  if (!goal) return reply.code(404).send({ error: 'Goal not found.' });
+  await recordProgressionEvent(sql, userId, 'goal_updated', 'goal', goal.id, { status: goal.status });
+  return reply.send({ goal, arcana: await evaluateArcanaForUser(sql, userId) });
+});
+
+app.post('/v1/goals/:id/assessments', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = goalAssessmentSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid goal assessment.' });
+  const [goal] = await sql<{ id: string }[]>`SELECT id FROM goals WHERE id = ${params.data.id} AND user_id = ${userId} LIMIT 1`;
+  if (!goal) return reply.code(404).send({ error: 'Goal not found.' });
+  const [assessment] = await sql`
+    INSERT INTO goal_assessments (id, goal_id, user_id, assessed_on, value, decision, decision_reason, created_at)
+    VALUES (${randomUUID()}, ${goal.id}, ${userId}, ${parsed.data.assessedAt ?? new Date().toISOString().slice(0, 10)}, ${parsed.data.value}, ${parsed.data.decision ?? null}, ${parsed.data.note}, now()) RETURNING *
+  `;
+  await recordProgressionEvent(sql, userId, 'goal_assessed', 'goal_assessment', assessment.id, { goalId: goal.id, value: assessment.value });
+  return reply.code(201).send({ assessment, arcana: await evaluateArcanaForUser(sql, userId) });
 });
 
 app.post('/v1/friends', async (request, reply) => {

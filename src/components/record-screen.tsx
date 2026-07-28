@@ -21,6 +21,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AlchemySvg } from "./alchemy-svg";
+import { ArcanaContent } from "./arcana-content";
 import { FastingHourglass } from "./fasting-hourglass";
 import { RecoveryBodyMap } from "./muscle-heat-map";
 import { NutritionContent as NutritionWorkflow } from "./nutrition-content";
@@ -81,7 +82,9 @@ const nav = [
   ["nutrition", "Nutrition"],
   ["fasting", "Fasting"],
   ["progress", "Progress"],
+  ["arcana", "Arcana"],
   ["friends", "Friends"],
+  ["arcana", "Arcana"],
   ["settings", "Settings"],
   ["admin", "Admin"],
 ] as const;
@@ -327,7 +330,7 @@ export function RecordScreen({ area }: { area: Area }) {
                   accessibilityRole="tab"
                   accessibilityState={{ selected: key === area }}
                   key={key}
-                  onPress={() => router.replace(routeFor(key))}
+                  onPress={() => router.replace(routeFor(key) as never)}
                   style={styles.navButton}
                 >
                   <Text
@@ -387,7 +390,7 @@ export function RecordScreen({ area }: { area: Area }) {
                     key={key}
                     onPress={() => {
                       setMoreOpen(false);
-                      router.replace(routeFor(key));
+                      router.replace(routeFor(key) as never);
                     }}
                     style={styles.moreItem}
                   >
@@ -409,7 +412,7 @@ export function RecordScreen({ area }: { area: Area }) {
                   accessibilityRole="link"
                   accessibilityState={{ selected: active }}
                   key={key}
-                  onPress={() => router.replace(routeFor(key))}
+                  onPress={() => router.replace(routeFor(key) as never)}
                   style={styles.bottomNavItem}
                 >
                   {active ? <View style={styles.bottomNavIndicator} /> : null}
@@ -599,6 +602,11 @@ function DashboardContent({
         {notice ? <Text accessibilityRole="alert" style={styles.notice}>{notice}</Text> : null}
       </View>
 
+      <Pressable accessibilityRole="link" onPress={() => router.push("/arcana" as never)} style={styles.dashboardArcanaLink}>
+        <View><Text style={styles.dashboardArcanaLabel}>PERSONAL ARCANA</Text><Text style={styles.dashboardArcanaCopy}>See the evidence behind your progression.</Text></View>
+        <ArrowRight color={palette.gold} size={20} strokeWidth={2.4} />
+      </Pressable>
+
       <View style={styles.recoveryRecord}>
         <Text style={styles.sectionLabel}>RECOVERY</Text>
         <View style={[styles.recoveryContent, isDesktop && styles.recoveryContentDesktop]}>
@@ -705,6 +713,7 @@ function AreaContent({
     return <FastingContent record={r} refresh={refresh} />;
   if (area === "progress")
     return <ProgressContent record={r} refresh={refresh} isDesktop={isDesktop} />;
+  if (area === "arcana") return <ArcanaContent />;
   if (area === "friends")
     return <FriendsContent record={r} refresh={refresh} />;
   if (area === "settings")
@@ -3665,6 +3674,9 @@ const baseStyles = StyleSheet.create({
     marginTop: 28,
     paddingVertical: 18,
   },
+  dashboardArcanaLink: { alignItems: "center", borderColor: "#C8A850", borderWidth: 1, flexDirection: "row", justifyContent: "space-between", marginTop: 14, padding: 14 },
+  dashboardArcanaLabel: { color: "#101015", fontSize: 11, fontWeight: "900", letterSpacing: 1.2 },
+  dashboardArcanaCopy: { color: "#655D57", fontSize: 14, marginTop: 5 },
   dashboardPrimaryLabel: {
     color: "#642D2A",
     fontFamily: "Courier",
