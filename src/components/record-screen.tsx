@@ -1,9 +1,9 @@
 import { router, useLocalSearchParams } from "expo-router";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
-import { openBrowserAsync } from "expo-web-browser";
-import { ArrowRight, ChevronLeft, ChevronRight, Menu, Moon, MoreHorizontal, Sun, X } from "lucide-react-native";
-import { useEffect, useMemo, useState } from "react";
+import { useVideoPlayer, VideoView } from "expo-video";
+import { ArrowRight, ChevronLeft, ChevronRight, Menu, Minus, Moon, MoreHorizontal, Plus, Sun, X } from "lucide-react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
@@ -19,12 +19,13 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { WebView } from "react-native-webview";
 
 import { AlchemySvg } from "./alchemy-svg";
 import { LoadingOverlay } from "./loading-overlay";
 import { ArcanaContent } from "./arcana-content";
 import { FastingHourglass } from "./fasting-hourglass";
-import { RecoveryBodyMap } from "./muscle-heat-map";
+import { MuscleHeatMap, RecoveryBodyMap } from "./muscle-heat-map";
 import { NutritionContent as NutritionWorkflow } from "./nutrition-content";
 import { createPaletteProxy, createThemedStyleProxy, transmuteThemeOptions, transmuteThemes, useTransmuteTheme } from "../theme/transmute-theme";
 import { deriveRecovery } from "../lib/recovery";
@@ -47,25 +48,29 @@ import {
   getRecord,
   generateAiWorkoutPlan,
   importAiWorkoutPlan,
+  importCalistreeExerciseToWorkoutPlanDay,
   lookupBarcode,
   rejectFriendRequest,
   removeFriend,
   removeExerciseFromWorkoutPlanDay,
   parseNutritionLabel,
   sendFriendRequest,
+  searchCalistreeExercises,
   setActiveWorkoutPlan,
   signOut,
   startWorkoutSession,
   updateFasting,
-  updateExerciseDemo,
   updateProgressPhoto,
   updateWeightUnit,
   uploadMealPhoto,
   uploadProgressPhoto,
   updateAdminUser,
+  updateExercisePrescription,
   updateWorkoutPlan,
+  updateWorkoutPlanDay,
   type AdminUser,
   type AiWorkoutPlanDraft,
+  type CalistreeExercise,
   type TransmuteRecord,
 } from "../lib/api";
 
@@ -199,6 +204,58 @@ function firstName(name: string | null | undefined) {
   const value = name?.trim();
   return value && !value.includes("@") ? value.split(/\s+/)[0] : null;
 }
+
+function isDirectDemoUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    return /\.mp4$/i.test(parsed.pathname) || parsed.hostname.endsWith("firebasestorage.googleapis.com");
+  } catch {
+    return false;
+  }
+}
+
+function embedUrlForDemo(url: string) {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+    const videoId = host === "youtu.be"
+      ? parsed.pathname.split("/").filter(Boolean)[0]
+      : host === "youtube.com" || host.endsWith(".youtube.com")
+        ? parsed.searchParams.get("v") ?? parsed.pathname.match(/^\/shorts\/([^/?]+)/)?.[1]
+        : null;
+    return videoId ? `https://www.youtube-nocookie.com/embed/${videoId}?playsinline=1&rel=0` : url;
+  } catch {
+    return url;
+  }
+}
+
+function DirectExerciseDemo({ url, name }: { url: string; name: string }) {
+  const player = useVideoPlayer(url, (instance) => {
+    instance.loop = true;
+    instance.muted = true;
+  });
+
+  return <VideoView
+    accessibilityLabel={`${name} movement demonstration`}
+    contentFit="contain"
+    nativeControls
+    player={player}
+    style={styles.exerciseDemoVideo}
+  />;
+}
+
+function ExpandedExerciseDemo({ url, name }: { url: string; name: string }) {
+  if (isDirectDemoUrl(url)) return <DirectExerciseDemo url={url} name={name} />;
+
+  return <WebView
+    allowsFullscreenVideo
+    mediaPlaybackRequiresUserAction
+    originWhitelist={["https://*"]}
+    source={{ uri: embedUrlForDemo(url) }}
+    style={styles.exerciseDemoVideo}
+  />;
+}
+
 function Card({ title, meta, imageUrl }: { title: string; meta?: string; imageUrl?: string | null }) {
   return (
     <View style={styles.card}>
@@ -731,17 +788,20 @@ function WorkoutPlansContent({
 }) {
   const [planName, setPlanName] = useState("");
   const [description, setDescription] = useState("");
-  const [dayNames, setDayNames] = useState<Record<string, string>>({});
   const [renamedPlanNames, setRenamedPlanNames] = useState<Record<string, string>>({});
+  const [renamedDayNames, setRenamedDayNames] = useState<Record<string, string>>({});
+  const [newDayId, setNewDayId] = useState<string | null>(null);
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(
     record.settings.active_routine_id ?? record.workoutPlans[0]?.id ?? null,
   );
   const [selectedDayId, setSelectedDayId] = useState<string | null>(null);
   const [selectedExerciseId, setSelectedExerciseId] = useState<string | null>(null);
   const [exerciseBrowserOpen, setExerciseBrowserOpen] = useState(false);
+  const [prescriptionModalOpen, setPrescriptionModalOpen] = useState(false);
+  const [returnToPlanEditor, setReturnToPlanEditor] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const [removeTarget, setRemoveTarget] = useState<{ kind: "day" | "plan"; id: string; name: string } | null>(null);
-  const [activePlanPrompt, setActivePlanPrompt] = useState<{ id: string; name: string } | null>(null);
+  const [removeTarget, setRemoveTarget] = useState<{ kind: "day" | "plan" | "exercise"; id: string; name: string } | null>(null);
+  const [activePlanPrompt, setActivePlanPrompt] = useState<{ id: string; name: string; nextState: "active" | "inactive" } | null>(null);
   const [startDayPickerOpen, setStartDayPickerOpen] = useState(false);
   const [createPlanOpen, setCreatePlanOpen] = useState(false);
   const [newPlanMode, setNewPlanMode] = useState<"manual" | "ai">("manual");
@@ -750,7 +810,14 @@ function WorkoutPlansContent({
   const [generatingPlan, setGeneratingPlan] = useState(false);
   const [exerciseQuery, setExerciseQuery] = useState("");
   const [pendingExerciseId, setPendingExerciseId] = useState<string | null>(null);
+  const [pendingCatalogExercise, setPendingCatalogExercise] = useState<CalistreeExercise | null>(null);
+  const [catalogExercises, setCatalogExercises] = useState<CalistreeExercise[]>([]);
+  const [catalogSearchLoading, setCatalogSearchLoading] = useState(false);
+  const [catalogSearchError, setCatalogSearchError] = useState<string | null>(null);
+  const catalogSearchId = useRef(0);
   const [pendingTargets, setPendingTargets] = useState({ sets: "3", reps: "", weight: "" });
+  const [exercisePrescription, setExercisePrescription] = useState({ sets: "3", reps: "", weight: "" });
+  const [demoExpanded, setDemoExpanded] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const activePlanId = record.settings.active_routine_id;
@@ -782,14 +849,17 @@ function WorkoutPlansContent({
     : null;
   const pendingExercise =
     record.exercises.find((exercise) => exercise.id === pendingExerciseId) ?? null;
-  const visibleExercises = record.exercises
-    .filter((exercise) => exercise.name.toLowerCase().includes(exerciseQuery.trim().toLowerCase()))
-    .slice(0, exerciseQuery.trim() ? 30 : 8);
+  const pendingExerciseName = pendingExercise?.name ?? pendingCatalogExercise?.name ?? null;
+  const visibleExercises = exerciseQuery.trim()
+    ? record.exercises.filter((exercise) => exercise.name.toLowerCase().includes(exerciseQuery.trim().toLowerCase())).slice(0, 12)
+    : [];
+  const visibleCatalogExercises = catalogExercises.filter((catalogExercise) => !visibleExercises.some((exercise) => exercise.name.toLowerCase() === catalogExercise.name.toLowerCase()));
   const plannedSetCount = orderedDays.reduce(
     (total, day) =>
       total + day.exercises.reduce((dayTotal, entry) => dayTotal + (entry.targetSets ?? 3), 0),
     0,
   );
+  const planExerciseCount = orderedDays.reduce((total, day) => total + day.exercises.length, 0);
 
   const run = async (operation: () => Promise<unknown>, success: string) => {
     setSaving(true);
@@ -807,6 +877,36 @@ function WorkoutPlansContent({
     }
   };
 
+  const handleExerciseQueryChange = (value: string) => {
+    setExerciseQuery(value);
+    setPendingExerciseId(null);
+    setPendingCatalogExercise(null);
+    const query = value.trim();
+    const requestId = catalogSearchId.current + 1;
+    catalogSearchId.current = requestId;
+    if (query.length < 2) {
+      setCatalogExercises([]);
+      setCatalogSearchLoading(false);
+      setCatalogSearchError(null);
+      return;
+    }
+    setCatalogSearchLoading(true);
+    setCatalogSearchError(null);
+    void searchCalistreeExercises(query)
+      .then(({ results }) => {
+        if (catalogSearchId.current === requestId) setCatalogExercises(results);
+      })
+      .catch((reason) => {
+        if (catalogSearchId.current === requestId) {
+          setCatalogExercises([]);
+          setCatalogSearchError(reason instanceof Error ? reason.message : "The exercise catalog could not be searched.");
+        }
+      })
+      .finally(() => {
+        if (catalogSearchId.current === requestId) setCatalogSearchLoading(false);
+      });
+  };
+
   const createPlan = async () => {
     const name = planName.trim();
     if (name.length < 2) throw new Error("Enter a plan name with at least 2 characters.");
@@ -817,7 +917,7 @@ function WorkoutPlansContent({
     if (record.workoutPlans.length === 0) {
       await setActiveWorkoutPlan(result.plan.id);
     } else {
-      setActivePlanPrompt({ id: result.plan.id, name: result.plan.name });
+      setActivePlanPrompt({ id: result.plan.id, name: result.plan.name, nextState: "active" });
     }
     setSelectedPlanId(result.plan.id);
     setPlanName("");
@@ -850,7 +950,7 @@ function WorkoutPlansContent({
       if (record.workoutPlans.length === 0) {
         await setActiveWorkoutPlan(result.plan.id);
       } else {
-        setActivePlanPrompt({ id: result.plan.id, name: result.plan.name });
+        setActivePlanPrompt({ id: result.plan.id, name: result.plan.name, nextState: "active" });
       }
       await refresh();
       setSelectedPlanId(result.plan.id);
@@ -869,11 +969,23 @@ function WorkoutPlansContent({
 
   const addDay = async () => {
     if (!selectedPlan) return;
-    const dayName = (dayNames[selectedPlan.id] ?? "").trim();
-    if (dayName.length < 2) throw new Error("Enter a day name with at least 2 characters.");
-    const result = await addWorkoutPlanDay(selectedPlan.id, { dayName });
-    setDayNames((current) => ({ ...current, [selectedPlan.id]: "" }));
+    const result = await addWorkoutPlanDay(selectedPlan.id, { dayName: `Day ${orderedDays.length + 1}` });
     setSelectedDayId(result.day.id);
+    setNewDayId(result.day.id);
+    setRenamedDayNames((current) => ({ ...current, [result.day.id]: result.day.name }));
+  };
+
+  const savePlanEdits = async () => {
+    if (!selectedPlan) return;
+    const name = (renamedPlanNames[selectedPlan.id] ?? selectedPlan.name).trim();
+    if (name.length < 2) throw new Error("Enter a workout plan name with at least 2 characters.");
+    const dayName = selectedDay ? (renamedDayNames[selectedDay.id] ?? selectedDay.name).trim() : "";
+    if (selectedDay && dayName.length < 2) throw new Error("Enter a workout day name with at least 2 characters.");
+    const saves: Promise<unknown>[] = [];
+    if (name !== selectedPlan.name) saves.push(updateWorkoutPlan(selectedPlan.id, { name }));
+    if (selectedDay && dayName !== selectedDay.name) saves.push(updateWorkoutPlanDay(selectedDay.id, { dayName }));
+    await Promise.all(saves);
+    setDetailsOpen(false);
   };
 
   const confirmActivePlan = async () => {
@@ -881,9 +993,9 @@ function WorkoutPlansContent({
     setSaving(true);
     setNotice(null);
     try {
-      await setActiveWorkoutPlan(activePlanPrompt.id);
+      await setActiveWorkoutPlan(activePlanPrompt.nextState === "active" ? activePlanPrompt.id : null);
       await refresh();
-      setNotice(`${activePlanPrompt.name} is now your active workout plan.`);
+      setNotice(activePlanPrompt.nextState === "active" ? `${activePlanPrompt.name} is now your active workout plan.` : `${activePlanPrompt.name} is no longer your active workout plan.`);
       setActivePlanPrompt(null);
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : "Unable to update your active workout plan.");
@@ -901,12 +1013,16 @@ function WorkoutPlansContent({
         await deleteWorkoutPlanDay(removeTarget.id);
         setSelectedDayId(null);
         setNotice("Workout day removed.");
-      } else {
+      } else if (removeTarget.kind === "plan") {
         await deleteWorkoutPlan(removeTarget.id);
         setSelectedPlanId(null);
         setSelectedDayId(null);
         setDetailsOpen(false);
         setNotice("Workout plan removed.");
+      } else {
+        await removeExerciseFromWorkoutPlanDay(removeTarget.id);
+        setSelectedExerciseId(null);
+        setNotice("Exercise removed.");
       }
       await refresh();
       setRemoveTarget(null);
@@ -918,7 +1034,7 @@ function WorkoutPlansContent({
   };
 
   const addSelectedExercise = async () => {
-    if (!selectedDay || !pendingExercise) throw new Error("Choose an exercise first.");
+    if (!selectedDay || (!pendingExercise && !pendingCatalogExercise)) throw new Error("Choose an exercise first.");
     const targetSets = Number(pendingTargets.sets);
     const targetReps = pendingTargets.reps.trim() ? Number(pendingTargets.reps) : undefined;
     const targetWeight = pendingTargets.weight.trim() ? Number(pendingTargets.weight) : undefined;
@@ -931,16 +1047,44 @@ function WorkoutPlansContent({
     if (targetWeight !== undefined && (!Number.isFinite(targetWeight) || targetWeight < 0)) {
       throw new Error("Target weight must be zero or greater.");
     }
-    await addExerciseToWorkoutPlanDay(selectedDay.id, {
-      exerciseId: pendingExercise.id,
-      targetSets,
-      targetReps,
-      targetWeight,
-    });
+    if (pendingExercise) {
+      await addExerciseToWorkoutPlanDay(selectedDay.id, {
+        exerciseId: pendingExercise.id,
+        targetSets,
+        targetReps,
+        targetWeight,
+      });
+    } else if (pendingCatalogExercise) {
+      await importCalistreeExerciseToWorkoutPlanDay(selectedDay.id, {
+        slug: pendingCatalogExercise.slug,
+        targetSets,
+        targetReps,
+        targetWeight,
+      });
+    }
     setPendingExerciseId(null);
+    setPendingCatalogExercise(null);
     setPendingTargets({ sets: "3", reps: "", weight: "" });
     setExerciseQuery("");
+    setPrescriptionModalOpen(false);
+    closeExerciseBrowser();
+  };
+
+  const openExerciseBrowser = (fromPlanEditor = false) => {
+    if (fromPlanEditor) {
+      setDetailsOpen(false);
+      setReturnToPlanEditor(true);
+    }
+    setExerciseBrowserOpen(true);
+  };
+
+  const closeExerciseBrowser = () => {
     setExerciseBrowserOpen(false);
+    setPrescriptionModalOpen(false);
+    if (returnToPlanEditor) {
+      setDetailsOpen(true);
+      setReturnToPlanEditor(false);
+    }
   };
 
   const startPlanDay = async (routineDayId: string) => {
@@ -956,13 +1100,25 @@ function WorkoutPlansContent({
     }
   };
 
-  const openSelectedExerciseDemo = async () => {
-    if (!selectedLibraryExercise?.demoUrl) return;
-    try {
-      await openBrowserAsync(selectedLibraryExercise.demoUrl);
-    } catch (reason) {
-      setNotice(reason instanceof Error ? reason.message : "Unable to open the exercise demonstration.");
-    }
+  const selectExercise = (exercise: typeof orderedExercises[number]) => {
+    setDemoExpanded(false);
+    setExercisePrescription({
+      sets: String(exercise.targetSets ?? 3),
+      reps: exercise.targetReps ? String(exercise.targetReps) : "",
+      weight: exercise.targetWeight ?? "",
+    });
+    setSelectedExerciseId(exercise.id);
+  };
+
+  const saveExercisePrescription = async () => {
+    if (!selectedExercise) return;
+    const targetSets = Number(exercisePrescription.sets);
+    const targetReps = exercisePrescription.reps.trim() ? Number(exercisePrescription.reps) : null;
+    const targetWeight = exercisePrescription.weight.trim() ? Number(exercisePrescription.weight) : null;
+    if (!Number.isInteger(targetSets) || targetSets < 1) throw new Error("Enter at least one target set.");
+    if (targetReps !== null && (!Number.isInteger(targetReps) || targetReps < 1)) throw new Error("Target reps must be a whole number.");
+    if (targetWeight !== null && (!Number.isFinite(targetWeight) || targetWeight < 0)) throw new Error("Target weight must be zero or greater.");
+    await updateExercisePrescription(selectedExercise.id, { targetSets, targetReps, targetWeight });
   };
 
   const prescriptionFor = (entry: NonNullable<typeof selectedExercise>) => {
@@ -990,33 +1146,38 @@ function WorkoutPlansContent({
       </View>
       <View style={styles.editorRule} />
       <Text style={styles.editorFieldLabel}>PRESCRIPTION</Text>
-      <Text style={styles.editorValue}>{prescriptionFor(selectedExercise)}</Text>
-      <Text style={styles.editorHint}>
-        Targets are set when the exercise is added. Existing plan entries retain their recorded prescription.
-      </Text>
-      <View style={styles.exerciseDetailGrid}>
-        <View style={styles.exerciseDetailCard}>
-          <Text style={styles.editorFieldLabel}>DEMONSTRATION</Text>
-          {selectedLibraryExercise?.demoUrl ? (
-            <Pressable accessibilityRole="link" onPress={() => void openSelectedExerciseDemo()} style={styles.exerciseDemoAction}>
-              <Text style={styles.exerciseDemoActionText}>Watch demonstration</Text>
-            </Pressable>
-          ) : <Text style={styles.exerciseDetailValue}>No demonstration added yet.</Text>}
+      <View style={styles.prescriptionControls}>
+        <View style={styles.prescriptionControl}>
+          <Text style={styles.prescriptionControlLabel}>SETS</Text>
+          <View style={styles.prescriptionStepper}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Decrease sets" onPress={() => setExercisePrescription((current) => ({ ...current, sets: String(Math.max(1, (Number(current.sets) || 1) - 1)) }))} style={styles.prescriptionStepButton}><Text style={styles.prescriptionStepText}>−</Text></Pressable>
+            <TextInput value={exercisePrescription.sets} onChangeText={(sets) => setExercisePrescription((current) => ({ ...current, sets }))} keyboardType="number-pad" style={styles.prescriptionInput} />
+            <Pressable accessibilityRole="button" accessibilityLabel="Increase sets" onPress={() => setExercisePrescription((current) => ({ ...current, sets: String((Number(current.sets) || 0) + 1) }))} style={styles.prescriptionStepButton}><Text style={styles.prescriptionStepText}>+</Text></Pressable>
+          </View>
         </View>
-        <View style={styles.exerciseDetailCard}>
-          <Text style={styles.editorFieldLabel}>MUSCLES WORKED</Text>
-          <Text style={styles.exerciseDetailValue}>{selectedExercise.muscleGroup ?? "Not specified"}</Text>
+        <View style={styles.prescriptionControl}>
+          <Text style={styles.prescriptionControlLabel}>REPS</Text>
+          <View style={styles.prescriptionStepper}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Decrease reps" onPress={() => setExercisePrescription((current) => ({ ...current, reps: Number(current.reps) > 1 ? String(Number(current.reps) - 1) : "" }))} style={styles.prescriptionStepButton}><Text style={styles.prescriptionStepText}>−</Text></Pressable>
+            <TextInput value={exercisePrescription.reps} onChangeText={(reps) => setExercisePrescription((current) => ({ ...current, reps }))} keyboardType="number-pad" placeholder="—" placeholderTextColor={palette.muted} style={styles.prescriptionInput} />
+            <Pressable accessibilityRole="button" accessibilityLabel="Increase reps" onPress={() => setExercisePrescription((current) => ({ ...current, reps: String((Number(current.reps) || 0) + 1) }))} style={styles.prescriptionStepButton}><Text style={styles.prescriptionStepText}>+</Text></Pressable>
+          </View>
         </View>
+      </View>
+      <Pressable accessibilityRole="button" disabled={saving} onPress={() => void run(saveExercisePrescription, "Exercise prescription saved.")} style={[styles.exerciseSaveAction, saving && styles.buttonDisabled]}><Text style={styles.exerciseSaveActionText}>Save prescription</Text></Pressable>
+      <Pressable accessibilityRole="button" disabled={!selectedLibraryExercise?.demoUrl} onPress={() => setDemoExpanded((current) => !current)} style={[styles.exerciseDemoRow, !selectedLibraryExercise?.demoUrl && styles.buttonDisabled]}>
+        <Text style={styles.exerciseDemoRowText}>{selectedLibraryExercise?.demoUrl ? (demoExpanded ? "Hide demonstration" : "Watch demonstration") : "Demonstration unavailable"}</Text>
+        <Text style={styles.exerciseDemoRowIndicator}>{demoExpanded ? "−" : "+"}</Text>
+      </Pressable>
+      {demoExpanded && selectedLibraryExercise?.demoUrl ? <View style={styles.exerciseEmbeddedDemo}><ExpandedExerciseDemo name={selectedExercise.name} url={selectedLibraryExercise.demoUrl} /></View> : null}
+      <View style={styles.exerciseMuscleRow}>
+        <Text style={styles.editorFieldLabel}>MUSCLES WORKED</Text>
+        <Text style={styles.exerciseDetailValue}>{selectedExercise.muscleGroup ?? "Not specified"}</Text>
       </View>
       <Pressable
         accessibilityRole="button"
         disabled={saving}
-        onPress={() =>
-          void run(async () => {
-            await removeExerciseFromWorkoutPlanDay(selectedExercise.id);
-            setSelectedExerciseId(null);
-          }, `${selectedExercise.name} removed.`)
-        }
+        onPress={() => setRemoveTarget({ kind: "exercise", id: selectedExercise.id, name: selectedExercise.name })}
         style={[styles.removeExerciseAction, saving && styles.buttonDisabled]}
       >
         <Text style={styles.removeExerciseActionText}>Remove exercise</Text>
@@ -1073,7 +1234,7 @@ function WorkoutPlansContent({
                     <Text style={styles.planPrimaryActionText}>START WORKOUT</Text>
                   </Pressable>
                   <Pressable accessibilityRole="button" onPress={() => setDetailsOpen(true)} style={[styles.planSecondaryAction, styles.planHeaderAction]}>
-                    <Text style={styles.planSecondaryActionText}>EDIT DETAILS</Text>
+                    <Text style={styles.planSecondaryActionText}>EDIT PLAN</Text>
                   </Pressable>
                 </View>
               </View>
@@ -1116,7 +1277,7 @@ function WorkoutPlansContent({
                           accessibilityRole="button"
                           accessibilityState={{ selected: selectedExercise?.id === entry.id }}
                           key={entry.id}
-                          onPress={() => setSelectedExerciseId(entry.id)}
+                          onPress={() => selectExercise(entry)}
                           style={[styles.ledgerRow, selectedExercise?.id === entry.id && styles.ledgerRowActive]}
                         >
                           <Text style={styles.dragHandle} accessibilityLabel={`Exercise ${index + 1}`}>≡</Text>
@@ -1127,21 +1288,20 @@ function WorkoutPlansContent({
                           </View>
                           <Text style={styles.ledgerSelect}>›</Text>
                         </Pressable>
-                      )) : (
-                        <View style={styles.ledgerEmpty}>
-                          <Text style={styles.ledgerEmptyTitle}>This day is blank.</Text>
-                          <Text style={styles.editorHint}>Add a movement from your exercise library to begin building the session.</Text>
-                        </View>
-                      )}
+                      )) : null}
                     </View>
-                    <Pressable
+                    {orderedExercises.length ? <Pressable
                       accessibilityRole="button"
                       disabled={!record.exercises.length}
                       onPress={() => setExerciseBrowserOpen(true)}
                       style={[styles.addExerciseAction, !record.exercises.length && styles.buttonDisabled]}
                     >
                       <Text style={styles.addExerciseActionText}>+ Add exercise</Text>
-                    </Pressable>
+                    </Pressable> : <View style={styles.emptyDayAction}>
+                      <Text style={styles.editorLabel}>DAY {selectedDayIndex + 1} IS EMPTY</Text>
+                      <Text style={styles.emptyDayTitle}>Add your first exercise to begin building this workout.</Text>
+                      <Pressable accessibilityRole="button" disabled={!record.exercises.length} onPress={() => setExerciseBrowserOpen(true)} style={[styles.planPrimaryAction, !record.exercises.length && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>+ Add first exercise</Text></Pressable>
+                    </View>}
                     {!record.exercises.length ? <Text style={styles.editorHint}>Create an exercise in Exercise library before adding it to a plan.</Text> : null}
                   </View>
                   {isDesktop ? selectedEditor : null}
@@ -1149,7 +1309,7 @@ function WorkoutPlansContent({
               ) : (
                 <View style={styles.ledgerEmpty}>
                   <Text style={styles.ledgerEmptyTitle}>No training days yet.</Text>
-                  <Text style={styles.editorHint}>Use Edit details to add the first day to this plan.</Text>
+                  <Text style={styles.editorHint}>Use Edit plan to add the first day to this plan.</Text>
                 </View>
               )}
             </>
@@ -1165,7 +1325,7 @@ function WorkoutPlansContent({
         </View>
       )}
 
-      <Modal animationType="fade" transparent visible={exerciseBrowserOpen} onRequestClose={() => setExerciseBrowserOpen(false)}>
+      <Modal animationType="fade" transparent visible={exerciseBrowserOpen} onRequestClose={closeExerciseBrowser}>
         <View style={styles.modalBackdrop}>
           <View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}>
             <View style={styles.modalHeader}>
@@ -1173,98 +1333,103 @@ function WorkoutPlansContent({
                 <Text style={styles.editorLabel}>ADD EXERCISE</Text>
                 <Text style={styles.modalTitle}>{selectedDay?.name ?? "Workout day"}</Text>
               </View>
-              <Pressable accessibilityRole="button" accessibilityLabel="Close exercise browser" onPress={() => setExerciseBrowserOpen(false)} style={styles.modalClose}>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close exercise browser" onPress={closeExerciseBrowser} style={styles.modalClose}>
                 <X color={palette.oxide} size={19} strokeWidth={2.4} />
               </Pressable>
             </View>
-            <TextInput value={exerciseQuery} onChangeText={setExerciseQuery} placeholder="Search exercises…" placeholderTextColor={palette.muted} autoCapitalize="none" style={styles.searchInput} />
-            <Text style={styles.editorLabel}>{exerciseQuery.trim() ? "SEARCH RESULTS" : "AVAILABLE EXERCISES"}</Text>
-            <ScrollView style={styles.exerciseResults} keyboardShouldPersistTaps="handled">
+            <TextInput value={exerciseQuery} onChangeText={handleExerciseQueryChange} placeholder="Search exercises…" placeholderTextColor={palette.muted} autoCapitalize="none" style={styles.searchInput} />
+            {exerciseQuery.trim().length < 2 ? <View style={styles.exerciseSearchEmpty}><Text style={styles.editorHint}>Start typing to search your library and the exercise catalog.</Text></View> : <ScrollView style={styles.exerciseResults} keyboardShouldPersistTaps="handled">
+              {visibleExercises.length ? <Text style={styles.exerciseResultsLabel}>YOUR LIBRARY</Text> : null}
               {visibleExercises.map((exercise) => (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: pendingExercise?.id === exercise.id }}
-                  key={exercise.id}
-                  onPress={() => setPendingExerciseId(exercise.id)}
-                  style={[styles.exerciseResult, pendingExercise?.id === exercise.id && styles.exerciseResultActive]}
-                >
+                <View key={exercise.id} style={styles.exerciseResult}>
                   <View>
-                    <Text style={[styles.exerciseResultName, pendingExercise?.id === exercise.id && styles.exerciseResultNameActive]}>{exercise.name}</Text>
-                    <Text style={[styles.exerciseResultMeta, pendingExercise?.id === exercise.id && styles.exerciseResultMetaActive]}>{[exercise.muscle_group, exercise.category].filter(Boolean).join(" · ") || "Exercise"}</Text>
+                    <Text style={styles.exerciseResultName}>{exercise.name}</Text>
+                    <Text style={styles.exerciseResultMeta}>{[exercise.muscle_group, exercise.category].filter(Boolean).join(" · ") || "Exercise"}</Text>
                   </View>
-                  <Text style={[styles.exerciseResultAdd, pendingExercise?.id === exercise.id && styles.exerciseResultNameActive]}>Select</Text>
-                </Pressable>
-              ))}
-              {!visibleExercises.length ? <Text style={styles.editorHint}>No exercises match that search.</Text> : null}
-            </ScrollView>
-            {pendingExercise ? (
-              <View style={styles.addExerciseDetails}>
-                <Text style={styles.addExerciseSelected}>{pendingExercise.name}</Text>
-                <View style={styles.macroRow}>
-                  <TextInput value={pendingTargets.sets} onChangeText={(sets) => setPendingTargets((current) => ({ ...current, sets }))} keyboardType="number-pad" placeholder="Sets" placeholderTextColor={palette.muted} style={[styles.input, styles.macroInput]} />
-                  <TextInput value={pendingTargets.reps} onChangeText={(reps) => setPendingTargets((current) => ({ ...current, reps }))} keyboardType="number-pad" placeholder="Reps" placeholderTextColor={palette.muted} style={[styles.input, styles.macroInput]} />
-                  <TextInput value={pendingTargets.weight} onChangeText={(weight) => setPendingTargets((current) => ({ ...current, weight }))} keyboardType="decimal-pad" placeholder={`Weight (${record.settings.weight_unit})`} placeholderTextColor={palette.muted} style={[styles.input, styles.macroInput]} />
+                  <Pressable accessibilityRole="button" accessibilityLabel={`Add ${exercise.name}`} onPress={() => { setPendingExerciseId(exercise.id); setPendingCatalogExercise(null); setPrescriptionModalOpen(true); }} style={styles.exerciseResultAddButton}><Text style={styles.exerciseResultAddButtonText}>+</Text></Pressable>
                 </View>
-                <Pressable disabled={saving} onPress={() => void run(addSelectedExercise, `${pendingExercise.name} added.`)} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}>
-                  <Text style={styles.planPrimaryActionText}>Add to {selectedDay?.name}</Text>
-                </Pressable>
-              </View>
-            ) : null}
+              ))}
+              {visibleCatalogExercises.length ? <Text style={styles.exerciseResultsLabel}>CATALOG RESULTS</Text> : null}
+              {visibleCatalogExercises.map((exercise) => (
+                <View key={exercise.slug} style={styles.exerciseResult}>
+                  <View><Text style={styles.exerciseResultName}>{exercise.name}</Text><Text style={styles.exerciseResultMeta}>Exercise catalog</Text></View>
+                  <Pressable accessibilityRole="button" accessibilityLabel={`Add ${exercise.name}`} onPress={() => { setPendingCatalogExercise(exercise); setPendingExerciseId(null); setPrescriptionModalOpen(true); }} style={styles.exerciseResultAddButton}><Text style={styles.exerciseResultAddButtonText}>+</Text></Pressable>
+                </View>
+              ))}
+              {catalogSearchLoading ? <Text style={styles.editorHint}>Searching exercises…</Text> : null}
+              {catalogSearchError ? <Text accessibilityRole="alert" style={styles.notice}>{catalogSearchError}</Text> : null}
+              {!catalogSearchLoading && !catalogSearchError && !visibleExercises.length && !visibleCatalogExercises.length ? <Text style={styles.editorHint}>No exercises match that search.</Text> : null}
+            </ScrollView>}
           </View>
         </View>
       </Modal>
 
-      <Modal animationType="fade" transparent visible={detailsOpen} onRequestClose={() => setDetailsOpen(false)}>
+      <Modal animationType="fade" transparent visible={prescriptionModalOpen} onRequestClose={() => setPrescriptionModalOpen(false)}>
         <View style={styles.modalBackdrop}>
-          <View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}>
+          <View style={[styles.modalPanel, styles.prescriptionModal, isDesktop && styles.modalPanelDesktop]}>
             <View style={styles.modalHeader}>
-              <View><Text style={styles.editorLabel}>PLAN DETAILS</Text><Text style={styles.modalTitle}>{selectedPlan?.name}</Text></View>
-              <Pressable accessibilityRole="button" accessibilityLabel="Close plan details" onPress={() => setDetailsOpen(false)} style={styles.modalClose}><X color={palette.oxide} size={19} strokeWidth={2.4} /></Pressable>
+              <View><Text style={styles.editorLabel}>ADD TO WORKOUT</Text><Text style={styles.modalTitle}>{pendingExerciseName ?? "Exercise"}</Text></View>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close exercise prescription" onPress={() => setPrescriptionModalOpen(false)} style={styles.modalClose}><X color={palette.oxide} size={19} strokeWidth={2.4} /></Pressable>
             </View>
-            {selectedPlan ? (
-              <>
-                <Text style={styles.editorFieldLabel}>PLAN NAME</Text>
-                <TextInput
-                  value={renamedPlanNames[selectedPlan.id] ?? selectedPlan.name}
-                  onChangeText={(value) => setRenamedPlanNames((current) => ({ ...current, [selectedPlan.id]: value }))}
-                  style={styles.input}
-                  returnKeyType="done"
-                  onSubmitEditing={() => void run(() => {
-                    const name = (renamedPlanNames[selectedPlan.id] ?? selectedPlan.name).trim();
-                    if (name.length < 2) throw new Error("Enter a workout plan name with at least 2 characters.");
-                    return updateWorkoutPlan(selectedPlan.id, { name });
-                  }, "Workout plan renamed.")}
-                />
-                <Pressable disabled={saving} onPress={() => void run(() => {
-                  const name = (renamedPlanNames[selectedPlan.id] ?? selectedPlan.name).trim();
-                  if (name.length < 2) throw new Error("Enter a workout plan name with at least 2 characters.");
-                  return updateWorkoutPlan(selectedPlan.id, { name });
-                }, "Workout plan renamed.")} style={[styles.planSecondaryAction, saving && styles.buttonDisabled]}><Text style={styles.planSecondaryActionText}>Save name</Text></Pressable>
-                <View style={styles.editorRule} />
-                <Text style={styles.editorFieldLabel}>ADD DAY</Text>
-                <View style={styles.addDayRow}>
-                  <TextInput value={dayNames[selectedPlan.id] ?? ""} onChangeText={(value) => setDayNames((current) => ({ ...current, [selectedPlan.id]: value }))} placeholder="Day name" placeholderTextColor={palette.muted} style={[styles.input, styles.dayInput]} returnKeyType="done" onSubmitEditing={() => void run(addDay, "Workout day added.")} />
-                  <Pressable disabled={saving} onPress={() => void run(addDay, "Workout day added.")} style={[styles.planSecondaryAction, saving && styles.buttonDisabled]}><Text style={styles.planSecondaryActionText}>Add day</Text></Pressable>
-                </View>
-                <View style={styles.editorRule} />
-                <Pressable disabled={saving || activePlanId === selectedPlan.id} onPress={() => void run(() => setActiveWorkoutPlan(selectedPlan.id), "Active workout plan updated.")} style={[styles.editorAction, (saving || activePlanId === selectedPlan.id) && styles.buttonDisabled]}><Text style={styles.editorActionText}>{activePlanId === selectedPlan.id ? "Active plan" : "Set as active"}</Text></Pressable>
-                {selectedDay ? <Pressable disabled={saving} onPress={() => setRemoveTarget({ kind: "day", id: selectedDay.id, name: selectedDay.name })} style={[styles.editorRemove, saving && styles.buttonDisabled]}><Text style={styles.editorRemoveText}>Remove selected day</Text></Pressable> : null}
-                <Pressable disabled={saving} onPress={() => setRemoveTarget({ kind: "plan", id: selectedPlan.id, name: selectedPlan.name })} style={[styles.editorRemove, saving && styles.buttonDisabled]}><Text style={styles.editorRemoveText}>Remove plan</Text></Pressable>
-              </>
-            ) : null}
+            <View style={styles.prescriptionFields}>
+              <View style={styles.prescriptionField}><Text style={styles.editorFieldLabel}>SETS</Text><TextInput value={pendingTargets.sets} onChangeText={(sets) => setPendingTargets((current) => ({ ...current, sets }))} keyboardType="number-pad" placeholder="3" placeholderTextColor={palette.muted} style={styles.input} /></View>
+              <View style={styles.prescriptionField}><Text style={styles.editorFieldLabel}>REPS</Text><TextInput value={pendingTargets.reps} onChangeText={(reps) => setPendingTargets((current) => ({ ...current, reps }))} keyboardType="number-pad" placeholder="Optional" placeholderTextColor={palette.muted} style={styles.input} /></View>
+            </View>
+            <View style={styles.prescriptionField}><Text style={styles.editorFieldLabel}>WEIGHT ({record.settings.weight_unit.toUpperCase()})</Text><TextInput value={pendingTargets.weight} onChangeText={(weight) => setPendingTargets((current) => ({ ...current, weight }))} keyboardType="decimal-pad" placeholder="Optional" placeholderTextColor={palette.muted} style={styles.input} /></View>
+            <Pressable disabled={saving || !pendingExerciseName} onPress={() => void run(addSelectedExercise, `${pendingExerciseName ?? "Exercise"} added.`)} style={[styles.planPrimaryAction, (saving || !pendingExerciseName) && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{saving ? "Adding…" : `Add to ${selectedDay?.name ?? "workout"}`}</Text></Pressable>
           </View>
         </View>
+      </Modal>
+
+      <Modal animationType="slide" visible={detailsOpen} onRequestClose={() => !saving && setDetailsOpen(false)}>
+        <SafeAreaView style={styles.planEditorScreen}>
+          {selectedPlan ? <>
+            <View style={styles.planEditorHeader}>
+              <Pressable accessibilityRole="button" disabled={saving} onPress={() => setDetailsOpen(false)} style={styles.planEditorBack}><ChevronLeft color={palette.oxide} size={22} strokeWidth={2.5} /><Text style={styles.planEditorBackText}>Back</Text></Pressable>
+              <Pressable accessibilityRole="button" disabled={saving} onPress={() => void run(savePlanEdits, "Plan saved.")} style={[styles.planEditorSave, saving && styles.buttonDisabled]}><Text style={styles.planEditorSaveText}>{saving ? "Saving…" : "Save"}</Text></Pressable>
+            </View>
+            <ScrollView contentContainerStyle={styles.planEditorContent} keyboardShouldPersistTaps="handled">
+              <Text style={styles.editorLabel}>EDIT PLAN</Text>
+              <TextInput value={renamedPlanNames[selectedPlan.id] ?? selectedPlan.name} onChangeText={(value) => setRenamedPlanNames((current) => ({ ...current, [selectedPlan.id]: value }))} style={styles.planEditorTitleInput} returnKeyType="done" />
+              <Text style={styles.planEditorMeta}>{orderedDays.length} {orderedDays.length === 1 ? "day" : "days"} · {planExerciseCount} {planExerciseCount === 1 ? "exercise" : "exercises"}</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.planEditorDayTabs}>
+                {orderedDays.map((day, index) => <Pressable accessibilityRole="button" accessibilityState={{ selected: selectedDay?.id === day.id }} key={day.id} onPress={() => { setSelectedDayId(day.id); setSelectedExerciseId(null); }} style={[styles.planEditorDayTab, selectedDay?.id === day.id && styles.planEditorDayTabActive]}><Text style={[styles.planEditorDayTabText, selectedDay?.id === day.id && styles.planEditorDayTabTextActive]}>Day {index + 1}</Text></Pressable>)}
+                <Pressable accessibilityRole="button" disabled={saving} onPress={() => void run(addDay, "Workout day added.")} style={[styles.planEditorDayTab, styles.planEditorAddDay, saving && styles.buttonDisabled]}><Text style={styles.planEditorDayTabText}>+ Add day</Text></Pressable>
+              </ScrollView>
+              {selectedDay ? <>
+                <Text style={styles.editorLabel}>DAY {selectedDayIndex + 1}</Text>
+                <TextInput key={selectedDay.id} autoFocus={newDayId === selectedDay.id} value={renamedDayNames[selectedDay.id] ?? selectedDay.name} onChangeText={(value) => setRenamedDayNames((current) => ({ ...current, [selectedDay.id]: value }))} style={styles.planEditorDayNameInput} returnKeyType="done" />
+                <View style={styles.planEditorExerciseList}>
+                  {orderedExercises.map((entry, index) => <Pressable accessibilityRole="button" key={entry.id} onPress={() => selectExercise(entry)} style={styles.planEditorExerciseRow}><Text style={styles.ledgerOrder}>{String(index + 1).padStart(2, "0")}</Text><View style={styles.ledgerRowCopy}><Text style={styles.ledgerExerciseName}>{entry.name}</Text><Text style={styles.ledgerExerciseMeta}>{prescriptionFor(entry)}</Text></View><Text style={styles.ledgerSelect}>›</Text></Pressable>)}
+                </View>
+                {orderedExercises.length ? null : <View style={styles.planEditorEmptyDay}><Text style={styles.editorHint}>No exercises yet. Add the first movement to begin building this day.</Text></View>}
+                <Pressable accessibilityRole="button" disabled={!record.exercises.length} onPress={() => openExerciseBrowser(true)} style={[styles.planEditorAddExercise, !record.exercises.length && styles.buttonDisabled]}><Text style={styles.planEditorAddExerciseText}>+ Add exercise</Text></Pressable>
+              </> : null}
+              <View style={styles.planEditorSection}>
+                <Text style={styles.editorLabel}>PLAN SETTINGS</Text>
+                <View style={styles.planEditorActiveRow}><View><Text style={styles.planEditorSettingTitle}>Active plan</Text><Text style={styles.planEditorSettingMeta}>Used when you start your next workout.</Text></View><Pressable accessibilityRole="switch" accessibilityState={{ checked: activePlanId === selectedPlan.id }} disabled={saving} onPress={() => setActivePlanPrompt({ id: selectedPlan.id, name: selectedPlan.name, nextState: activePlanId === selectedPlan.id ? "inactive" : "active" })} style={[styles.planEditorActiveToggle, saving && styles.buttonDisabled]}><View pointerEvents="none" style={[styles.planEditorActiveSegment, activePlanId !== selectedPlan.id && styles.planEditorActiveSegmentSelected]}><Text style={[styles.planEditorActiveSegmentText, activePlanId !== selectedPlan.id && styles.planEditorActiveSegmentTextSelected]}>OFF</Text></View><View pointerEvents="none" style={[styles.planEditorActiveSegment, activePlanId === selectedPlan.id && styles.planEditorActiveSegmentSelected]}><Text style={[styles.planEditorActiveSegmentText, activePlanId === selectedPlan.id && styles.planEditorActiveSegmentTextSelected]}>ON</Text></View></Pressable></View>
+              </View>
+              <View style={styles.planEditorDangerZone}>
+                <Text style={styles.planEditorDangerLabel}>DANGER ZONE</Text>
+                {selectedDay ? <Pressable accessibilityRole="button" disabled={saving} onPress={() => setRemoveTarget({ kind: "day", id: selectedDay.id, name: selectedDay.name })} style={styles.planEditorDangerAction}><Text style={styles.planEditorDangerActionText}>Delete Day {selectedDayIndex + 1}</Text></Pressable> : null}
+                <Pressable accessibilityRole="button" disabled={saving} onPress={() => setRemoveTarget({ kind: "plan", id: selectedPlan.id, name: selectedPlan.name })} style={styles.planEditorDangerAction}><Text style={styles.planEditorDangerActionText}>Delete plan</Text></Pressable>
+              </View>
+            </ScrollView>
+          </> : null}
+        </SafeAreaView>
       </Modal>
 
       <Modal animationType="fade" transparent visible={removeTarget !== null} onRequestClose={() => setRemoveTarget(null)}>
         <View style={styles.modalBackdrop}>
           <View style={[styles.modalPanel, styles.confirmRemovalPanel, isDesktop && styles.modalPanelDesktop]}>
-            <Text style={styles.editorLabel}>{removeTarget?.kind === "plan" ? "REMOVE PLAN" : "REMOVE DAY"}</Text>
+            <Text style={styles.editorLabel}>{removeTarget?.kind === "plan" ? "REMOVE PLAN" : removeTarget?.kind === "day" ? "REMOVE DAY" : "REMOVE EXERCISE"}</Text>
             <Text style={styles.modalTitle}>Remove {removeTarget?.name}?</Text>
             <Text style={styles.editorHint}>
               {removeTarget?.kind === "plan"
                 ? "This permanently removes the plan and every day and exercise inside it."
-                : "This permanently removes the day and every exercise inside it."}
+                : removeTarget?.kind === "day"
+                  ? "This permanently removes the day and every exercise inside it."
+                  : "This permanently removes the exercise from this workout day."}
             </Text>
             <View style={styles.confirmRemovalActions}>
               <Pressable disabled={saving} onPress={() => setRemoveTarget(null)} style={[styles.planSecondaryAction, saving && styles.buttonDisabled]}><Text style={styles.planSecondaryActionText}>Cancel</Text></Pressable>
@@ -1278,11 +1443,11 @@ function WorkoutPlansContent({
         <View style={styles.modalBackdrop}>
           <View style={[styles.modalPanel, styles.confirmRemovalPanel, isDesktop && styles.modalPanelDesktop]}>
             <Text style={styles.editorLabel}>ACTIVE WORKOUT</Text>
-            <Text style={styles.modalTitle}>Set as active workout?</Text>
-            <Text style={styles.editorHint}>{activePlanPrompt?.name} will be the plan used when you start your next workout.</Text>
+            <Text style={styles.modalTitle}>{activePlanPrompt?.nextState === "active" ? "Set as active workout?" : "Set as inactive workout?"}</Text>
+            <Text style={styles.editorHint}>{activePlanPrompt?.nextState === "active" ? `${activePlanPrompt?.name} will be the plan used when you start your next workout.` : `${activePlanPrompt?.name} will no longer be selected when you start a workout.`}</Text>
             <View style={styles.confirmRemovalActions}>
               <Pressable disabled={saving} onPress={() => setActivePlanPrompt(null)} style={[styles.planSecondaryAction, saving && styles.buttonDisabled]}><Text style={styles.planSecondaryActionText}>Not now</Text></Pressable>
-              <Pressable disabled={saving} onPress={() => void confirmActivePlan()} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{saving ? "Setting…" : "Set as active"}</Text></Pressable>
+              <Pressable disabled={saving} onPress={() => void confirmActivePlan()} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{saving ? "Setting…" : activePlanPrompt?.nextState === "active" ? "Set as active" : "Set as inactive"}</Text></Pressable>
             </View>
           </View>
         </View>
@@ -1375,7 +1540,7 @@ function WorkoutPlansContent({
         </View>
       </Modal>
 
-      {!isDesktop && selectedExercise ? (
+      {selectedExercise && (detailsOpen || !isDesktop) ? (
         <Modal animationType="slide" transparent visible onRequestClose={() => setSelectedExerciseId(null)}>
           <View style={styles.modalBackdrop}><View style={styles.mobileEditorSheet}>{selectedEditor}</View></View>
         </Modal>
@@ -1398,9 +1563,7 @@ function ExercisesContent({
   const [muscleGroup, setMuscleGroup] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [editingDemoExerciseId, setEditingDemoExerciseId] = useState<string | null>(null);
-  const [demoUrl, setDemoUrl] = useState("");
-  const [demoSourceName, setDemoSourceName] = useState("");
+  const [expandedExerciseId, setExpandedExerciseId] = useState<string | null>(null);
   const submit = async () => {
     setSaving(true);
     setNotice(null);
@@ -1428,33 +1591,6 @@ function ExercisesContent({
     }
   };
 
-  const saveDemo = async (exerciseId: string) => {
-    setSaving(true);
-    setNotice(null);
-    try {
-      await updateExerciseDemo(exerciseId, {
-        demoUrl: demoUrl.trim(),
-        sourceName: demoSourceName.trim() || undefined,
-      });
-      await refresh();
-      setEditingDemoExerciseId(null);
-      setDemoUrl("");
-      setDemoSourceName("");
-      setNotice("Exercise demonstration source saved.");
-    } catch (reason) {
-      setNotice(reason instanceof Error ? reason.message : "Unable to save the demonstration source.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const openDemo = async (url: string) => {
-    try {
-      await openBrowserAsync(url);
-    } catch (reason) {
-      setNotice(reason instanceof Error ? reason.message : "Unable to open the exercise demonstration.");
-    }
-  };
   return (
     <>
       <Text style={styles.eyebrow}>THE MOVEMENTS</Text>
@@ -1518,63 +1654,22 @@ function ExercisesContent({
             <Text style={styles.cardMeta}>
               {label(exercise.category)}{exercise.muscle_group ? ` · ${exercise.muscle_group}` : ""}
             </Text>
-            {editingDemoExerciseId === exercise.id ? (
-              <View style={styles.demoForm}>
-                <TextInput
-                  value={demoUrl}
-                  onChangeText={setDemoUrl}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  keyboardType="url"
-                  placeholder="Public demo URL"
-                  placeholderTextColor={palette.muted}
-                  style={styles.input}
-                  returnKeyType="next"
-                />
-                <TextInput
-                  value={demoSourceName}
-                  onChangeText={setDemoSourceName}
-                  placeholder="Source name (optional)"
-                  placeholderTextColor={palette.muted}
-                  style={styles.input}
-                  returnKeyType="done"
-                  onSubmitEditing={() => void saveDemo(exercise.id)}
-                />
-                <View style={styles.demoActions}>
-                  <Pressable disabled={saving} onPress={() => void saveDemo(exercise.id)}>
-                    <Text style={styles.inlineAction}>Save source</Text>
-                  </Pressable>
-                  <Pressable
-                    disabled={saving}
-                    onPress={() => {
-                      setEditingDemoExerciseId(null);
-                      setDemoUrl("");
-                      setDemoSourceName("");
-                    }}
-                  >
-                    <Text style={styles.inlineAction}>Cancel</Text>
-                  </Pressable>
-                </View>
+            <Pressable
+              accessibilityLabel={`${expandedExerciseId === exercise.id ? "Collapse" : "Expand"} demonstration for ${exercise.name}`}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: expandedExerciseId === exercise.id }}
+              onPress={() => setExpandedExerciseId((current) => current === exercise.id ? null : exercise.id)}
+              style={styles.exerciseDemoToggle}
+            >
+              <Text style={styles.exerciseDemoToggleText}>Demonstration & muscles</Text>
+              {expandedExerciseId === exercise.id ? <Minus color={palette.oxide} size={20} strokeWidth={2.5} /> : <Plus color={palette.oxide} size={20} strokeWidth={2.5} />}
+            </Pressable>
+            {expandedExerciseId === exercise.id ? (
+              <View style={styles.exerciseDemoContent}>
+                {exercise.demoUrl ? <ExpandedExerciseDemo name={exercise.name} url={exercise.demoUrl} /> : <Text style={styles.exerciseDemoUnavailable}>No demonstration is available for this movement.</Text>}
+                <MuscleHeatMap muscleGroups={exercise.muscle_group} label="MUSCLES WORKED" legend="This movement target" />
               </View>
-            ) : (
-              <View style={styles.demoActions}>
-                {exercise.demoUrl ? (
-                  <Pressable accessibilityRole="link" onPress={() => void openDemo(exercise.demoUrl!)}>
-                    <Text style={styles.inlineAction}>Watch demo</Text>
-                  </Pressable>
-                ) : null}
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => {
-                    setEditingDemoExerciseId(exercise.id);
-                    setDemoUrl(exercise.demoUrl ?? "");
-                    setDemoSourceName(exercise.demoSourceName ?? "");
-                  }}
-                >
-                  <Text style={styles.inlineAction}>{exercise.demoUrl ? "Edit demo source" : "Add demo source"}</Text>
-                </Pressable>
-              </View>
-            )}
+            ) : null}
           </View>
         ))
       ) : (
@@ -3453,7 +3548,11 @@ const baseStyles = StyleSheet.create({
     marginTop: 12,
     padding: 16,
   },
-  demoForm: { gap: 10, marginTop: 6 },
+  exerciseDemoToggle: { alignItems: "center", borderTopColor: "#D4C9B9", borderTopWidth: 1, flexDirection: "row", justifyContent: "space-between", marginTop: 5, minHeight: 44, paddingTop: 10 },
+  exerciseDemoToggleText: { color: "#101015", fontSize: 14, fontWeight: "900" },
+  exerciseDemoContent: { borderTopColor: "#D4C9B9", borderTopWidth: 1, gap: 14, paddingTop: 14 },
+  exerciseDemoVideo: { backgroundColor: "#101015", height: 230, width: "100%" },
+  exerciseDemoUnavailable: { color: "#655D57", fontSize: 13, lineHeight: 19 },
   demoActions: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: 16, marginTop: 6 },
   mealDayFilters: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 },
   adminUserCard: {
@@ -3562,8 +3661,8 @@ const baseStyles = StyleSheet.create({
   planHeaderTitle: { color: "#101015", fontSize: 36, fontWeight: "900", letterSpacing: -1.8, lineHeight: 39 },
   planHeaderMeta: { color: "#642D2A", fontFamily: "Courier", fontSize: 12, fontWeight: "800", letterSpacing: 1, marginTop: 8 },
   planDescription: { color: "#655D57", fontSize: 15, lineHeight: 22, marginTop: 9 },
-  planHeaderActions: { alignItems: "flex-start", flexDirection: "row", flexWrap: "wrap", gap: 9 },
-  planHeaderAction: { height: 46, minHeight: 46, width: 164 },
+  planHeaderActions: { gap: 9, marginTop: 2, width: "100%" },
+  planHeaderAction: { height: 46, minHeight: 46, width: "100%" },
   planPrimaryAction: { alignItems: "center", backgroundColor: "#101015", justifyContent: "center", minHeight: 46, paddingHorizontal: 16 },
   planPrimaryActionText: { color: "#F4EFE7", fontSize: 14, fontWeight: "800" },
   planSecondaryAction: { alignItems: "center", borderColor: "#101015", borderWidth: 1, justifyContent: "center", minHeight: 46, paddingHorizontal: 13 },
@@ -3589,6 +3688,8 @@ const baseStyles = StyleSheet.create({
   ledgerEmptyTitle: { color: "#101015", fontSize: 19, fontWeight: "900" },
   addExerciseAction: { alignSelf: "flex-start", minHeight: 46, justifyContent: "center", marginTop: 12, paddingHorizontal: 2 },
   addExerciseActionText: { color: "#642D2A", fontSize: 15, fontWeight: "900", textDecorationColor: "#A95B5B", textDecorationLine: "underline" },
+  emptyDayAction: { alignItems: "flex-start", gap: 10, justifyContent: "center", minHeight: 250, paddingVertical: 28 },
+  emptyDayTitle: { color: "#655D57", fontSize: 16, lineHeight: 23, maxWidth: 340 },
   exerciseEditor: { backgroundColor: "#FBF7F0", borderLeftColor: "#D4C9B9", borderLeftWidth: 1, flexBasis: 360, gap: 16, padding: 26 },
   editorEmpty: { backgroundColor: "#FBF7F0", borderLeftColor: "#D4C9B9", borderLeftWidth: 1, flexBasis: 330, gap: 8, justifyContent: "center", padding: 22 },
   editorHeading: { alignItems: "flex-start", flexDirection: "row", gap: 12, justifyContent: "space-between" },
@@ -3600,18 +3701,27 @@ const baseStyles = StyleSheet.create({
   editorCloseText: { color: "#642D2A", fontSize: 13, fontWeight: "800", textDecorationColor: "#A95B5B", textDecorationLine: "underline" },
   editorRule: { backgroundColor: "#D4C9B9", height: 1, marginVertical: 3 },
   editorFieldLabel: { color: "#655D57", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },
-  editorValue: { color: "#101015", fontSize: 20, fontWeight: "900" },
   editorHint: { color: "#655D57", fontSize: 13, lineHeight: 19 },
-  exerciseDetailGrid: { gap: 10, marginTop: 2 },
-  exerciseDetailCard: { backgroundColor: "#F4EFE7", borderColor: "#D4C9B9", borderWidth: 1, gap: 8, padding: 13 },
+  prescriptionControls: { flexDirection: "row", gap: 10 },
+  prescriptionControl: { flex: 1, gap: 7 },
+  prescriptionControlLabel: { color: "#655D57", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },
+  prescriptionStepper: { alignItems: "center", borderColor: "#D4C9B9", borderWidth: 1, flexDirection: "row", height: 45 },
+  prescriptionStepButton: { alignItems: "center", height: "100%", justifyContent: "center", width: 38 },
+  prescriptionStepText: { color: "#642D2A", fontSize: 20, fontWeight: "700" },
+  prescriptionInput: { color: "#101015", flex: 1, flexShrink: 1, fontSize: 17, fontWeight: "900", height: "100%", minWidth: 0, paddingHorizontal: 2, textAlign: "center", width: 0 },
+  exerciseSaveAction: { alignSelf: "flex-start", minHeight: 36, justifyContent: "center", paddingHorizontal: 2 },
+  exerciseSaveActionText: { color: "#642D2A", fontSize: 13, fontWeight: "800", textDecorationColor: "#A95B5B", textDecorationLine: "underline" },
   exerciseDetailValue: { color: "#2C2C31", fontSize: 15, fontWeight: "700", lineHeight: 21, textTransform: "capitalize" },
-  exerciseDemoAction: { alignSelf: "flex-start", minHeight: 28, justifyContent: "center" },
-  exerciseDemoActionText: { color: "#642D2A", fontSize: 14, fontWeight: "800", textDecorationColor: "#A95B5B", textDecorationLine: "underline" },
+  exerciseDemoRow: { alignItems: "center", borderColor: "#D4C9B9", borderWidth: 1, flexDirection: "row", justifyContent: "space-between", minHeight: 48, paddingHorizontal: 13 },
+  exerciseDemoRowText: { color: "#101015", fontSize: 14, fontWeight: "800" },
+  exerciseDemoRowIndicator: { color: "#642D2A", fontSize: 24, lineHeight: 24 },
+  exerciseEmbeddedDemo: { backgroundColor: "#101015", height: 230, overflow: "hidden" },
+  exerciseMuscleRow: { gap: 5 },
   editorAction: { alignItems: "center", borderColor: "#D4C9B9", borderWidth: 1, justifyContent: "center", minHeight: 42, paddingHorizontal: 12 },
   editorActionText: { color: "#101015", fontSize: 13, fontWeight: "800" },
   editorRemove: { alignSelf: "flex-start", minHeight: 42, justifyContent: "center", marginTop: 3, paddingHorizontal: 2 },
   editorRemoveText: { color: "#A95B5B", fontSize: 13, fontWeight: "800", textDecorationLine: "underline" },
-  removeExerciseAction: { alignItems: "center", backgroundColor: "#A95B5B", justifyContent: "center", marginTop: 4, minHeight: 48, paddingHorizontal: 16 },
+  removeExerciseAction: { alignItems: "center", alignSelf: "stretch", backgroundColor: "#A33B36", justifyContent: "center", marginTop: 4, minHeight: 46, paddingHorizontal: 16 },
   removeExerciseActionText: { color: "#F4EFE7", fontSize: 14, fontWeight: "800" },
   planEmptyState: { gap: 12, marginTop: 80, maxWidth: 540 },
   modalBackdrop: { alignItems: "stretch", backgroundColor: "rgba(16, 16, 21, 0.45)", flex: 1, justifyContent: "flex-end" },
@@ -3622,7 +3732,44 @@ const baseStyles = StyleSheet.create({
   modalTitle: { color: "#101015", fontSize: 25, fontWeight: "900", letterSpacing: -1, marginTop: 6 },
   modalPlanName: { color: "#655D57", fontSize: 14, marginTop: 5 },
   modalClose: { minHeight: 40, justifyContent: "center", paddingHorizontal: 4 },
+  planEditorScreen: { backgroundColor: "#F4EFE7", flex: 1 },
+  planEditorHeader: { alignItems: "center", borderBottomColor: "#101015", borderBottomWidth: 1, flexDirection: "row", justifyContent: "space-between", minHeight: 62, paddingHorizontal: 18 },
+  planEditorBack: { alignItems: "center", flexDirection: "row", minHeight: 44, paddingRight: 12 },
+  planEditorBackText: { color: "#101015", fontSize: 14, fontWeight: "800" },
+  planEditorSave: { alignItems: "center", backgroundColor: "#101015", justifyContent: "center", minHeight: 38, paddingHorizontal: 15 },
+  planEditorSaveText: { color: "#F4EFE7", fontSize: 13, fontWeight: "800" },
+  planEditorContent: { alignSelf: "center", gap: 14, maxWidth: 760, padding: 22, paddingBottom: 48, width: "100%" },
+  planEditorTitleInput: { color: "#101015", fontSize: 31, fontWeight: "900", letterSpacing: -1.4, lineHeight: 37, paddingHorizontal: 0, paddingVertical: 0 },
+  planEditorMeta: { color: "#655D57", fontSize: 14, marginTop: -6 },
+  planEditorDayTabs: { gap: 8, paddingVertical: 8 },
+  planEditorDayTab: { alignItems: "center", borderColor: "#D4C9B9", borderWidth: 1, justifyContent: "center", minHeight: 38, paddingHorizontal: 12 },
+  planEditorDayTabActive: { backgroundColor: "#101015", borderColor: "#101015" },
+  planEditorDayTabText: { color: "#101015", fontSize: 13, fontWeight: "800" },
+  planEditorDayTabTextActive: { color: "#F4EFE7" },
+  planEditorAddDay: { borderColor: "#642D2A" },
+  planEditorDayNameInput: { borderBottomColor: "#101015", borderBottomWidth: 1, color: "#101015", fontSize: 23, fontWeight: "900", letterSpacing: -0.7, paddingHorizontal: 0, paddingVertical: 8 },
+  planEditorExerciseList: { borderTopColor: "#D4C9B9", borderTopWidth: 1 },
+  planEditorExerciseRow: { alignItems: "center", borderBottomColor: "#D4C9B9", borderBottomWidth: 1, flexDirection: "row", gap: 10, minHeight: 64, paddingHorizontal: 4, paddingVertical: 9 },
+  planEditorEmptyDay: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, paddingVertical: 18 },
+  planEditorAddExercise: { alignSelf: "flex-start", minHeight: 42, justifyContent: "center", paddingHorizontal: 2 },
+  planEditorAddExerciseText: { color: "#642D2A", fontSize: 15, fontWeight: "800", textDecorationColor: "#A95B5B", textDecorationLine: "underline" },
+  planEditorSection: { borderTopColor: "#D4C9B9", borderTopWidth: 1, gap: 12, marginTop: 12, paddingTop: 18 },
+  planEditorActiveRow: { alignItems: "center", flexDirection: "row", gap: 12, justifyContent: "space-between" },
+  planEditorSettingTitle: { color: "#101015", fontSize: 16, fontWeight: "800" },
+  planEditorSettingMeta: { color: "#655D57", fontSize: 13, lineHeight: 18, marginTop: 3 },
+  planEditorActiveToggle: { borderColor: "#101015", borderWidth: 1, flexDirection: "row", height: 36, overflow: "hidden", padding: 2, width: 92 },
+  planEditorActiveSegment: { alignItems: "center", flex: 1, justifyContent: "center" },
+  planEditorActiveSegmentSelected: { backgroundColor: "#101015" },
+  planEditorActiveSegmentText: { color: "#655D57", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 0.8 },
+  planEditorActiveSegmentTextSelected: { color: "#F4EFE7" },
+  planEditorDangerZone: { borderTopColor: "#D4C9B9", borderTopWidth: 1, gap: 6, marginTop: 14, paddingTop: 18 },
+  planEditorDangerLabel: { color: "#A33B36", fontFamily: "Courier", fontSize: 11, fontWeight: "800", letterSpacing: 1.4, marginBottom: 4 },
+  planEditorDangerAction: { alignItems: "center", alignSelf: "stretch", backgroundColor: "#A33B36", justifyContent: "center", minHeight: 44, paddingHorizontal: 14 },
+  planEditorDangerActionText: { color: "#F4EFE7", fontSize: 14, fontWeight: "800" },
   confirmRemovalPanel: { maxWidth: 500 },
+  prescriptionModal: { gap: 16, maxWidth: 500 },
+  prescriptionFields: { flexDirection: "row", gap: 12 },
+  prescriptionField: { flex: 1, gap: 7 },
   confirmRemovalActions: { flexDirection: "row", flexWrap: "wrap", gap: 10, justifyContent: "flex-end", marginTop: 4 },
   confirmRemovalAction: { alignItems: "center", backgroundColor: "#A95B5B", justifyContent: "center", minHeight: 42, paddingHorizontal: 16 },
   aiPromptInput: { minHeight: 128, paddingTop: 12 },
@@ -3633,7 +3780,9 @@ const baseStyles = StyleSheet.create({
   aiDraftDayTitle: { color: "#642D2A", fontFamily: "Courier", fontSize: 11, fontWeight: "800", letterSpacing: 1.2 },
   aiDraftExercise: { color: "#2C2C31", fontSize: 14, lineHeight: 20 },
   searchInput: { backgroundColor: "#FBF7F0", borderColor: "#101015", borderWidth: 1, color: "#101015", fontSize: 16, minHeight: 48, paddingHorizontal: 12 },
+  exerciseSearchEmpty: { minHeight: 116, justifyContent: "center", paddingVertical: 18 },
   exerciseResults: { borderBottomColor: "#D4C9B9", borderBottomWidth: 1, borderTopColor: "#D4C9B9", borderTopWidth: 1, maxHeight: 280 },
+  exerciseResultsLabel: { color: "#642D2A", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.2, paddingTop: 14 },
   exerciseResult: { alignItems: "center", borderBottomColor: "#D4C9B9", borderBottomWidth: 1, flexDirection: "row", justifyContent: "space-between", minHeight: 58, paddingHorizontal: 4, paddingVertical: 8 },
   exerciseResultActive: { backgroundColor: "#101015", paddingHorizontal: 10 },
   exerciseResultName: { color: "#101015", fontSize: 15, fontWeight: "800" },
@@ -3641,6 +3790,8 @@ const baseStyles = StyleSheet.create({
   exerciseResultMeta: { color: "#655D57", fontSize: 12, marginTop: 3 },
   exerciseResultMetaActive: { color: "#D4C9B9" },
   exerciseResultAdd: { color: "#642D2A", fontSize: 12, fontWeight: "800" },
+  exerciseResultAddButton: { alignItems: "center", borderColor: "#642D2A", borderWidth: 1, height: 34, justifyContent: "center", width: 34 },
+  exerciseResultAddButtonText: { color: "#642D2A", fontSize: 21, fontWeight: "500", lineHeight: 22 },
   addExerciseDetails: { gap: 10 },
   addExerciseSelected: { color: "#101015", fontSize: 16, fontWeight: "900" },
   planHeading: {

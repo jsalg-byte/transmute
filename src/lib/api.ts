@@ -401,8 +401,20 @@ export async function addExerciseToWorkoutPlanDay(dayId: string, payload: { exer
   });
 }
 
+export async function importCalistreeExerciseToWorkoutPlanDay(dayId: string, payload: { slug: string; targetSets?: number; targetReps?: number; targetWeight?: number }) {
+  return authenticatedRequest(`/v1/plan-days/${dayId}/calistree-exercises`, {
+    method: 'POST', body: JSON.stringify(payload),
+  });
+}
+
 export async function removeExerciseFromWorkoutPlanDay(entryId: string) {
   return authenticatedRequest(`/v1/plan-day-exercises/${entryId}`, { method: 'DELETE' });
+}
+
+export async function updateExercisePrescription(entryId: string, payload: { targetSets: number; targetReps: number | null; targetWeight: number | null }) {
+  return authenticatedRequest(`/v1/plan-day-exercises/${entryId}`, {
+    method: 'PATCH', body: JSON.stringify(payload),
+  });
 }
 
 export async function reorderExerciseInWorkoutPlanDay(entryId: string, direction: 'up' | 'down') {
@@ -411,8 +423,8 @@ export async function reorderExerciseInWorkoutPlanDay(entryId: string, direction
   });
 }
 
-export async function setActiveWorkoutPlan(routineId: string) {
-  return authenticatedRequest<{ activeRoutineId: string }>('/v1/preferences/active-plan', {
+export async function setActiveWorkoutPlan(routineId: string | null) {
+  return authenticatedRequest<{ activeRoutineId: string | null }>('/v1/preferences/active-plan', {
     method: 'PUT', body: JSON.stringify({ routineId }),
   });
 }

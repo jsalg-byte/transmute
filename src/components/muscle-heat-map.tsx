@@ -18,18 +18,20 @@ const REGION_MAP: { terms: string[]; regions: Region[] }[] = [
   { terms: ['brachioradialis', 'forearm', 'wrist'], regions: ['forearm'] },
   { terms: ['triceps'], regions: ['triceps'] },
   { terms: ['chest', 'pectoral'], regions: ['chest'] },
-  { terms: ['deltoid', 'shoulder'], regions: ['deltoids'] },
+  { terms: ['deltoid', 'delt', 'shoulder'], regions: ['deltoids'] },
   { terms: ['infraspinatus', 'teres', 'rhomboid', 'latissimus', 'lat', 'upper back'], regions: ['upper-back'] },
-  { terms: ['trapezius'], regions: ['trapezius'] },
-  { terms: ['lower back', 'erector'], regions: ['lower-back'] },
-  { terms: ['abdominal', 'rectus'], regions: ['abs'] },
+  { terms: ['trapezius', 'trap'], regions: ['trapezius'] },
+  { terms: ['lower back', 'erector', 'spine'], regions: ['lower-back'] },
+  { terms: ['abdominal', 'rectus abdominis', 'abs'], regions: ['abs'] },
   { terms: ['oblique'], regions: ['obliques'] },
   { terms: ['glute'], regions: ['gluteal'] },
-  { terms: ['quadriceps', 'quad'], regions: ['quadriceps'] },
+  { terms: ['quadriceps', 'quad', 'vastus', 'rectus femoris'], regions: ['quadriceps'] },
   { terms: ['hamstring'], regions: ['hamstring'] },
   { terms: ['calf', 'gastrocnemius', 'soleus'], regions: ['calves'] },
   { terms: ['tibialis'], regions: ['tibialis'] },
   { terms: ['adductor'], regions: ['adductors'] },
+  { terms: ['hips', 'hip flexor'], regions: ['gluteal', 'quadriceps'] },
+  { terms: ['butt thigh'], regions: ['gluteal', 'quadriceps', 'hamstring'] },
   { terms: ['legs', 'lower body'], regions: ['quadriceps', 'hamstring', 'calves', 'gluteal'] },
   { terms: ['arms'], regions: ['biceps', 'triceps', 'forearm'] },
   { terms: ['core'], regions: ['abs', 'obliques'] },
@@ -57,6 +59,8 @@ export function muscleRegionsFor(muscleGroups: string | null) {
   REGION_MAP.forEach((mapping) => {
     if (mapping.terms.some((term) => text.includes(term))) mapping.regions.forEach((region) => regions.add(region));
   });
+  const backDetail = ['upper back', 'lower back', 'infraspinatus', 'teres', 'rhomboid', 'latissimus', 'erector', 'spine'].some((term) => text.includes(term));
+  if (/\bback\b/.test(text) && !backDetail) ['upper-back', 'lower-back', 'trapezius'].forEach((region) => regions.add(region as Region));
   return [...regions];
 }
 
@@ -72,8 +76,8 @@ function AnatomicalBody({ side, active, palette, stages }: { side: 'front' | 'ba
       return paths.map((d, index) => <Path
         key={`${shape.slug}-${index}`}
         d={d}
-        fill={recoveryColor?.fill ?? (highlighted ? palette.oxideMuted : palette.raised)}
-        stroke={recoveryColor?.stroke ?? (highlighted ? palette.oxide : palette.divider)}
+        fill={recoveryColor?.fill ?? (highlighted ? '#D96B63' : palette.raised)}
+        stroke={recoveryColor?.stroke ?? (highlighted ? '#A33B36' : palette.divider)}
         strokeWidth={4}
       />);
     })}
@@ -157,7 +161,7 @@ const baseStyles = StyleSheet.create({
   targets: { color: '#101015', fontSize: 13, fontWeight: '700', lineHeight: 19, textAlign: 'center', textTransform: 'capitalize' },
   empty: { color: '#655D57', fontSize: 12, lineHeight: 18, textAlign: 'center' },
   legend: { color: '#655D57', fontSize: 11 },
-  legendMark: { color: '#A95B5B' },
+  legendMark: { color: '#A33B36' },
   recoveryLegend: { borderTopColor: '#D4C9B9', borderTopWidth: 1, gap: 8, paddingTop: 12, width: '100%' },
   recoveryLegendItem: { alignItems: 'center', flexDirection: 'row', gap: 8 },
   recoveryLegendMark: { borderWidth: 1, height: 11, width: 11 },

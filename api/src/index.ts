@@ -92,6 +92,17 @@ const planDayExerciseSchema = z.object({
   targetReps: z.number().int().positive().max(50).optional(),
   targetWeight: z.number().nonnegative().max(2000).optional(),
 });
+const planDayExerciseUpdateSchema = z.object({
+  targetSets: z.number().int().positive().max(20),
+  targetReps: z.number().int().positive().max(50).nullable(),
+  targetWeight: z.number().nonnegative().max(2000).nullable(),
+});
+const planDayCalistreeImportSchema = z.object({
+  slug: z.string().trim().min(2).max(180),
+  targetSets: z.number().int().positive().max(20).optional(),
+  targetReps: z.number().int().positive().max(50).optional(),
+  targetWeight: z.number().nonnegative().max(2000).optional(),
+});
 const aiWorkoutPromptSchema = z.object({ prompt: z.string().trim().min(12).max(2_000) });
 const aiWorkoutExerciseSchema = z.object({
   exerciseName: z.string().trim().min(2).max(120),
@@ -140,7 +151,7 @@ const exerciseDemoSchema = z.object({
   demoUrl: z.string().url().refine((value) => /^https?:\/\//.test(value), 'A public http(s) URL is required.'),
   sourceName: z.string().trim().min(2).max(160).optional(),
 });
-const activePlanSchema = z.object({ routineId: z.string().uuid() });
+const activePlanSchema = z.object({ routineId: z.string().uuid().nullable() });
 const startSessionSchema = z.object({
   routineDayId: z.string().uuid(),
   startedAtDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -1144,6 +1155,55 @@ app.post('/v1/plan-days/:id/exercises', async (request, reply) => {
   return reply.code(201).send({ entry: { id: entry.id, exerciseId: exercise.id, exerciseName: exercise.name, sortOrder: entry.sort_order } });
 });
 
+app.post('/v1/plan-days/:id/calistree-exercises', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = planDayCalistreeImportSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid exercise payload.' });
+
+  let metadata;
+  try {
+    metadata = await getCalistreeExerciseMetadata({ slug: parsed.data.slug });
+  } catch (error) {
+    request.log.error(error, 'Calistree exercise import lookup failed');
+    return reply.code(502).send({ error: 'The exercise catalog is unavailable right now. Try again shortly.' });
+  }
+  if (!metadata) return reply.code(404).send({ error: 'No matching exercise was found.' });
+
+  const result = await sql.begin(async (transaction) => {
+    const [day] = await transaction<{ id: string }[]>`
+      SELECT rd.id FROM routine_days rd INNER JOIN routines r ON r.id = rd.routine_id
+      WHERE rd.id = ${params.data.id} AND r.user_id = ${userId} LIMIT 1
+    `;
+    if (!day) return null;
+    const [existing] = await transaction<{ id: string; name: string; category: string; muscle_group: string | null }[]>`
+      SELECT id, name, category, muscle_group FROM exercises WHERE lower(name) = lower(${metadata.name}) LIMIT 1
+    `;
+    const exercise = existing ?? (await transaction<{ id: string; name: string; category: string; muscle_group: string | null }[]>`
+      INSERT INTO exercises (id, name, category, muscle_group, created_by_user_id, created_at)
+      VALUES (${randomUUID()}, ${metadata.name}, ${metadata.category}, ${metadata.muscleGroup}, ${userId}, now())
+      RETURNING id, name, category, muscle_group
+    `)[0];
+    if (metadata.videoUrl) {
+      const sourceName = JSON.stringify({ provider: 'Exercise catalog', sourceUrl: metadata.sourceUrl, importedAt: new Date().toISOString() });
+      await transaction`
+        INSERT INTO exercise_gif_overrides (id, user_id, exercise_id, gif_url, source_name, created_at, updated_at)
+        VALUES (${randomUUID()}, ${userId}, ${exercise.id}, ${metadata.videoUrl}, ${sourceName}, now(), now())
+        ON CONFLICT (user_id, exercise_id) DO UPDATE SET gif_url = EXCLUDED.gif_url, source_name = EXCLUDED.source_name, updated_at = now()
+      `;
+    }
+    const [entry] = await transaction<{ id: string; sort_order: number }[]>`
+      INSERT INTO routine_day_exercises (id, routine_day_id, exercise_id, sort_order, target_sets, target_reps, target_weight)
+      VALUES (${randomUUID()}, ${day.id}, ${exercise.id}, (SELECT coalesce(max(sort_order), -1) + 1 FROM routine_day_exercises WHERE routine_day_id = ${day.id}), ${parsed.data.targetSets ?? 3}, ${parsed.data.targetReps ?? null}, ${parsed.data.targetWeight?.toString() ?? null})
+      RETURNING id, sort_order
+    `;
+    return { entry, exercise };
+  });
+  if (!result) return reply.code(404).send({ error: 'Workout day not found.' });
+  return reply.code(201).send({ entry: { id: result.entry.id, exerciseId: result.exercise.id, exerciseName: result.exercise.name, sortOrder: result.entry.sort_order } });
+});
+
 app.delete('/v1/plan-day-exercises/:id', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
@@ -1157,6 +1217,29 @@ app.delete('/v1/plan-day-exercises/:id', async (request, reply) => {
   `;
   if (!deleted) return reply.code(404).send({ error: 'Workout day exercise not found.' });
   return reply.code(204).send();
+});
+
+app.patch('/v1/plan-day-exercises/:id', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = planDayExerciseUpdateSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid exercise prescription payload.' });
+
+  const [updated] = await sql<{ id: string; target_sets: number; target_reps: number | null; target_weight: string | null }[]>`
+    UPDATE routine_day_exercises AS rde
+    SET target_sets = ${parsed.data.targetSets},
+        target_reps = ${parsed.data.targetReps},
+        target_weight = ${parsed.data.targetWeight?.toString() ?? null}
+    FROM routine_days AS rd, routines AS r
+    WHERE rde.id = ${params.data.id}
+      AND rde.routine_day_id = rd.id
+      AND rd.routine_id = r.id
+      AND r.user_id = ${userId}
+    RETURNING rde.id, rde.target_sets, rde.target_reps, rde.target_weight
+  `;
+  if (!updated) return reply.code(404).send({ error: 'Workout day exercise not found.' });
+  return reply.send({ entry: { id: updated.id, targetSets: updated.target_sets, targetReps: updated.target_reps, targetWeight: updated.target_weight } });
 });
 
 app.post('/v1/plan-day-exercises/:id/reorder', async (request, reply) => {
@@ -1201,14 +1284,16 @@ app.put('/v1/preferences/active-plan', async (request, reply) => {
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
   const parsed = activePlanSchema.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: 'Invalid active workout plan.' });
-  const [plan] = await sql<{ id: string }[]>`SELECT id FROM routines WHERE id = ${parsed.data.routineId} AND user_id = ${userId} LIMIT 1`;
-  if (!plan) return reply.code(404).send({ error: 'Workout plan not found.' });
+  if (parsed.data.routineId) {
+    const [plan] = await sql<{ id: string }[]>`SELECT id FROM routines WHERE id = ${parsed.data.routineId} AND user_id = ${userId} LIMIT 1`;
+    if (!plan) return reply.code(404).send({ error: 'Workout plan not found.' });
+  }
   await sql`
     INSERT INTO user_preferences (user_id, active_routine_id, weight_unit, theme_overrides, updated_at)
-    VALUES (${userId}, ${plan.id}, 'lbs', '{}'::jsonb, now())
+    VALUES (${userId}, ${parsed.data.routineId}, 'lbs', '{}'::jsonb, now())
     ON CONFLICT (user_id) DO UPDATE SET active_routine_id = EXCLUDED.active_routine_id, updated_at = now()
   `;
-  return reply.send({ activeRoutineId: plan.id });
+  return reply.send({ activeRoutineId: parsed.data.routineId });
 });
 
 app.post('/v1/sessions', async (request, reply) => {
