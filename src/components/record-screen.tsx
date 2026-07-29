@@ -1542,7 +1542,7 @@ function WorkoutPlansContent({
 
       {selectedExercise && (detailsOpen || !isDesktop) ? (
         <Modal animationType="slide" transparent visible onRequestClose={() => setSelectedExerciseId(null)}>
-          <View style={styles.modalBackdrop}><View style={styles.mobileEditorSheet}>{selectedEditor}</View></View>
+          <View style={styles.modalBackdrop}><View style={styles.mobileEditorSheet}><ScrollView contentContainerStyle={styles.mobileEditorSheetContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator>{selectedEditor}</ScrollView></View></View>
         </Modal>
       ) : null}
     </>
@@ -3725,9 +3725,10 @@ const baseStyles = StyleSheet.create({
   removeExerciseActionText: { color: "#F4EFE7", fontSize: 14, fontWeight: "800" },
   planEmptyState: { gap: 12, marginTop: 80, maxWidth: 540 },
   modalBackdrop: { alignItems: "stretch", backgroundColor: "rgba(16, 16, 21, 0.45)", flex: 1, justifyContent: "flex-end" },
-  modalPanel: { backgroundColor: "#F4EFE7", borderTopColor: "#101015", borderTopWidth: 1, gap: 14, maxHeight: "88%", padding: 22 },
+  modalPanel: { backgroundColor: "#F4EFE7", borderTopColor: "#101015", borderTopWidth: 1, gap: 14, maxHeight: "94%", padding: 22 },
   modalPanelDesktop: { alignSelf: "center", borderColor: "#101015", borderWidth: 1, maxWidth: 640, width: "92%" },
-  mobileEditorSheet: { backgroundColor: "#FBF7F0", borderTopColor: "#101015", borderTopWidth: 1, maxHeight: "86%", minHeight: 520 },
+  mobileEditorSheet: { backgroundColor: "#FBF7F0", borderTopColor: "#101015", borderTopWidth: 1, height: "94%" },
+  mobileEditorSheetContent: { flexGrow: 1 },
   modalHeader: { alignItems: "flex-start", flexDirection: "row", gap: 16, justifyContent: "space-between" },
   modalTitle: { color: "#101015", fontSize: 25, fontWeight: "900", letterSpacing: -1, marginTop: 6 },
   modalPlanName: { color: "#655D57", fontSize: 14, marginTop: 5 },
