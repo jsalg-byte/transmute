@@ -179,6 +179,16 @@ export type TransmuteRecord = {
 
 type ApiErrorPayload = { error?: string };
 
+class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'ApiRequestError';
+  }
+}
+
 function apiBaseUrl() {
   const value = process.env.EXPO_PUBLIC_API_BASE_URL?.trim().replace(/\/$/, '');
   if (!value) {
@@ -205,19 +215,31 @@ async function request<T>(path: string, init: RequestInit = {}) {
   const payload = (await response.json().catch(() => null)) as T | ApiErrorPayload | null;
   if (!response.ok) {
     const error = payload && typeof payload === 'object' && 'error' in payload ? payload.error : null;
-    throw new Error(typeof error === 'string' ? error : 'The server could not complete that request.');
+    throw new ApiRequestError(typeof error === 'string' ? error : 'The server could not complete that request.', response.status);
   }
 
   return payload as T;
 }
 
 async function authenticatedRequest<T>(path: string, init: RequestInit = {}) {
-  const session = await resumeSession();
+  let session = await resumeSession();
   if (!session) throw new Error('Your session has expired. Sign in again.');
-  return request<T>(path, {
+
+  const withSession = (activeSession: MobileSession) => request<T>(path, {
     ...init,
-    headers: { authorization: `Bearer ${session.accessToken}`, ...init.headers },
+    headers: { authorization: `Bearer ${activeSession.accessToken}`, ...init.headers },
   });
+
+  try {
+    return await withSession(session);
+  } catch (error) {
+    // A deploy can replace the API between the initial session check and this
+    // request. Refresh once and retry instead of showing an Unauthorized page.
+    if (!(error instanceof ApiRequestError) || error.status !== 401) throw error;
+    session = await resumeSession({ forceRefresh: true });
+    if (!session) throw new Error('Your session has expired. Sign in again.');
+    return withSession(session);
+  }
 }
 
 export async function saveSession(session: MobileSession) {
@@ -242,30 +264,34 @@ export async function readSession() {
  * when one has expired, exchange the stored refresh token before routing into
  * the authenticated record.
  */
-export async function resumeSession() {
+export async function resumeSession({ forceRefresh = false }: { forceRefresh?: boolean } = {}) {
   const session = await readSession();
   if (!session) return null;
 
   // The original response only contains a duration, so it cannot reliably be
   // reconstructed after an app restart. Verify the access token first and
   // refresh only if the server rejects it.
-  try {
-    await request<{ user: MobileUser }>('/v1/me', {
-      headers: { authorization: `Bearer ${session.accessToken}` },
-    });
-    return session;
-  } catch {
+  if (!forceRefresh) {
     try {
-      const refreshed = await request<MobileSession>('/v1/auth/refresh', {
-        method: 'POST',
-        body: JSON.stringify({ refreshToken: session.refreshToken }),
+      await request<{ user: MobileUser }>('/v1/me', {
+        headers: { authorization: `Bearer ${session.accessToken}` },
       });
-      await saveSession(refreshed);
-      return refreshed;
+      return session;
     } catch {
-      await clearSession();
-      return null;
+      // Fall through to the refresh-token exchange below.
     }
+  }
+
+  try {
+    const refreshed = await request<MobileSession>('/v1/auth/refresh', {
+      method: 'POST',
+      body: JSON.stringify({ refreshToken: session.refreshToken }),
+    });
+    await saveSession(refreshed);
+    return refreshed;
+  } catch {
+    await clearSession();
+    return null;
   }
 }
 
@@ -293,19 +319,12 @@ export async function signIn(payload: { username: string; password: string }) {
 }
 
 export async function getCurrentUser() {
-  const session = await readSession();
-  if (!session) throw new Error('No mobile session is available.');
-
-  const result = await request<{ user: MobileUser }>('/v1/me', {
-    headers: { authorization: `Bearer ${session.accessToken}` },
-  });
+  const result = await authenticatedRequest<{ user: MobileUser }>('/v1/me');
   return result.user;
 }
 
 export async function getRecord() {
-  const session = await readSession();
-  if (!session) throw new Error('No mobile session is available.');
-  return request<TransmuteRecord>('/v1/record', { headers: { authorization: `Bearer ${session.accessToken}` } });
+  return authenticatedRequest<TransmuteRecord>('/v1/record');
 }
 
 export async function signOut() {
