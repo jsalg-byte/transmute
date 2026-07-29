@@ -193,7 +193,7 @@ export function FirstLoginFlow() {
             <AlchemySvg source={assets.ouroboros} width={38} height={38} />
             <Text style={styles.wordmarkText}>TRANSMUTE</Text>
           </View>
-          <Pressable accessibilityRole="button" onPress={() => router.replace('/sign-in')} hitSlop={12}>
+          <Pressable accessibilityRole="button" onPress={() => router.replace('/dashboard')} hitSlop={12}>
             <Text style={styles.skip}>Skip</Text>
           </Pressable>
         </View>
@@ -214,13 +214,8 @@ export function FirstLoginFlow() {
         </Animated.View>
 
         <Pressable accessibilityRole="button" onPress={transition} disabled={isTransitioning} style={({ pressed }) => [styles.primaryButton, pressed && styles.primaryButtonPressed]}>
-          <Text style={styles.primaryButtonText}>{isLastSlide ? 'Create account' : 'Continue'}</Text>
+          <Text style={styles.primaryButtonText}>{isLastSlide ? 'Enter your record' : 'Continue'}</Text>
         </Pressable>
-        {isLastSlide && (
-          <Pressable accessibilityRole="button" onPress={() => router.replace('/sign-in')} hitSlop={10}>
-            <Text style={styles.signInLink}>Already have an account? Sign in</Text>
-          </Pressable>
-        )}
       </View>
     </SafeAreaView>
   );
@@ -246,7 +241,6 @@ const baseStyles = StyleSheet.create({
   primaryButton: { alignItems: 'center', backgroundColor: '#101015', justifyContent: 'center', minHeight: 58, marginTop: 28, paddingHorizontal: 20 },
   primaryButtonPressed: { backgroundColor: '#642D2A' },
   primaryButtonText: { color: '#F4EFE7', fontSize: 16, fontWeight: '800' },
-  signInLink: { color: '#222328', fontSize: 14, fontWeight: '700', marginTop: 16, textAlign: 'center', textDecorationLine: 'underline', textDecorationColor: '#A95B5B' },
   rankTrail: { backgroundColor: 'rgba(102, 119, 152, 0.32)', height: 1, left: -40, position: 'absolute', top: '49%', transform: [{ rotate: '-21deg' }], width: '125%' },
   rankOrbit: { borderColor: 'rgba(124, 109, 79, 0.45)', borderRadius: 100, position: 'absolute' },
   rankOrbitOne: { borderWidth: 1, height: 94, left: '7%', top: '56%', width: 94 },

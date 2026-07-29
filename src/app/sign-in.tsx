@@ -4,6 +4,7 @@ import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AlchemySvg } from '../components/alchemy-svg';
+import { LoadingOverlay } from '../components/loading-overlay';
 import { signIn } from '../lib/api';
 import { useAuthRouteGuard } from '../hooks/use-auth-route-guard';
 import { useTransmuteStyles, useTransmuteTheme } from '../theme/transmute-theme';
@@ -42,6 +43,7 @@ export default function SignInScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
+      <LoadingOverlay visible={loading} label="Signing in…" />
       <View style={styles.container}>
         <AlchemySvg source={ouroboros} width={500} height={500} style={styles.backgroundMark} />
         <View style={styles.header}>

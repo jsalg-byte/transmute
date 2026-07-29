@@ -28,6 +28,7 @@ import {
   type ServingSizeUnit,
   type TransmuteRecord,
 } from "../lib/api";
+import { LoadingOverlay } from "./loading-overlay";
 import { useTransmuteStyles, useTransmuteTheme } from "../theme/transmute-theme";
 
 type Food = TransmuteRecord["nutrition"]["foods"][number];
@@ -584,6 +585,7 @@ export function NutritionContent({
   };
 
   return <>
+    <LoadingOverlay visible={saving} label="Saving nutrition…" />
     <Text style={styles.eyebrow}>THE FUEL</Text>
     <Text style={styles.title}>Nutrition</Text>
     <View accessibilityRole="tablist" style={styles.tabs}>

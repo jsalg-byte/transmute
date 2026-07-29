@@ -21,6 +21,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AlchemySvg } from "./alchemy-svg";
+import { LoadingOverlay } from "./loading-overlay";
 import { ArcanaContent } from "./arcana-content";
 import { FastingHourglass } from "./fasting-hourglass";
 import { RecoveryBodyMap } from "./muscle-heat-map";
@@ -50,7 +51,6 @@ import {
   rejectFriendRequest,
   removeFriend,
   removeExerciseFromWorkoutPlanDay,
-  reorderExerciseInWorkoutPlanDay,
   parseNutritionLabel,
   sendFriendRequest,
   setActiveWorkoutPlan,
@@ -64,7 +64,6 @@ import {
   uploadProgressPhoto,
   updateAdminUser,
   updateWorkoutPlan,
-  updateWorkoutPlanDay,
   type AdminUser,
   type AiWorkoutPlanDraft,
   type TransmuteRecord,
@@ -734,7 +733,6 @@ function WorkoutPlansContent({
   const [description, setDescription] = useState("");
   const [dayNames, setDayNames] = useState<Record<string, string>>({});
   const [renamedPlanNames, setRenamedPlanNames] = useState<Record<string, string>>({});
-  const [renamedDayNames, setRenamedDayNames] = useState<Record<string, string>>({});
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(
     record.settings.active_routine_id ?? record.workoutPlans[0]?.id ?? null,
   );
@@ -743,6 +741,8 @@ function WorkoutPlansContent({
   const [exerciseBrowserOpen, setExerciseBrowserOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<{ kind: "day" | "plan"; id: string; name: string } | null>(null);
+  const [activePlanPrompt, setActivePlanPrompt] = useState<{ id: string; name: string } | null>(null);
+  const [startDayPickerOpen, setStartDayPickerOpen] = useState(false);
   const [createPlanOpen, setCreatePlanOpen] = useState(false);
   const [newPlanMode, setNewPlanMode] = useState<"manual" | "ai">("manual");
   const [aiPrompt, setAiPrompt] = useState("");
@@ -777,6 +777,9 @@ function WorkoutPlansContent({
     : [];
   const selectedExercise =
     orderedExercises.find((entry) => entry.id === selectedExerciseId) ?? null;
+  const selectedLibraryExercise = selectedExercise
+    ? record.exercises.find((exercise) => exercise.id === selectedExercise.exerciseId) ?? null
+    : null;
   const pendingExercise =
     record.exercises.find((exercise) => exercise.id === pendingExerciseId) ?? null;
   const visibleExercises = record.exercises
@@ -811,6 +814,11 @@ function WorkoutPlansContent({
       name,
       description: description.trim() || undefined,
     });
+    if (record.workoutPlans.length === 0) {
+      await setActiveWorkoutPlan(result.plan.id);
+    } else {
+      setActivePlanPrompt({ id: result.plan.id, name: result.plan.name });
+    }
     setSelectedPlanId(result.plan.id);
     setPlanName("");
     setDescription("");
@@ -839,6 +847,11 @@ function WorkoutPlansContent({
     setNotice(null);
     try {
       const result = await importAiWorkoutPlan(aiDraft);
+      if (record.workoutPlans.length === 0) {
+        await setActiveWorkoutPlan(result.plan.id);
+      } else {
+        setActivePlanPrompt({ id: result.plan.id, name: result.plan.name });
+      }
       await refresh();
       setSelectedPlanId(result.plan.id);
       setSelectedDayId(result.plan.days[0]?.id ?? null);
@@ -846,7 +859,7 @@ function WorkoutPlansContent({
       setAiPrompt("");
       setNewPlanMode("manual");
       setCreatePlanOpen(false);
-      setNotice(result.addedExercises ? `AI workout plan added with ${result.addedExercises} movement${result.addedExercises === 1 ? "" : "s"} from Calistree. Review it before your first session.` : "AI workout plan added. Review it before your first session.");
+      setNotice(result.addedExercises ? `AI workout plan added with ${result.addedExercises} new movement${result.addedExercises === 1 ? "" : "s"}. Review it before your first session.` : "AI workout plan added. Review it before your first session.");
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : "Unable to add this workout plan.");
     } finally {
@@ -861,6 +874,22 @@ function WorkoutPlansContent({
     const result = await addWorkoutPlanDay(selectedPlan.id, { dayName });
     setDayNames((current) => ({ ...current, [selectedPlan.id]: "" }));
     setSelectedDayId(result.day.id);
+  };
+
+  const confirmActivePlan = async () => {
+    if (!activePlanPrompt) return;
+    setSaving(true);
+    setNotice(null);
+    try {
+      await setActiveWorkoutPlan(activePlanPrompt.id);
+      await refresh();
+      setNotice(`${activePlanPrompt.name} is now your active workout plan.`);
+      setActivePlanPrompt(null);
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "Unable to update your active workout plan.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const confirmRemoval = async () => {
@@ -914,17 +943,25 @@ function WorkoutPlansContent({
     setExerciseBrowserOpen(false);
   };
 
-  const startSelectedDay = async () => {
-    if (!selectedDay) return;
+  const startPlanDay = async (routineDayId: string) => {
     setSaving(true);
     setNotice(null);
     try {
-      const { session } = await startWorkoutSession({ routineDayId: selectedDay.id });
+      const { session } = await startWorkoutSession({ routineDayId });
       router.push(`/sessions/${session.id}`);
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : "Unable to start the workout.");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const openSelectedExerciseDemo = async () => {
+    if (!selectedLibraryExercise?.demoUrl) return;
+    try {
+      await openBrowserAsync(selectedLibraryExercise.demoUrl);
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "Unable to open the exercise demonstration.");
     }
   };
 
@@ -957,33 +994,19 @@ function WorkoutPlansContent({
       <Text style={styles.editorHint}>
         Targets are set when the exercise is added. Existing plan entries retain their recorded prescription.
       </Text>
-      <View style={styles.editorActions}>
-        <Pressable
-          accessibilityRole="button"
-          disabled={saving || selectedExercise.sortOrder === 0}
-          onPress={() =>
-            void run(
-              () => reorderExerciseInWorkoutPlanDay(selectedExercise.id, "up"),
-              `${selectedExercise.name} moved up.`,
-            )
-          }
-          style={[styles.editorAction, (saving || selectedExercise.sortOrder === 0) && styles.buttonDisabled]}
-        >
-          <Text style={styles.editorActionText}>Move up</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          disabled={saving || selectedExercise.sortOrder === orderedExercises.length - 1}
-          onPress={() =>
-            void run(
-              () => reorderExerciseInWorkoutPlanDay(selectedExercise.id, "down"),
-              `${selectedExercise.name} moved down.`,
-            )
-          }
-          style={[styles.editorAction, (saving || selectedExercise.sortOrder === orderedExercises.length - 1) && styles.buttonDisabled]}
-        >
-          <Text style={styles.editorActionText}>Move down</Text>
-        </Pressable>
+      <View style={styles.exerciseDetailGrid}>
+        <View style={styles.exerciseDetailCard}>
+          <Text style={styles.editorFieldLabel}>DEMONSTRATION</Text>
+          {selectedLibraryExercise?.demoUrl ? (
+            <Pressable accessibilityRole="link" onPress={() => void openSelectedExerciseDemo()} style={styles.exerciseDemoAction}>
+              <Text style={styles.exerciseDemoActionText}>Watch demonstration</Text>
+            </Pressable>
+          ) : <Text style={styles.exerciseDetailValue}>No demonstration added yet.</Text>}
+        </View>
+        <View style={styles.exerciseDetailCard}>
+          <Text style={styles.editorFieldLabel}>MUSCLES WORKED</Text>
+          <Text style={styles.exerciseDetailValue}>{selectedExercise.muscleGroup ?? "Not specified"}</Text>
+        </View>
       </View>
       <Pressable
         accessibilityRole="button"
@@ -994,9 +1017,9 @@ function WorkoutPlansContent({
             setSelectedExerciseId(null);
           }, `${selectedExercise.name} removed.`)
         }
-        style={[styles.editorRemove, saving && styles.buttonDisabled]}
+        style={[styles.removeExerciseAction, saving && styles.buttonDisabled]}
       >
-        <Text style={styles.editorRemoveText}>Remove exercise</Text>
+        <Text style={styles.removeExerciseActionText}>Remove exercise</Text>
       </Pressable>
     </View>
   ) : (
@@ -1009,6 +1032,7 @@ function WorkoutPlansContent({
 
   return (
     <>
+      <LoadingOverlay visible={saving || generatingPlan} label={generatingPlan ? "Building plan…" : "Saving…"} />
       {notice ? <Text style={styles.notice}>{notice}</Text> : null}
       <Text style={styles.eyebrow}>THE PLAN</Text>
       {record.workoutPlans.length ? (
@@ -1045,7 +1069,7 @@ function WorkoutPlansContent({
                   {selectedPlan.description ? <Text style={styles.planDescription}>{selectedPlan.description}</Text> : null}
                 </View>
                 <View style={styles.planHeaderActions}>
-                  <Pressable disabled={saving || !selectedDay} onPress={() => void startSelectedDay()} style={[styles.planPrimaryAction, styles.planHeaderAction, (saving || !selectedDay) && styles.buttonDisabled]}>
+                  <Pressable disabled={saving || orderedDays.length === 0} onPress={() => setStartDayPickerOpen(true)} style={[styles.planPrimaryAction, styles.planHeaderAction, (saving || orderedDays.length === 0) && styles.buttonDisabled]}>
                     <Text style={styles.planPrimaryActionText}>START WORKOUT</Text>
                   </Pressable>
                   <Pressable accessibilityRole="button" onPress={() => setDetailsOpen(true)} style={[styles.planSecondaryAction, styles.planHeaderAction]}>
@@ -1084,26 +1108,8 @@ function WorkoutPlansContent({
                 </Pressable>
               </View>
               {selectedDay ? (
-                <View style={[styles.planWorkspace, isDesktop && styles.planWorkspaceDesktop]}>
+                  <View style={[styles.planWorkspace, isDesktop && styles.planWorkspaceDesktop]}>
                   <View style={styles.exerciseLedger}>
-                    <View style={styles.ledgerHeader}>
-                      <View>
-                        <Text style={styles.editorLabel}>EXERCISES</Text>
-                        <TextInput
-                          value={renamedDayNames[selectedDay.id] ?? selectedDay.name}
-                          onChangeText={(value) => setRenamedDayNames((current) => ({ ...current, [selectedDay.id]: value }))}
-                          style={[styles.input, styles.ledgerDayName]}
-                          returnKeyType="done"
-                          onSubmitEditing={() =>
-                            void run(() => {
-                              const dayName = (renamedDayNames[selectedDay.id] ?? selectedDay.name).trim();
-                              if (dayName.length < 2) throw new Error("Enter a day name with at least 2 characters.");
-                              return updateWorkoutPlanDay(selectedDay.id, { dayName });
-                            }, "Workout day renamed.")
-                          }
-                        />
-                      </View>
-                    </View>
                     <View style={styles.ledgerList}>
                       {orderedExercises.length ? orderedExercises.map((entry, index) => (
                         <Pressable
@@ -1268,6 +1274,57 @@ function WorkoutPlansContent({
         </View>
       </Modal>
 
+      <Modal animationType="fade" transparent visible={activePlanPrompt !== null} onRequestClose={() => !saving && setActivePlanPrompt(null)}>
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalPanel, styles.confirmRemovalPanel, isDesktop && styles.modalPanelDesktop]}>
+            <Text style={styles.editorLabel}>ACTIVE WORKOUT</Text>
+            <Text style={styles.modalTitle}>Set as active workout?</Text>
+            <Text style={styles.editorHint}>{activePlanPrompt?.name} will be the plan used when you start your next workout.</Text>
+            <View style={styles.confirmRemovalActions}>
+              <Pressable disabled={saving} onPress={() => setActivePlanPrompt(null)} style={[styles.planSecondaryAction, saving && styles.buttonDisabled]}><Text style={styles.planSecondaryActionText}>Not now</Text></Pressable>
+              <Pressable disabled={saving} onPress={() => void confirmActivePlan()} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>{saving ? "Setting…" : "Set as active"}</Text></Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal animationType="fade" transparent visible={startDayPickerOpen} onRequestClose={() => !saving && setStartDayPickerOpen(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.editorLabel}>START WORKOUT</Text>
+                <Text style={styles.modalTitle}>Which day are you starting?</Text>
+                <Text style={styles.modalPlanName}>{selectedPlan?.name}</Text>
+              </View>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close workout day selection" disabled={saving} onPress={() => setStartDayPickerOpen(false)} style={styles.modalClose}>
+                <X color={palette.oxide} size={19} strokeWidth={2.4} />
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={styles.sessionDaySelectorList} showsVerticalScrollIndicator={false}>
+              {orderedDays.map((day) => (
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={saving}
+                  key={day.id}
+                  onPress={() => {
+                    setStartDayPickerOpen(false);
+                    void startPlanDay(day.id);
+                  }}
+                  style={({ pressed }) => [styles.sessionDayOption, pressed && styles.buttonPressed, saving && styles.buttonDisabled]}
+                >
+                  <View>
+                    <Text style={styles.sessionDayOptionTitle}>{day.name}</Text>
+                    <Text style={styles.sessionDayOptionMeta}>{day.exerciseCount} {day.exerciseCount === 1 ? "exercise" : "exercises"}</Text>
+                  </View>
+                  <View style={styles.sessionLinkContent}><Text style={styles.sessionDayPickerText}>Start</Text><ArrowRight color={palette.oxide} size={16} strokeWidth={2.4} /></View>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
       <Modal animationType="fade" transparent visible={createPlanOpen} onRequestClose={() => { setCreatePlanOpen(false); setNewPlanMode("manual"); }}>
         <View style={styles.modalBackdrop}>
           <View style={[styles.modalPanel, isDesktop && styles.modalPanelDesktop]}>
@@ -1282,12 +1339,12 @@ function WorkoutPlansContent({
                 <Pressable disabled={saving} onPress={() => void run(createPlan, "Workout plan created.")} style={[styles.planPrimaryAction, saving && styles.buttonDisabled]}><Text style={styles.planPrimaryActionText}>Create plan</Text></Pressable>
                 <View style={styles.editorRule} />
                 <Text style={styles.editorLabel}>PLAN ASSISTANT</Text>
-                <Text style={styles.editorHint}>Describe the training you want. The assistant can suggest beyond your library and adds missing Calistree movements when you import the plan.</Text>
+                <Text style={styles.editorHint}>Describe the training you want. The assistant can suggest beyond your library and adds missing movements when you import the plan.</Text>
                 <Pressable onPress={() => setNewPlanMode("ai")} style={styles.planSecondaryAction}><Text style={styles.planSecondaryActionText}>Plan with AI</Text></Pressable>
               </>
             ) : (
               <>
-                <Text style={styles.editorHint}>Tell it your goal, days available, experience, equipment, and any limits. It can use any suitable Calistree movement, adding anything missing to your library when you import.</Text>
+                <Text style={styles.editorHint}>Tell it your goal, days available, experience, equipment, and any limits. It can use any suitable movement, adding anything missing to your library when you import.</Text>
                 {!aiDraft ? (
                   <>
                     <TextInput value={aiPrompt} onChangeText={setAiPrompt} multiline placeholder="Example: I have three days, dumbbells and a bench. I want to build strength without aggravating my knee." placeholderTextColor={palette.muted} style={[styles.input, styles.aiPromptInput]} textAlignVertical="top" />
@@ -1311,7 +1368,7 @@ function WorkoutPlansContent({
                     <Pressable disabled={saving || generatingPlan} onPress={() => setAiDraft(null)} style={styles.planSecondaryAction}><Text style={styles.planSecondaryActionText}>Start over</Text></Pressable>
                   </ScrollView>
                 )}
-                <Pressable disabled={saving || generatingPlan} onPress={() => setNewPlanMode("manual")} style={styles.planSecondaryAction}><Text style={styles.planSecondaryActionText}>Build manually</Text></Pressable>
+                {!aiDraft ? <Pressable disabled={saving || generatingPlan} onPress={() => setNewPlanMode("manual")} style={styles.planSecondaryAction}><Text style={styles.planSecondaryActionText}>Build manually</Text></Pressable> : null}
               </>
             )}
           </View>
@@ -3519,8 +3576,6 @@ const baseStyles = StyleSheet.create({
   planWorkspace: { borderTopColor: "#101015", borderTopWidth: 1, marginTop: 12 },
   planWorkspaceDesktop: { flexDirection: "row" },
   exerciseLedger: { flex: 1, paddingTop: 18 },
-  ledgerHeader: { alignItems: "flex-start", flexDirection: "row", gap: 12, justifyContent: "space-between", paddingBottom: 10 },
-  ledgerDayName: { fontSize: 23, fontWeight: "900", letterSpacing: -1, minWidth: 180, paddingBottom: 5, paddingTop: 0 },
   ledgerList: { borderTopColor: "#D4C9B9", borderTopWidth: 1 },
   ledgerRow: { alignItems: "center", borderBottomColor: "#D4C9B9", borderBottomWidth: 1, flexDirection: "row", gap: 10, minHeight: 60, paddingHorizontal: 4, paddingVertical: 9 },
   ledgerRowActive: { backgroundColor: "#E8DED2" },
@@ -3534,7 +3589,7 @@ const baseStyles = StyleSheet.create({
   ledgerEmptyTitle: { color: "#101015", fontSize: 19, fontWeight: "900" },
   addExerciseAction: { alignSelf: "flex-start", minHeight: 46, justifyContent: "center", marginTop: 12, paddingHorizontal: 2 },
   addExerciseActionText: { color: "#642D2A", fontSize: 15, fontWeight: "900", textDecorationColor: "#A95B5B", textDecorationLine: "underline" },
-  exerciseEditor: { backgroundColor: "#FBF7F0", borderLeftColor: "#D4C9B9", borderLeftWidth: 1, flexBasis: 330, gap: 13, padding: 22 },
+  exerciseEditor: { backgroundColor: "#FBF7F0", borderLeftColor: "#D4C9B9", borderLeftWidth: 1, flexBasis: 360, gap: 16, padding: 26 },
   editorEmpty: { backgroundColor: "#FBF7F0", borderLeftColor: "#D4C9B9", borderLeftWidth: 1, flexBasis: 330, gap: 8, justifyContent: "center", padding: 22 },
   editorHeading: { alignItems: "flex-start", flexDirection: "row", gap: 12, justifyContent: "space-between" },
   editorCopy: { flex: 1 },
@@ -3547,16 +3602,22 @@ const baseStyles = StyleSheet.create({
   editorFieldLabel: { color: "#655D57", fontFamily: "Courier", fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },
   editorValue: { color: "#101015", fontSize: 20, fontWeight: "900" },
   editorHint: { color: "#655D57", fontSize: 13, lineHeight: 19 },
-  editorActions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 5 },
+  exerciseDetailGrid: { gap: 10, marginTop: 2 },
+  exerciseDetailCard: { backgroundColor: "#F4EFE7", borderColor: "#D4C9B9", borderWidth: 1, gap: 8, padding: 13 },
+  exerciseDetailValue: { color: "#2C2C31", fontSize: 15, fontWeight: "700", lineHeight: 21, textTransform: "capitalize" },
+  exerciseDemoAction: { alignSelf: "flex-start", minHeight: 28, justifyContent: "center" },
+  exerciseDemoActionText: { color: "#642D2A", fontSize: 14, fontWeight: "800", textDecorationColor: "#A95B5B", textDecorationLine: "underline" },
   editorAction: { alignItems: "center", borderColor: "#D4C9B9", borderWidth: 1, justifyContent: "center", minHeight: 42, paddingHorizontal: 12 },
   editorActionText: { color: "#101015", fontSize: 13, fontWeight: "800" },
   editorRemove: { alignSelf: "flex-start", minHeight: 42, justifyContent: "center", marginTop: 3, paddingHorizontal: 2 },
   editorRemoveText: { color: "#A95B5B", fontSize: 13, fontWeight: "800", textDecorationLine: "underline" },
+  removeExerciseAction: { alignItems: "center", backgroundColor: "#A95B5B", justifyContent: "center", marginTop: 4, minHeight: 48, paddingHorizontal: 16 },
+  removeExerciseActionText: { color: "#F4EFE7", fontSize: 14, fontWeight: "800" },
   planEmptyState: { gap: 12, marginTop: 80, maxWidth: 540 },
   modalBackdrop: { alignItems: "stretch", backgroundColor: "rgba(16, 16, 21, 0.45)", flex: 1, justifyContent: "flex-end" },
   modalPanel: { backgroundColor: "#F4EFE7", borderTopColor: "#101015", borderTopWidth: 1, gap: 14, maxHeight: "88%", padding: 22 },
   modalPanelDesktop: { alignSelf: "center", borderColor: "#101015", borderWidth: 1, maxWidth: 640, width: "92%" },
-  mobileEditorSheet: { backgroundColor: "#FBF7F0", borderTopColor: "#101015", borderTopWidth: 1, maxHeight: "80%" },
+  mobileEditorSheet: { backgroundColor: "#FBF7F0", borderTopColor: "#101015", borderTopWidth: 1, maxHeight: "86%", minHeight: 520 },
   modalHeader: { alignItems: "flex-start", flexDirection: "row", gap: 16, justifyContent: "space-between" },
   modalTitle: { color: "#101015", fontSize: 25, fontWeight: "900", letterSpacing: -1, marginTop: 6 },
   modalPlanName: { color: "#655D57", fontSize: 14, marginTop: 5 },

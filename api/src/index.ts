@@ -158,7 +158,7 @@ const sessionExerciseSchema = z.object({
 });
 const calistreeSearchSchema = z.object({ q: z.string().trim().min(2).max(120) });
 const calistreeExerciseSchema = z.object({ name: z.string().trim().min(2).max(120).optional(), slug: z.string().trim().min(2).max(180).optional() })
-  .refine((value) => Boolean(value.name || value.slug), 'An exercise name or Calistree slug is required.');
+  .refine((value) => Boolean(value.name || value.slug), 'An exercise name or catalog identifier is required.');
 const calistreeImportSchema = z.object({ slug: z.string().trim().min(2).max(180) });
 const foodSchema = z.object({
   name: z.string().trim().min(2).max(120),
@@ -890,12 +890,12 @@ app.post('/v1/ai/workout-plans', async (request, reply) => {
     })));
     const unresolved = metadata.find((entry) => !existingNames.has(aiExerciseNameKey(entry.name)) && !entry.metadata);
     if (unresolved) {
-      return reply.code(409).send({ error: `The plan assistant suggested “${unresolved.name},” which Calistree could not resolve. Generate the plan again.` });
+      return reply.code(409).send({ error: `The plan assistant suggested “${unresolved.name},” which could not be resolved. Generate the plan again.` });
     }
     metadataByName = new Map(metadata.map((entry) => [aiExerciseNameKey(entry.name), entry.metadata]));
   } catch (error) {
     request.log.error(error, 'Calistree exercise resolution failed for AI workout plan');
-    return reply.code(502).send({ error: 'Calistree is unavailable right now. Try importing the plan again shortly.' });
+    return reply.code(502).send({ error: 'The exercise catalog is unavailable right now. Try importing the plan again shortly.' });
   }
 
   const plan = await sql.begin(async (transaction) => {
@@ -921,7 +921,7 @@ app.post('/v1/ai/workout-plans', async (request, reply) => {
       `;
       addedExercises += 1;
       if (metadata.videoUrl) {
-        const sourceName = JSON.stringify({ provider: 'Calistree', sourceUrl: metadata.sourceUrl, importedAt: new Date().toISOString() });
+        const sourceName = JSON.stringify({ provider: 'Exercise catalog', sourceUrl: metadata.sourceUrl, importedAt: new Date().toISOString() });
         await transaction`
           INSERT INTO exercise_gif_overrides (id, user_id, exercise_id, gif_url, source_name, created_at, updated_at)
           VALUES (${randomUUID()}, ${userId}, ${exercise.id}, ${metadata.videoUrl}, ${sourceName}, now(), now())
@@ -1003,14 +1003,14 @@ app.get('/v1/calistree/exercises', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
   const parsed = calistreeSearchSchema.safeParse(request.query);
-  if (!parsed.success) return reply.code(400).send({ error: 'Enter at least two characters to search Calistree.' });
+  if (!parsed.success) return reply.code(400).send({ error: 'Enter at least two characters to search the exercise catalog.' });
 
   try {
     const results = await searchCalistreeExercises(parsed.data.q);
     return reply.send({ results });
   } catch (error) {
     request.log.error(error, 'Calistree catalog search failed');
-    return reply.code(502).send({ error: 'Calistree is unavailable right now. Try again shortly.' });
+    return reply.code(502).send({ error: 'The exercise catalog is unavailable right now. Try again shortly.' });
   }
 });
 
@@ -1018,15 +1018,15 @@ app.get('/v1/calistree/exercise', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
   const parsed = calistreeExerciseSchema.safeParse(request.query);
-  if (!parsed.success) return reply.code(400).send({ error: 'Enter a valid Calistree exercise.' });
+  if (!parsed.success) return reply.code(400).send({ error: 'Enter a valid exercise.' });
 
   try {
     const exercise = await getCalistreeExerciseMetadata(parsed.data);
-    if (!exercise) return reply.code(404).send({ error: 'No matching Calistree exercise was found.' });
+    if (!exercise) return reply.code(404).send({ error: 'No matching exercise was found.' });
     return reply.send({ exercise });
   } catch (error) {
     request.log.error(error, 'Calistree exercise lookup failed');
-    return reply.code(502).send({ error: 'Calistree is unavailable right now. Try again shortly.' });
+    return reply.code(502).send({ error: 'The exercise catalog is unavailable right now. Try again shortly.' });
   }
 });
 
@@ -1438,16 +1438,16 @@ app.post('/v1/sessions/:id/calistree-exercises', async (request, reply) => {
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
   const params = idParamsSchema.safeParse(request.params);
   const parsed = calistreeImportSchema.safeParse(request.body);
-  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid Calistree exercise payload.' });
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid exercise payload.' });
 
   let metadata;
   try {
     metadata = await getCalistreeExerciseMetadata({ slug: parsed.data.slug });
   } catch (error) {
     request.log.error(error, 'Calistree exercise import lookup failed');
-    return reply.code(502).send({ error: 'Calistree is unavailable right now. Try again shortly.' });
+    return reply.code(502).send({ error: 'The exercise catalog is unavailable right now. Try again shortly.' });
   }
-  if (!metadata) return reply.code(404).send({ error: 'No matching Calistree exercise was found.' });
+  if (!metadata) return reply.code(404).send({ error: 'No matching exercise was found.' });
 
   const result = await sql.begin(async (transaction) => {
     const [session] = await transaction<{ id: string; status: string }[]>`
@@ -1466,7 +1466,7 @@ app.post('/v1/sessions/:id/calistree-exercises', async (request, reply) => {
       RETURNING id, name, category, muscle_group
     `)[0];
 
-    const sourceName = JSON.stringify({ provider: 'Calistree', sourceUrl: metadata.sourceUrl, importedAt: new Date().toISOString() });
+    const sourceName = JSON.stringify({ provider: 'Exercise catalog', sourceUrl: metadata.sourceUrl, importedAt: new Date().toISOString() });
     if (metadata.videoUrl) {
       await transaction`
         INSERT INTO exercise_gif_overrides (id, user_id, exercise_id, gif_url, source_name, created_at, updated_at)

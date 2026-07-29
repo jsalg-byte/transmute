@@ -38,7 +38,7 @@ export async function getCalistreeCatalog() {
   if (!catalogPromise) {
     catalogPromise = fetch(CALISTREE_EXERCISES_URL)
       .then(async (response) => {
-        if (!response.ok) throw new Error(`Calistree catalog request failed: ${response.status}`);
+        if (!response.ok) throw new Error(`Exercise catalog request failed: ${response.status}`);
 
         const html = await response.text();
         const entries = new Map<string, CalistreeCatalogEntry>();

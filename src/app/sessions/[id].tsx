@@ -8,6 +8,7 @@ import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, Text
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { MuscleHeatMap } from '../../components/muscle-heat-map';
+import { LoadingOverlay } from '../../components/loading-overlay';
 import { BODY_GROUPS, bodyGroupsForMuscleGroup } from '../../lib/recovery';
 import {
   addExerciseToWorkoutSession,
@@ -106,7 +107,8 @@ function demoDescription(sourceName: string | null) {
   if (meta?.start !== null && meta?.start !== undefined) {
     return `Clip begins at ${meta.start}${meta.duration ? ` · ${meta.duration}s segment` : ''}`;
   }
-  if (meta?.provider) return `Streaming from ${meta.provider}`;
+  if (meta?.provider) return 'Exercise demonstration';
+  if (sourceName?.toLocaleLowerCase().includes('calistree')) return 'Exercise demonstration';
   return sourceName || 'Approved exercise demonstration';
 }
 
@@ -270,9 +272,9 @@ export default function SessionDetailScreen() {
   const resolvedDemo = selectedExercise?.demoUrl
     ? { url: selectedExercise.demoUrl, sourceName: selectedExercise.demoSourceName, source: 'Attached demonstration' }
     : knownCalistreeGuide
-      ? { url: knownCalistreeGuide.videoUrl, sourceName: 'Calistree', source: 'Calistree demonstration' }
+      ? { url: knownCalistreeGuide.videoUrl, sourceName: 'Exercise catalog', source: 'Exercise demonstration' }
     : matchingCalistreeDemo?.videoUrl
-      ? { url: matchingCalistreeDemo.videoUrl, sourceName: 'Calistree', source: 'Calistree demonstration' }
+      ? { url: matchingCalistreeDemo.videoUrl, sourceName: 'Exercise catalog', source: 'Exercise demonstration' }
       : null;
   const calistreeDemoChecked = Boolean(matchingCalistreeDemo);
   const setsByExercise = useMemo(() => {
@@ -391,9 +393,9 @@ export default function SessionDetailScreen() {
       const result = await importCalistreeExerciseToWorkoutSession(id, slug);
       selectMovement(result.exercise.id);
       await refresh();
-      setToast(`${result.exercise.name} was imported from Calistree.`);
+      setToast(`${result.exercise.name} was added to your library.`);
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : 'Unable to import the Calistree movement.';
+      const message = reason instanceof Error ? reason.message : 'Unable to add the movement.';
       setError(message);
       throw new Error(message);
     } finally { setSaving(false); }
@@ -475,6 +477,7 @@ export default function SessionDetailScreen() {
   };
 
   return <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
+    <LoadingOverlay visible={saving} label="Saving workout…" />
     <ScrollView contentContainerStyle={styles.scrollContent}>
       <View style={styles.page}>
         <Pressable accessibilityRole="link" onPress={() => router.replace('/sessions')} hitSlop={8} style={styles.inlineLink}><ArrowLeft color={palette.oxide} size={17} strokeWidth={2.4} /><Text style={styles.back}>Sessions</Text></Pressable>
@@ -512,11 +515,11 @@ export default function SessionDetailScreen() {
                 {demoExpanded ? <View style={[styles.trainingAidContent, isDesktop && styles.trainingAidDesktop]}>
                   <View style={styles.demoPanel}>
                     {resolvedDemo ? <>
-                      <Text style={styles.demoMeta}>{resolvedDemo.source === 'Calistree demonstration' ? 'Streaming from Calistree' : demoDescription(resolvedDemo.sourceName)}</Text>
+                      <Text style={styles.demoMeta}>{demoDescription(resolvedDemo.sourceName)}</Text>
                       {isDirectVideoUrl(resolvedDemo.url)
                         ? <ExerciseDemoPlayer url={resolvedDemo.url} name={selectedExercise.name} />
                         : <Pressable onPress={() => void openDemo()} style={styles.demoButton}><View style={styles.buttonWithIcon}><Text style={styles.demoButtonText}>Open demonstration</Text><ExternalLink color={palette.surface} size={15} strokeWidth={2.3} /></View></Pressable>}
-                    </> : <Text style={styles.emptyCopy}>{calistreeDemoChecked ? 'No demonstration is available for this movement yet.' : 'Checking Calistree for a demonstration…'}</Text>}
+                    </> : <Text style={styles.emptyCopy}>{calistreeDemoChecked ? 'No demonstration is available for this movement yet.' : 'Checking for a demonstration…'}</Text>}
                   </View>
                   <View style={[styles.heatPanel, isDesktop && styles.heatPanelDesktop]}><MuscleHeatMap muscleGroups={selectedExercise.muscleGroup} /></View>
                 </View> : null}
@@ -682,9 +685,9 @@ function MovementLibrarySheet({ visible, libraryOptions, sessionOptions, onClose
             return <Pressable key={option.id} accessibilityRole="button" disabled={added || addingExerciseId !== null || importingSlug !== null} onPress={() => void addFromLibrary(option.id)} style={[styles.selectOption, added && styles.selectOptionDisabled]}><View style={styles.selectOptionCopy}><Text style={styles.selectOptionName} numberOfLines={1}>{option.name}</Text><Text style={styles.selectOptionMeta} numberOfLines={1}>{conciseMuscleGroup(option.muscleGroup)}</Text></View><Text style={[styles.selectOptionMark, added && styles.selectOptionMarkMuted]}>{adding ? 'ADDING…' : added ? 'ADDED' : 'ADD'}</Text></Pressable>;
           }) : <Text style={styles.emptyCopy}>No library movements match that search.</Text>}
           {normalizedQuery.length >= 2 ? <View style={styles.calistreeSection}>
-            <Text style={styles.calistreeLabel}>IMPORT FROM CALISTREE</Text>
-            {searchingCalistree ? <Text style={styles.emptyCopy}>Searching Calistree…</Text> : null}
-            {!searchingCalistree && newCalistreeResults.map((result) => <Pressable key={result.slug} disabled={importingSlug !== null || addingExerciseId !== null} onPress={() => void importFromCalistree(result.slug)} style={styles.calistreeOption}><View style={styles.selectOptionCopy}><Text style={styles.selectOptionName} numberOfLines={1}>{result.name}</Text><Text style={styles.selectOptionMeta}>New to your library · Calistree</Text></View><Text style={styles.selectOptionMark}>{importingSlug === result.slug ? 'IMPORTING…' : 'IMPORT & ADD'}</Text></Pressable>)}
+            <Text style={styles.calistreeLabel}>ADD FROM EXERCISE CATALOG</Text>
+            {searchingCalistree ? <Text style={styles.emptyCopy}>Searching exercise catalog…</Text> : null}
+            {!searchingCalistree && newCalistreeResults.map((result) => <Pressable key={result.slug} disabled={importingSlug !== null || addingExerciseId !== null} onPress={() => void importFromCalistree(result.slug)} style={styles.calistreeOption}><View style={styles.selectOptionCopy}><Text style={styles.selectOptionName} numberOfLines={1}>{result.name}</Text><Text style={styles.selectOptionMeta}>New to your library</Text></View><Text style={styles.selectOptionMark}>{importingSlug === result.slug ? 'ADDING…' : 'ADD'}</Text></Pressable>)}
           </View> : null}
         </ScrollView>
       </View>
