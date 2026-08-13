@@ -161,6 +161,7 @@ const workoutSetSchema = z.object({
   reps: z.number().int().positive().max(100),
   weight: z.number().nonnegative().max(2000).optional(),
   isWarmup: z.boolean().optional(),
+  clientOperationId: z.string().uuid().optional(),
 });
 const sessionExerciseSchema = z.object({
   exerciseId: z.string().uuid(),
@@ -682,6 +683,8 @@ app.get('/health', async () => {
   await sql`SELECT 1`;
   return { ok: true };
 });
+
+app.get('/v1/capabilities', async () => ({ offlineSetSync: true }));
 
 app.post('/v1/auth/register', async (request, reply) => {
   const parsed = registrationSchema.safeParse(request.body);
@@ -1611,14 +1614,33 @@ app.post('/v1/sessions/:id/sets', async (request, reply) => {
   if (!currentSession) return reply.code(404).send({ error: 'Workout session not found.' });
   if (currentSession.status !== 'active') return reply.code(409).send({ error: 'Only active sessions can be logged.' });
   if (!exercise[0]) return reply.code(404).send({ error: 'Exercise not found.' });
-  const [set] = await sql<{ id: string; set_order: number; created_at: Date }[]>`
-    INSERT INTO workout_sets (id, session_id, exercise_id, set_order, reps, weight, is_warmup, created_at)
+  const [inserted] = await sql<{ id: string; set_order: number; created_at: Date }[]>`
+    INSERT INTO workout_sets (id, session_id, exercise_id, set_order, reps, weight, is_warmup, client_operation_id, created_at)
     VALUES (
       ${randomUUID()}, ${currentSession.id}, ${parsed.data.exerciseId},
       (SELECT coalesce(max(set_order), 0) + 1 FROM workout_sets WHERE session_id = ${currentSession.id}),
-      ${parsed.data.reps}, ${parsed.data.weight?.toString() ?? null}, ${parsed.data.isWarmup ?? false}, now()
-    ) RETURNING id, set_order, created_at
+      ${parsed.data.reps}, ${parsed.data.weight?.toString() ?? null}, ${parsed.data.isWarmup ?? false}, ${parsed.data.clientOperationId ?? null}, now()
+    )
+    ON CONFLICT (session_id, client_operation_id) WHERE client_operation_id IS NOT NULL DO NOTHING
+    RETURNING id, set_order, created_at
   `;
+  if (!inserted) {
+    const [existing] = await sql<{ id: string; exercise_id: string; set_order: number; reps: number; weight: string | null; is_warmup: boolean; created_at: Date }[]>`
+      SELECT wset.id, wset.exercise_id, wset.set_order, wset.reps, wset.weight, wset.is_warmup, wset.created_at
+      FROM workout_sets wset
+      WHERE wset.session_id = ${currentSession.id}
+        AND wset.client_operation_id = ${parsed.data.clientOperationId!}
+      LIMIT 1
+    `;
+    if (!existing) return reply.code(409).send({ error: 'The set could not be reconciled. Retry the sync.' });
+    return reply.send({
+      set: { id: existing.id, exerciseId: existing.exercise_id, setOrder: existing.set_order, reps: existing.reps, weight: existing.weight, isWarmup: existing.is_warmup, createdAt: existing.created_at },
+      personalRecord: null,
+      idempotent: true,
+      clientOperationId: parsed.data.clientOperationId,
+    });
+  }
+  const set = inserted;
   const personalRecord = parsed.data.isWarmup
     ? null
     : detectPersonalRecord(
@@ -1635,6 +1657,7 @@ app.post('/v1/sessions/:id/sets', async (request, reply) => {
   return reply.code(201).send({
     set: { id: set.id, exerciseId: parsed.data.exerciseId, setOrder: set.set_order, reps: parsed.data.reps, weight: parsed.data.weight ?? null, isWarmup: parsed.data.isWarmup ?? false, createdAt: set.created_at },
     personalRecord,
+    clientOperationId: parsed.data.clientOperationId ?? null,
   });
 });
 

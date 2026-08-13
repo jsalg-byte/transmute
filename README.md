@@ -66,7 +66,7 @@ The API lives in [`api/`](./api). Deploy it as a **separate** Coolify applicatio
 - `AUTH_ISSUER=transmute-api`
 - `CORS_ORIGINS`: the final Transmute web URL, plus `http://localhost:8081` when local web access is needed
 
-Before the first API deploy, apply [`api/migrations/001_mobile_sessions.sql`](./api/migrations/001_mobile_sessions.sql). It only adds the `mobile_sessions` table for hashed mobile refresh tokens; it does not modify existing user data.
+Before deployment, apply the numbered migrations through [`api/migrations/006_offline_set_sync.sql`](./api/migrations/006_offline_set_sync.sql). Migration 006 adds session-scoped idempotency keys for safely replaying queued workout sets without changing existing workout evidence.
 
 The API returns short-lived access tokens and rotating refresh tokens. The Expo client stores them in Expo SecureStore; browser-cookie sessions from the old web app are not used.
 
