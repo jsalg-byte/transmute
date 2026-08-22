@@ -35,6 +35,11 @@ const env = envSchema.parse(process.env);
 const jwtSecret = new TextEncoder().encode(env.JWT_ACCESS_SECRET);
 const sql = postgres(env.DATABASE_URL, { max: 10, idle_timeout: 20, connect_timeout: 10 });
 const app = Fastify({ logger: true });
+app.addContentTypeParser(
+  /^image\/.+/i,
+  { parseAs: 'buffer' },
+  (_request, body, done) => done(null, body),
+);
 const storage = new S3Client({
   endpoint: env.S3_ENDPOINT,
   region: env.S3_REGION,
@@ -223,6 +228,14 @@ const progressCreateSchema = z.object({
   objectKey: z.string().min(4).max(512),
   mimeType: z.string().min(3).max(128),
   sizeBytes: z.number().int().positive().max(20 * 1024 * 1024),
+  capturedAt: z
+    .string()
+    .datetime()
+    .or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+  note: z.string().max(400).optional(),
+});
+const progressProxyUploadSchema = z.object({
+  fileName: z.string().min(1).max(255),
   capturedAt: z
     .string()
     .datetime()
@@ -2423,6 +2436,41 @@ app.post('/v1/progress/presign', async (request, reply) => {
   return reply.send({ url, key });
 });
 
+// Browser clients cannot rely on the storage origin's CORS policy for private
+// progress photos. Accept their image bytes at the authenticated API instead,
+// then write the object with server credentials.
+app.post('/v1/progress/upload', { bodyLimit: 20 * 1024 * 1024 }, async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = progressProxyUploadSchema.safeParse(request.query);
+  const contentType = request.headers['content-type']?.split(';', 1)[0]?.toLowerCase() ?? '';
+  const bytes = request.body;
+  if (
+    !parsed.success ||
+    !contentType.startsWith('image/') ||
+    !Buffer.isBuffer(bytes) ||
+    bytes.length === 0 ||
+    bytes.length > 20 * 1024 * 1024
+  ) {
+    return reply.code(400).send({ error: 'Invalid progress photo payload.' });
+  }
+  const key = `progress/${userId}/${Date.now()}-${randomUUID()}.${progressExtension(parsed.data.fileName)}`;
+  await storage.send(
+    new PutObjectCommand({
+      Bucket: env.S3_BUCKET,
+      Key: key,
+      Body: bytes,
+      ContentType: contentType,
+    }),
+  );
+  const [progress] = await sql<{ id: string }[]>`
+    INSERT INTO uploads (id, user_id, entity_type, entity_id, object_key, mime_type, size_bytes, note, captured_at, created_at)
+    VALUES (${randomUUID()}, ${userId}, 'progress_photo', ${userId}, ${key}, ${contentType}, ${bytes.length}, ${parsed.data.note ?? null}, ${parseCapturedAt(parsed.data.capturedAt)}, now())
+    RETURNING id
+  `;
+  return reply.code(201).send({ id: progress.id });
+});
+
 app.post('/v1/progress', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
@@ -2440,6 +2488,27 @@ app.post('/v1/progress', async (request, reply) => {
     RETURNING id
   `;
   return reply.code(201).send({ id: progress.id });
+});
+
+app.get('/v1/progress/:id/image', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: 'Invalid progress photo id.' });
+  const [progress] = await sql<{ object_key: string; mime_type: string }[]>`
+    SELECT object_key, mime_type FROM uploads
+    WHERE id = ${params.data.id} AND user_id = ${userId} AND entity_type = 'progress_photo'
+    LIMIT 1
+  `;
+  if (!progress) return reply.code(404).send({ error: 'Progress photo not found.' });
+  const object = await storage.send(
+    new GetObjectCommand({ Bucket: env.S3_BUCKET, Key: progress.object_key }),
+  );
+  if (!object.Body) return reply.code(404).send({ error: 'Progress photo is unavailable.' });
+  return reply
+    .header('Cache-Control', 'private, max-age=300')
+    .type(progress.mime_type)
+    .send(object.Body);
 });
 
 app.delete('/v1/progress/:id', async (request, reply) => {
