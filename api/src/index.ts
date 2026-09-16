@@ -1312,6 +1312,28 @@ app.put('/v1/preferences/active-plan', async (request, reply) => {
   return reply.send({ activeRoutineId: parsed.data.routineId });
 });
 
+app.get('/v1/preferences', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const [preferences] = await sql<{
+    weight_unit: string | null;
+    active_routine_id: string | null;
+    theme_overrides: unknown;
+  }[]>`
+    SELECT weight_unit, active_routine_id, theme_overrides
+    FROM user_preferences
+    WHERE user_id = ${userId}
+    LIMIT 1
+  `;
+  return reply.send({
+    settings: {
+      weight_unit: preferences?.weight_unit ?? 'lbs',
+      active_routine_id: preferences?.active_routine_id ?? null,
+      theme_overrides: preferences?.theme_overrides ?? {},
+    },
+  });
+});
+
 app.post('/v1/sessions', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
