@@ -168,6 +168,15 @@ const workoutSetSchema = z.object({
   isWarmup: z.boolean().optional(),
   clientOperationId: z.string().uuid().optional(),
 });
+const quickAddSchema = z.object({
+  exerciseId: z.string().uuid(),
+  weight: z.number().nonnegative().max(2_000).optional(),
+  reps: z.number().int().positive().max(100).optional(),
+  durationSeconds: z.number().int().positive().max(86_400).optional(),
+}).refine(
+  (value) => (value.durationSeconds != null) !== (value.reps != null),
+  'Provide either reps or durationSeconds.',
+);
 const sessionExerciseSchema = z.object({
   exerciseId: z.string().uuid(),
   targetReps: z.number().int().positive().max(50).optional(),
@@ -1334,6 +1343,68 @@ app.get('/v1/preferences', async (request, reply) => {
   });
 });
 
+app.post('/v1/quick-add', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = quickAddSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid quick-add payload.' });
+
+  const [exercise, preferences] = await Promise.all([
+    sql<{ id: string; name: string; category: string }[]>`
+      SELECT id, name, category FROM exercises WHERE id = ${parsed.data.exerciseId} LIMIT 1
+    `,
+    sql<{ weight_unit: string }[]>`
+      SELECT weight_unit FROM user_preferences WHERE user_id = ${userId} LIMIT 1
+    `,
+  ]);
+  if (!exercise[0]) return reply.code(404).send({ error: 'Exercise not found.' });
+  const weightUnit = preferences[0]?.weight_unit === 'kg' ? 'kg' : 'lbs';
+  const now = new Date();
+  const startedAt = parsed.data.durationSeconds
+    ? new Date(now.getTime() - parsed.data.durationSeconds * 1_000)
+    : now;
+
+  const result = await sql.begin(async (transaction) => {
+    const [session] = await transaction<{ id: string; started_at: Date; ended_at: Date }[]>`
+      INSERT INTO workout_sessions (id, user_id, routine_id, routine_day_id, started_at, ended_at, status)
+      VALUES (${randomUUID()}, ${userId}, NULL, NULL, ${startedAt}, ${now}, 'completed')
+      RETURNING id, started_at, ended_at
+    `;
+    const [sessionExercise] = await transaction<{ id: string }[]>`
+      INSERT INTO session_exercises (id, session_id, exercise_id, sort_order, target_reps, target_weight, created_at)
+      VALUES (${randomUUID()}, ${session.id}, ${exercise[0].id}, 0, NULL, NULL, ${now})
+      RETURNING id
+    `;
+    const [set] = await transaction<{ id: string; created_at: Date }[]>`
+      INSERT INTO workout_sets (id, session_id, exercise_id, set_order, reps, weight, duration_seconds, is_warmup, created_at)
+      VALUES (${randomUUID()}, ${session.id}, ${exercise[0].id}, 1, ${parsed.data.reps ?? 1}, ${parsed.data.weight?.toString() ?? null}, ${parsed.data.durationSeconds ?? null}, false, ${now})
+      RETURNING id, created_at
+    `;
+    return { session, sessionExercise, set };
+  });
+  await recordProgressionEvent(sql, userId, 'workout_session_completed', 'workout_session', result.session.id, {
+    quickAdd: true,
+    exerciseId: exercise[0].id,
+  });
+  await recordProgressionEvent(sql, userId, 'workout_set_logged', 'workout_set', result.set.id, {
+    sessionId: result.session.id,
+    exerciseId: exercise[0].id,
+    quickAdd: true,
+  });
+  return reply.code(201).send({
+    session: {
+      id: result.session.id,
+      planName: 'Quick Add',
+      dayName: 'Quick Add',
+      status: 'completed',
+      startedAt: result.session.started_at,
+      endedAt: result.session.ended_at,
+    },
+    exercise: { id: exercise[0].id, name: exercise[0].name, category: exercise[0].category },
+    weightUnit,
+  });
+});
+
 app.post('/v1/sessions', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
@@ -1385,8 +1456,8 @@ app.get('/v1/sessions/:id', async (request, reply) => {
       LEFT JOIN exercise_gif_overrides ego ON ego.exercise_id = e.id AND ego.user_id = ${userId}
       WHERE se.session_id = ${session.id} ORDER BY se.sort_order ASC
     `,
-    sql<{ id: string; exercise_id: string; set_order: number; reps: number; weight: string | null; is_warmup: boolean; created_at: Date }[]>`
-      SELECT id, exercise_id, set_order, reps, weight, is_warmup, created_at
+    sql<{ id: string; exercise_id: string; set_order: number; reps: number; weight: string | null; duration_seconds: number | null; is_warmup: boolean; created_at: Date }[]>`
+      SELECT id, exercise_id, set_order, reps, weight, duration_seconds, is_warmup, created_at
       FROM workout_sets WHERE session_id = ${session.id} ORDER BY set_order ASC, created_at ASC
     `,
     sql<{ id: string; name: string; category: string; muscle_group: string | null; demo_url: string | null; demo_source_name: string | null }[]>`
@@ -1436,7 +1507,7 @@ app.get('/v1/sessions/:id', async (request, reply) => {
     },
     exercises: sessionExercises.map((exercise) => ({ id: exercise.id, name: exercise.name, category: exercise.category, muscleGroup: exercise.muscle_group, targetSets: exercise.target_sets, targetReps: exercise.target_reps, targetWeight: exercise.target_weight, demoUrl: exercise.demo_url, demoSourceName: exercise.demo_source_name })),
     libraryExercises: libraryExercises.map((exercise) => ({ id: exercise.id, name: exercise.name, category: exercise.category, muscleGroup: exercise.muscle_group, demoUrl: exercise.demo_url, demoSourceName: exercise.demo_source_name })),
-    sets: sets.map((set) => ({ id: set.id, exerciseId: set.exercise_id, setOrder: set.set_order, reps: set.reps, weight: set.weight, isWarmup: set.is_warmup, createdAt: set.created_at })),
+    sets: sets.map((set) => ({ id: set.id, exerciseId: set.exercise_id, setOrder: set.set_order, reps: set.reps, weight: set.weight, durationSeconds: set.duration_seconds, isWarmup: set.is_warmup, createdAt: set.created_at })),
     previousPerformances: previousPerformances.map((set) => ({ exerciseId: set.exercise_id, startedAt: set.started_at, order: set.ordinal, reps: set.reps, weight: set.weight })),
   });
 });
@@ -1660,8 +1731,8 @@ app.post('/v1/sessions/:id/sets', async (request, reply) => {
     RETURNING id, set_order, created_at
   `;
   if (!inserted) {
-    const [existing] = await sql<{ id: string; exercise_id: string; set_order: number; reps: number; weight: string | null; is_warmup: boolean; created_at: Date }[]>`
-      SELECT wset.id, wset.exercise_id, wset.set_order, wset.reps, wset.weight, wset.is_warmup, wset.created_at
+    const [existing] = await sql<{ id: string; exercise_id: string; set_order: number; reps: number; weight: string | null; duration_seconds: number | null; is_warmup: boolean; created_at: Date }[]>`
+      SELECT wset.id, wset.exercise_id, wset.set_order, wset.reps, wset.weight, wset.duration_seconds, wset.is_warmup, wset.created_at
       FROM workout_sets wset
       WHERE wset.session_id = ${currentSession.id}
         AND wset.client_operation_id = ${parsed.data.clientOperationId!}
@@ -1669,7 +1740,7 @@ app.post('/v1/sessions/:id/sets', async (request, reply) => {
     `;
     if (!existing) return reply.code(409).send({ error: 'The set could not be reconciled. Retry the sync.' });
     return reply.send({
-      set: { id: existing.id, exerciseId: existing.exercise_id, setOrder: existing.set_order, reps: existing.reps, weight: existing.weight, isWarmup: existing.is_warmup, createdAt: existing.created_at },
+      set: { id: existing.id, exerciseId: existing.exercise_id, setOrder: existing.set_order, reps: existing.reps, weight: existing.weight, durationSeconds: existing.duration_seconds, isWarmup: existing.is_warmup, createdAt: existing.created_at },
       personalRecord: null,
       idempotent: true,
       clientOperationId: parsed.data.clientOperationId,
@@ -1690,7 +1761,7 @@ app.post('/v1/sessions/:id/sets', async (request, reply) => {
   });
   await evaluateArcanaForUser(sql, userId);
   return reply.code(201).send({
-    set: { id: set.id, exerciseId: parsed.data.exerciseId, setOrder: set.set_order, reps: parsed.data.reps, weight: parsed.data.weight ?? null, isWarmup: parsed.data.isWarmup ?? false, createdAt: set.created_at },
+    set: { id: set.id, exerciseId: parsed.data.exerciseId, setOrder: set.set_order, reps: parsed.data.reps, weight: parsed.data.weight ?? null, durationSeconds: null, isWarmup: parsed.data.isWarmup ?? false, createdAt: set.created_at },
     personalRecord,
     clientOperationId: parsed.data.clientOperationId ?? null,
   });
@@ -2624,7 +2695,7 @@ app.get('/v1/record', async (request, reply) => {
       ORDER BY e.name ASC LIMIT 300
     `,
     sql`
-      SELECT ws.id, ws.status, ws.started_at, ws.ended_at, r.name AS routine_name, rd.day_name,
+      SELECT ws.id, ws.status, ws.started_at, ws.ended_at, coalesce(r.name, 'Quick Add') AS routine_name, coalesce(rd.day_name, 'Quick Add') AS day_name,
         count(wset.id)::int AS set_count
       FROM workout_sessions ws
       LEFT JOIN routines r ON r.id = ws.routine_id
@@ -2650,7 +2721,10 @@ app.get('/v1/record', async (request, reply) => {
     sql`
       SELECT ml.id, ml.meal_type, ml.quantity, ml.consumed_at, f.id AS food_id, f.name,
         round(f.calories_kcal * (ml.quantity / coalesce(nullif(f.serving_size_g, 0), 100)))::int AS calories_kcal,
-        f.protein_g, f.carbs_g, f.fat_g, f.serving_size_g, f.serving_size_unit, f.serving_size_text
+        round(f.protein_g::numeric * (ml.quantity / coalesce(nullif(f.serving_size_g, 0), 100)), 1) AS protein_g,
+        round(f.carbs_g::numeric * (ml.quantity / coalesce(nullif(f.serving_size_g, 0), 100)), 1) AS carbs_g,
+        round(f.fat_g::numeric * (ml.quantity / coalesce(nullif(f.serving_size_g, 0), 100)), 1) AS fat_g,
+        f.serving_size_g, f.serving_size_unit, f.serving_size_text
       FROM meal_logs ml INNER JOIN foods f ON f.id = ml.food_id
       WHERE ml.user_id = ${userId} ORDER BY ml.consumed_at DESC LIMIT 100
     `,
