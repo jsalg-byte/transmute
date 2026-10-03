@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { requestAiBarcodeLookup, requestAiNutritionLabel, requestAiWorkoutDraft } from './ai-workout.js';
 import { getCalistreeCatalog, getCalistreeExerciseMetadata, searchCalistreeExercises } from './calistree.js';
 import { arcanaDefinitions, evaluateArcanaForUser, recordProgressionEvent } from './arcana.js';
+import { planDayExerciseUpdateSchema, workoutSetSchema } from './workout-tracking.js';
 
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
@@ -97,11 +98,6 @@ const planDayExerciseSchema = z.object({
   targetReps: z.number().int().positive().max(50).optional(),
   targetWeight: z.number().nonnegative().max(2000).optional(),
 });
-const planDayExerciseUpdateSchema = z.object({
-  targetSets: z.number().int().positive().max(20),
-  targetReps: z.number().int().positive().max(50).nullable(),
-  targetWeight: z.number().nonnegative().max(2000).nullable(),
-});
 const planDayCalistreeImportSchema = z.object({
   slug: z.string().trim().min(2).max(180),
   targetSets: z.number().int().positive().max(20).optional(),
@@ -160,13 +156,6 @@ const activePlanSchema = z.object({ routineId: z.string().uuid().nullable() });
 const startSessionSchema = z.object({
   routineDayId: z.string().uuid(),
   startedAtDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-});
-const workoutSetSchema = z.object({
-  exerciseId: z.string().uuid(),
-  reps: z.number().int().positive().max(100),
-  weight: z.number().nonnegative().max(2000).optional(),
-  isWarmup: z.boolean().optional(),
-  clientOperationId: z.string().uuid().optional(),
 });
 const quickAddSchema = z.object({
   exerciseId: z.string().uuid(),
@@ -1251,20 +1240,22 @@ app.patch('/v1/plan-day-exercises/:id', async (request, reply) => {
   const parsed = planDayExerciseUpdateSchema.safeParse(request.body);
   if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid exercise prescription payload.' });
 
-  const [updated] = await sql<{ id: string; target_sets: number; target_reps: number | null; target_weight: string | null }[]>`
+  const [updated] = await sql<{ id: string; target_sets: number; target_reps: number | null; target_weight: string | null; tracking_mode: string; target_duration_seconds: number | null }[]>`
     UPDATE routine_day_exercises AS rde
     SET target_sets = ${parsed.data.targetSets},
         target_reps = ${parsed.data.targetReps},
-        target_weight = ${parsed.data.targetWeight?.toString() ?? null}
+        target_weight = ${parsed.data.targetWeight?.toString() ?? null},
+        tracking_mode = ${parsed.data.trackingMode},
+        target_duration_seconds = ${parsed.data.trackingMode === 'timed' ? parsed.data.targetDurationSeconds ?? null : null}
     FROM routine_days AS rd, routines AS r
     WHERE rde.id = ${params.data.id}
       AND rde.routine_day_id = rd.id
       AND rd.routine_id = r.id
       AND r.user_id = ${userId}
-    RETURNING rde.id, rde.target_sets, rde.target_reps, rde.target_weight
+    RETURNING rde.id, rde.target_sets, rde.target_reps, rde.target_weight, rde.tracking_mode, rde.target_duration_seconds
   `;
   if (!updated) return reply.code(404).send({ error: 'Workout day exercise not found.' });
-  return reply.send({ entry: { id: updated.id, targetSets: updated.target_sets, targetReps: updated.target_reps, targetWeight: updated.target_weight } });
+  return reply.send({ entry: { id: updated.id, targetSets: updated.target_sets, targetReps: updated.target_reps, targetWeight: updated.target_weight, trackingMode: updated.tracking_mode, targetDurationSeconds: updated.target_duration_seconds } });
 });
 
 app.post('/v1/plan-day-exercises/:id/reorder', async (request, reply) => {
@@ -1441,16 +1432,18 @@ app.get('/v1/sessions/:id', async (request, reply) => {
 
   const [plannedExercises, addedExercises, sets, libraryExercises, preferences] = await Promise.all([
     session.routine_day_id
-      ? sql<{ id: string; name: string; category: string; muscle_group: string | null; target_sets: number | null; target_reps: number | null; target_weight: string | null; demo_url: string | null; demo_source_name: string | null }[]>`
+      ? sql<{ id: string; name: string; category: string; muscle_group: string | null; target_sets: number | null; target_reps: number | null; target_weight: string | null; tracking_mode: string; target_duration_seconds: number | null; demo_url: string | null; demo_source_name: string | null }[]>`
           SELECT e.id, e.name, e.category, e.muscle_group, rde.target_sets, rde.target_reps, rde.target_weight,
+            rde.tracking_mode, rde.target_duration_seconds,
             ego.gif_url AS demo_url, ego.source_name AS demo_source_name
           FROM routine_day_exercises rde INNER JOIN exercises e ON e.id = rde.exercise_id
           LEFT JOIN exercise_gif_overrides ego ON ego.exercise_id = e.id AND ego.user_id = ${userId}
           WHERE rde.routine_day_id = ${session.routine_day_id} ORDER BY rde.sort_order ASC
         `
       : Promise.resolve([]),
-    sql<{ id: string; name: string; category: string; muscle_group: string | null; target_sets: number | null; target_reps: number | null; target_weight: string | null; demo_url: string | null; demo_source_name: string | null }[]>`
+    sql<{ id: string; name: string; category: string; muscle_group: string | null; target_sets: number | null; target_reps: number | null; target_weight: string | null; tracking_mode: string; target_duration_seconds: number | null; demo_url: string | null; demo_source_name: string | null }[]>`
       SELECT e.id, e.name, e.category, e.muscle_group, null::integer AS target_sets, se.target_reps, se.target_weight,
+        se.tracking_mode, se.target_duration_seconds,
         ego.gif_url AS demo_url, ego.source_name AS demo_source_name
       FROM session_exercises se INNER JOIN exercises e ON e.id = se.exercise_id
       LEFT JOIN exercise_gif_overrides ego ON ego.exercise_id = e.id AND ego.user_id = ${userId}
@@ -1483,6 +1476,7 @@ app.get('/v1/sessions/:id', async (request, reply) => {
             AND ws.status = 'completed'
             AND ws.id <> ${session.id}
             AND wset.is_warmup = false
+            AND wset.duration_seconds IS NULL
             AND wset.exercise_id = ANY(${sessionExerciseIds}::uuid[])
           ORDER BY wset.exercise_id, ws.started_at DESC, ws.id DESC
         )
@@ -1491,7 +1485,7 @@ app.get('/v1/sessions/:id', async (request, reply) => {
           wset.reps, wset.weight
         FROM workout_sets wset
         INNER JOIN latest_completed ON latest_completed.session_id = wset.session_id AND latest_completed.exercise_id = wset.exercise_id
-        WHERE wset.is_warmup = false
+        WHERE wset.is_warmup = false AND wset.duration_seconds IS NULL
         ORDER BY wset.exercise_id, ordinal ASC
       `
     : [];
@@ -1505,7 +1499,7 @@ app.get('/v1/sessions/:id', async (request, reply) => {
       dayName: session.day_name,
       weightUnit: preferences[0]?.weight_unit === 'kg' ? 'kg' : 'lbs',
     },
-    exercises: sessionExercises.map((exercise) => ({ id: exercise.id, name: exercise.name, category: exercise.category, muscleGroup: exercise.muscle_group, targetSets: exercise.target_sets, targetReps: exercise.target_reps, targetWeight: exercise.target_weight, demoUrl: exercise.demo_url, demoSourceName: exercise.demo_source_name })),
+    exercises: sessionExercises.map((exercise) => ({ id: exercise.id, name: exercise.name, category: exercise.category, muscleGroup: exercise.muscle_group, targetSets: exercise.target_sets, targetReps: exercise.target_reps, targetWeight: exercise.target_weight, trackingMode: exercise.tracking_mode, targetDurationSeconds: exercise.target_duration_seconds, demoUrl: exercise.demo_url, demoSourceName: exercise.demo_source_name })),
     libraryExercises: libraryExercises.map((exercise) => ({ id: exercise.id, name: exercise.name, category: exercise.category, muscleGroup: exercise.muscle_group, demoUrl: exercise.demo_url, demoSourceName: exercise.demo_source_name })),
     sets: sets.map((set) => ({ id: set.id, exerciseId: set.exercise_id, setOrder: set.set_order, reps: set.reps, weight: set.weight, durationSeconds: set.duration_seconds, isWarmup: set.is_warmup, createdAt: set.created_at })),
     previousPerformances: previousPerformances.map((set) => ({ exerciseId: set.exercise_id, startedAt: set.started_at, order: set.ordinal, reps: set.reps, weight: set.weight })),
@@ -1552,8 +1546,8 @@ app.get('/v1/sessions/:id/share', async (request, reply) => {
   }
 
   const [sets, preferences] = await Promise.all([
-    sql<{ id: string; set_order: number; reps: number; weight: string | null; is_warmup: boolean; exercise_name: string }[]>`
-      SELECT wset.id, wset.set_order, wset.reps, wset.weight, wset.is_warmup, e.name AS exercise_name
+    sql<{ id: string; set_order: number; reps: number; weight: string | null; duration_seconds: number | null; is_warmup: boolean; exercise_name: string }[]>`
+      SELECT wset.id, wset.set_order, wset.reps, wset.weight, wset.duration_seconds, wset.is_warmup, e.name AS exercise_name
       FROM workout_sets wset
       INNER JOIN exercises e ON e.id = wset.exercise_id
       WHERE wset.session_id = ${session.id}
@@ -1578,6 +1572,7 @@ app.get('/v1/sessions/:id/share', async (request, reply) => {
       order: set.set_order,
       reps: set.reps,
       weight: set.weight,
+      durationSeconds: set.duration_seconds,
       isWarmup: set.is_warmup,
       exerciseName: set.exercise_name,
     })),
@@ -1704,28 +1699,43 @@ app.post('/v1/sessions/:id/sets', async (request, reply) => {
   const params = idParamsSchema.safeParse(request.params);
   const parsed = workoutSetSchema.safeParse(request.body);
   if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid workout set payload.' });
+  const timed = parsed.data.durationSeconds != null;
   const [session, exercise, previousSets] = await Promise.all([
-    sql<{ id: string; status: string }[]>`SELECT id, status FROM workout_sessions WHERE id = ${params.data.id} AND user_id = ${userId} LIMIT 1`,
+    sql<{ id: string; status: string; tracking_mode: string }[]>`
+      SELECT ws.id, ws.status,
+        coalesce(rde.tracking_mode, se.tracking_mode, 'reps') AS tracking_mode
+      FROM workout_sessions ws
+      LEFT JOIN routine_day_exercises rde
+        ON rde.routine_day_id = ws.routine_day_id AND rde.exercise_id = ${parsed.data.exerciseId}
+      LEFT JOIN session_exercises se
+        ON se.session_id = ws.id AND se.exercise_id = ${parsed.data.exerciseId}
+      WHERE ws.id = ${params.data.id} AND ws.user_id = ${userId}
+      LIMIT 1
+    `,
     sql<{ id: string; name: string }[]>`SELECT id, name FROM exercises WHERE id = ${parsed.data.exerciseId} LIMIT 1`,
-    parsed.data.isWarmup
+    parsed.data.isWarmup || timed
       ? Promise.resolve([] as PersonalRecordSet[])
       : sql<PersonalRecordSet[]>`
           SELECT wset.reps, wset.weight
           FROM workout_sets wset
           INNER JOIN workout_sessions ws ON ws.id = wset.session_id
-          WHERE ws.user_id = ${userId} AND wset.exercise_id = ${parsed.data.exerciseId} AND wset.is_warmup = false
+          WHERE ws.user_id = ${userId} AND wset.exercise_id = ${parsed.data.exerciseId}
+            AND wset.is_warmup = false AND wset.duration_seconds IS NULL
         `,
   ]);
   const currentSession = session[0];
   if (!currentSession) return reply.code(404).send({ error: 'Workout session not found.' });
   if (currentSession.status !== 'active') return reply.code(409).send({ error: 'Only active sessions can be logged.' });
+  if ((currentSession.tracking_mode === 'timed') !== timed) {
+    return reply.code(400).send({ error: 'The set input must match the exercise tracking mode.' });
+  }
   if (!exercise[0]) return reply.code(404).send({ error: 'Exercise not found.' });
   const [inserted] = await sql<{ id: string; set_order: number; created_at: Date }[]>`
-    INSERT INTO workout_sets (id, session_id, exercise_id, set_order, reps, weight, is_warmup, client_operation_id, created_at)
+    INSERT INTO workout_sets (id, session_id, exercise_id, set_order, reps, weight, duration_seconds, is_warmup, client_operation_id, created_at)
     VALUES (
       ${randomUUID()}, ${currentSession.id}, ${parsed.data.exerciseId},
       (SELECT coalesce(max(set_order), 0) + 1 FROM workout_sets WHERE session_id = ${currentSession.id}),
-      ${parsed.data.reps}, ${parsed.data.weight?.toString() ?? null}, ${parsed.data.isWarmup ?? false}, ${parsed.data.clientOperationId ?? null}, now()
+      ${timed ? 1 : parsed.data.reps!}, ${timed ? null : parsed.data.weight?.toString() ?? null}, ${parsed.data.durationSeconds ?? null}, ${parsed.data.isWarmup ?? false}, ${parsed.data.clientOperationId ?? null}, now()
     )
     ON CONFLICT (session_id, client_operation_id) WHERE client_operation_id IS NOT NULL DO NOTHING
     RETURNING id, set_order, created_at
@@ -1747,10 +1757,10 @@ app.post('/v1/sessions/:id/sets', async (request, reply) => {
     });
   }
   const set = inserted;
-  const personalRecord = parsed.data.isWarmup
+  const personalRecord = parsed.data.isWarmup || timed
     ? null
     : detectPersonalRecord(
-        { reps: parsed.data.reps, weight: parsed.data.weight?.toString() ?? null },
+        { reps: parsed.data.reps!, weight: parsed.data.weight?.toString() ?? null },
         previousSets,
         exercise[0].name,
       );
@@ -1761,7 +1771,7 @@ app.post('/v1/sessions/:id/sets', async (request, reply) => {
   });
   await evaluateArcanaForUser(sql, userId);
   return reply.code(201).send({
-    set: { id: set.id, exerciseId: parsed.data.exerciseId, setOrder: set.set_order, reps: parsed.data.reps, weight: parsed.data.weight ?? null, durationSeconds: null, isWarmup: parsed.data.isWarmup ?? false, createdAt: set.created_at },
+    set: { id: set.id, exerciseId: parsed.data.exerciseId, setOrder: set.set_order, reps: timed ? 1 : parsed.data.reps, weight: timed ? null : parsed.data.weight ?? null, durationSeconds: parsed.data.durationSeconds ?? null, isWarmup: parsed.data.isWarmup ?? false, createdAt: set.created_at },
     personalRecord,
     clientOperationId: parsed.data.clientOperationId ?? null,
   });
@@ -1773,8 +1783,9 @@ app.patch('/v1/sets/:id', async (request, reply) => {
   const params = idParamsSchema.safeParse(request.params);
   const parsed = workoutSetSchema.safeParse(request.body);
   if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid workout set payload.' });
+  const timed = parsed.data.durationSeconds != null;
   const [updated] = await sql<{ id: string; session_id: string }[]>`
-    UPDATE workout_sets wset SET exercise_id = ${parsed.data.exerciseId}, reps = ${parsed.data.reps}, weight = ${parsed.data.weight?.toString() ?? null}, is_warmup = ${parsed.data.isWarmup ?? false}
+    UPDATE workout_sets wset SET exercise_id = ${parsed.data.exerciseId}, reps = ${timed ? 1 : parsed.data.reps!}, weight = ${timed ? null : parsed.data.weight?.toString() ?? null}, duration_seconds = ${parsed.data.durationSeconds ?? null}, is_warmup = ${parsed.data.isWarmup ?? false}
     FROM workout_sessions ws
     WHERE wset.id = ${params.data.id} AND wset.session_id = ws.id AND ws.user_id = ${userId}
     RETURNING wset.id, wset.session_id
@@ -2676,10 +2687,13 @@ app.get('/v1/record', async (request, reply) => {
       target_sets: number | null;
       target_reps: number | null;
       target_weight: string | null;
+      tracking_mode: string;
+      target_duration_seconds: number | null;
     }[]>`
       SELECT rd.routine_id AS plan_id, rd.id AS day_id, rde.id, rde.exercise_id,
         e.name, e.category, e.muscle_group, rde.sort_order,
-        rde.target_sets, rde.target_reps, rde.target_weight
+        rde.target_sets, rde.target_reps, rde.target_weight,
+        rde.tracking_mode, rde.target_duration_seconds
       FROM routine_day_exercises rde
       INNER JOIN routine_days rd ON rd.id = rde.routine_day_id
       INNER JOIN routines r ON r.id = rd.routine_id
@@ -2830,6 +2844,8 @@ app.get('/v1/record', async (request, reply) => {
             targetSets: number | null;
             targetReps: number | null;
             targetWeight: string | null;
+            trackingMode: string;
+            targetDurationSeconds: number | null;
           }>;
         }>,
       };
@@ -2867,6 +2883,8 @@ app.get('/v1/record', async (request, reply) => {
           targetSets: number | null;
           targetReps: number | null;
           targetWeight: string | null;
+          trackingMode: string;
+          targetDurationSeconds: number | null;
         }>;
       }>;
     }>()).values(),
@@ -2886,6 +2904,8 @@ app.get('/v1/record', async (request, reply) => {
       targetSets: exercise.target_sets,
       targetReps: exercise.target_reps,
       targetWeight: exercise.target_weight,
+      trackingMode: exercise.tracking_mode,
+      targetDurationSeconds: exercise.target_duration_seconds,
     });
   }
 
