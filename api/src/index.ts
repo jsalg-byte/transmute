@@ -1435,18 +1435,22 @@ app.get('/v1/sessions/:id', async (request, reply) => {
       ? sql<{ id: string; name: string; category: string; muscle_group: string | null; target_sets: number | null; target_reps: number | null; target_weight: string | null; tracking_mode: string; target_duration_seconds: number | null; demo_url: string | null; demo_source_name: string | null }[]>`
           SELECT e.id, e.name, e.category, e.muscle_group, rde.target_sets, rde.target_reps, rde.target_weight,
             rde.tracking_mode, rde.target_duration_seconds,
-            ego.gif_url AS demo_url, ego.source_name AS demo_source_name
+            COALESCE(ego.gif_url, edd.demo_url) AS demo_url,
+            COALESCE(ego.source_name, edd.source_name) AS demo_source_name
           FROM routine_day_exercises rde INNER JOIN exercises e ON e.id = rde.exercise_id
           LEFT JOIN exercise_gif_overrides ego ON ego.exercise_id = e.id AND ego.user_id = ${userId}
+          LEFT JOIN exercise_demo_defaults edd ON edd.exercise_id = e.id
           WHERE rde.routine_day_id = ${session.routine_day_id} ORDER BY rde.sort_order ASC
         `
       : Promise.resolve([]),
     sql<{ id: string; name: string; category: string; muscle_group: string | null; target_sets: number | null; target_reps: number | null; target_weight: string | null; tracking_mode: string; target_duration_seconds: number | null; demo_url: string | null; demo_source_name: string | null }[]>`
       SELECT e.id, e.name, e.category, e.muscle_group, null::integer AS target_sets, se.target_reps, se.target_weight,
         se.tracking_mode, se.target_duration_seconds,
-        ego.gif_url AS demo_url, ego.source_name AS demo_source_name
+        COALESCE(ego.gif_url, edd.demo_url) AS demo_url,
+        COALESCE(ego.source_name, edd.source_name) AS demo_source_name
       FROM session_exercises se INNER JOIN exercises e ON e.id = se.exercise_id
       LEFT JOIN exercise_gif_overrides ego ON ego.exercise_id = e.id AND ego.user_id = ${userId}
+      LEFT JOIN exercise_demo_defaults edd ON edd.exercise_id = e.id
       WHERE se.session_id = ${session.id} ORDER BY se.sort_order ASC
     `,
     sql<{ id: string; exercise_id: string; set_order: number; reps: number; weight: string | null; duration_seconds: number | null; is_warmup: boolean; created_at: Date }[]>`
@@ -1455,9 +1459,11 @@ app.get('/v1/sessions/:id', async (request, reply) => {
     `,
     sql<{ id: string; name: string; category: string; muscle_group: string | null; demo_url: string | null; demo_source_name: string | null }[]>`
       SELECT e.id, e.name, e.category, e.muscle_group,
-        ego.gif_url AS demo_url, ego.source_name AS demo_source_name
+        COALESCE(ego.gif_url, edd.demo_url) AS demo_url,
+        COALESCE(ego.source_name, edd.source_name) AS demo_source_name
       FROM exercises e
       LEFT JOIN exercise_gif_overrides ego ON ego.exercise_id = e.id AND ego.user_id = ${userId}
+      LEFT JOIN exercise_demo_defaults edd ON edd.exercise_id = e.id
       ORDER BY e.name ASC LIMIT 300
     `,
     sql<{ weight_unit: string }[]>`SELECT weight_unit FROM user_preferences WHERE user_id = ${userId} LIMIT 1`,
@@ -2703,9 +2709,11 @@ app.get('/v1/record', async (request, reply) => {
     `,
     sql<{ id: string; name: string; category: string; muscle_group: string | null; demo_url: string | null; demo_source_name: string | null }[]>`
       SELECT e.id, e.name, e.category, e.muscle_group,
-        ego.gif_url AS demo_url, ego.source_name AS demo_source_name
+        COALESCE(ego.gif_url, edd.demo_url) AS demo_url,
+        COALESCE(ego.source_name, edd.source_name) AS demo_source_name
       FROM exercises e
       LEFT JOIN exercise_gif_overrides ego ON ego.exercise_id = e.id AND ego.user_id = ${userId}
+      LEFT JOIN exercise_demo_defaults edd ON edd.exercise_id = e.id
       ORDER BY e.name ASC LIMIT 300
     `,
     sql`
