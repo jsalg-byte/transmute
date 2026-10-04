@@ -6,6 +6,11 @@ export const EXERCISE_RANK_RULE_VERSION = 1;
 export type RankMetric = 'estimated_1rm_kg' | 'max_reps' | 'max_duration_seconds';
 export type RankTier = 'Bronze' | 'Silver' | 'Gold' | 'Platinum' | 'Transmuted';
 export type RankUpdate = { exerciseId: string; tier: RankTier; established: boolean };
+export type MuscleProjection = {
+  groupId: string; label: string; regionId: string; bodySide: 'front' | 'back';
+  eligibleExerciseCount: number; score: number | null; tier: RankTier | null;
+  delta: number | null; calculatedAt: Date | null; evidenceExerciseIds: string[];
+};
 
 type Sql = postgres.Sql<Record<string, unknown>>;
 type Candidate = {
@@ -119,5 +124,115 @@ export async function recomputeExerciseRanks(sql: Sql, userId: string, exerciseI
       }
     }
   }
+  await recomputeRankProjections(sql, userId);
   return updates;
+}
+
+const curatedContributions = [
+  ['barbell bench press', 'chest', 'Chest', 'chest', 'front', 1],
+  ['chest-supported row', 'back', 'Back', 'back', 'back', 1],
+  ['shoulder press', 'shoulders', 'Shoulders', 'deltoids', 'front', 1],
+  ['back squat', 'quads', 'Quads', 'quadriceps', 'front', 1],
+  ['back squat', 'glutes', 'Glutes', 'glutes', 'back', .5],
+  ['romanian deadlift', 'hamstrings', 'Hamstrings', 'hamstrings', 'back', 1],
+  ['romanian deadlift', 'glutes', 'Glutes', 'glutes', 'back', .5],
+  ['standing calf raise', 'calves', 'Calves', 'calves', 'back', 1],
+  ['barbell wrist curl', 'arms', 'Arms', 'forearms', 'front', 1],
+  ['barbell reverse curl', 'arms', 'Arms', 'forearms', 'front', 1],
+] as const;
+
+async function ensureCuratedContributions(sql: Sql) {
+  for (const [exerciseName, group, _label, region, side, weight] of curatedContributions) {
+    await sql`
+      INSERT INTO exercise_muscle_contributions (exercise_id, muscle_group, region_id, body_side, contribution_weight)
+      SELECT id, ${group}, ${region}, ${side}, ${weight} FROM exercises WHERE lower(name) = ${exerciseName}
+      ON CONFLICT (exercise_id, muscle_group) DO UPDATE SET
+        region_id = excluded.region_id, body_side = excluded.body_side, contribution_weight = excluded.contribution_weight
+    `;
+  }
+}
+
+/** Rebuilds versioned group and overall projections from current personal
+ * exercise projections. It never creates a population position. */
+export async function recomputeRankProjections(sql: Sql, userId: string) {
+  await ensureCuratedContributions(sql);
+  const calculatedAt = new Date();
+  const rows = await sql<{
+    muscle_group: string; region_id: string; body_side: 'front' | 'back';
+    eligible_exercise_count: number; score: string | null; evidence_exercise_ids: string[];
+  }[]>`
+    WITH ranked AS (
+      SELECT c.muscle_group, c.region_id, c.body_side, c.contribution_weight, ers.exercise_id,
+        (ers.best_value / nullif(ers.baseline_value, 0))::numeric AS ratio,
+        row_number() OVER (PARTITION BY c.muscle_group ORDER BY (ers.best_value / nullif(ers.baseline_value, 0)) DESC, ers.exercise_id) AS position,
+        count(DISTINCT ers.exercise_id) OVER (PARTITION BY c.muscle_group) AS eligible_count
+      FROM exercise_rank_snapshots ers
+      INNER JOIN exercise_muscle_contributions c ON c.exercise_id = ers.exercise_id
+      WHERE ers.user_id = ${userId} AND ers.is_current AND ers.tier IS NOT NULL
+        AND ers.baseline_value IS NOT NULL AND ers.best_value IS NOT NULL
+    )
+    SELECT muscle_group, min(region_id) AS region_id, min(body_side) AS body_side,
+      max(eligible_count)::int AS eligible_exercise_count,
+      (sum(ratio * contribution_weight) FILTER (WHERE position <= 2) /
+       nullif(sum(contribution_weight) FILTER (WHERE position <= 2), 0))::text AS score,
+      array_agg(exercise_id ORDER BY ratio DESC) FILTER (WHERE position <= 2) AS evidence_exercise_ids
+    FROM ranked GROUP BY muscle_group
+  `;
+  const previous = await sql<{
+    muscle_group: string; score: string | null; eligible_exercise_count: number; tier: RankTier | null;
+  }[]>`SELECT muscle_group, score::text, eligible_exercise_count, tier FROM muscle_rank_snapshots WHERE user_id = ${userId} AND is_current`;
+  const previousByGroup = new Map(previous.map((item) => [item.muscle_group, item]));
+  const projections: MuscleProjection[] = [];
+  for (const row of rows) {
+    const score = row.score == null ? null : Number(row.score);
+    const tier = score == null ? null : scoreExerciseRank(1, score).tier;
+    const prior = previousByGroup.get(row.muscle_group);
+    const previousScore = prior?.score == null ? null : Number(prior.score);
+    const changed = !prior || previousScore !== score || prior.eligible_exercise_count !== row.eligible_exercise_count || prior.tier !== tier;
+    if (changed) {
+      if (prior) await sql`UPDATE muscle_rank_snapshots SET is_current = false, superseded_at = ${calculatedAt} WHERE user_id = ${userId} AND muscle_group = ${row.muscle_group} AND is_current`;
+      await sql`INSERT INTO muscle_rank_snapshots
+        (id, user_id, muscle_group, region_id, body_side, eligible_exercise_count, score, tier, previous_value, delta_value, evidence_exercise_ids, rule_version, calculated_at)
+        VALUES (${randomUUID()}, ${userId}, ${row.muscle_group}, ${row.region_id}, ${row.body_side}, ${row.eligible_exercise_count}, ${score}, ${tier}, ${previousScore}, ${score == null || previousScore == null ? null : score - previousScore}, ${row.evidence_exercise_ids}, ${EXERCISE_RANK_RULE_VERSION}, ${calculatedAt})`;
+    }
+    projections.push({
+      groupId: row.muscle_group, label: curatedContributions.find((item) => item[1] === row.muscle_group)?.[2] ?? row.muscle_group,
+      regionId: row.region_id, bodySide: row.body_side, eligibleExerciseCount: row.eligible_exercise_count,
+      score, tier, delta: score == null || previousScore == null ? null : score - previousScore,
+      calculatedAt: changed ? calculatedAt : null, evidenceExerciseIds: row.evidence_exercise_ids ?? [],
+    });
+  }
+  for (const prior of previous) {
+    if (rows.some((row) => row.muscle_group === prior.muscle_group)) continue;
+    await sql`UPDATE muscle_rank_snapshots SET is_current = false, superseded_at = ${calculatedAt}
+      WHERE user_id = ${userId} AND muscle_group = ${prior.muscle_group} AND is_current`;
+    const definition = curatedContributions.find((item) => item[1] === prior.muscle_group);
+    if (!definition) continue;
+    await sql`INSERT INTO muscle_rank_snapshots
+      (id, user_id, muscle_group, region_id, body_side, eligible_exercise_count, score, tier, previous_value, delta_value, evidence_exercise_ids, rule_version, calculated_at)
+      VALUES (${randomUUID()}, ${userId}, ${prior.muscle_group}, ${definition[3]}, ${definition[4]}, 0, null, null, ${prior.score == null ? null : Number(prior.score)}, null, ${[] as string[]}, ${EXERCISE_RANK_RULE_VERSION}, ${calculatedAt})`;
+    projections.push({ groupId: prior.muscle_group, label: definition[2], regionId: definition[3], bodySide: definition[4], eligibleExerciseCount: 0, score: null, tier: null, delta: null, calculatedAt, evidenceExerciseIds: [] });
+  }
+  const eligible = await sql<{ count: number }[]>`
+    SELECT count(DISTINCT ers.exercise_id)::int AS count FROM exercise_rank_snapshots ers
+    INNER JOIN exercise_muscle_contributions c ON c.exercise_id = ers.exercise_id
+    WHERE ers.user_id = ${userId} AND ers.is_current AND ers.tier IS NOT NULL
+  `;
+  const overallScore = projections.length >= 5 && eligible[0].count >= 10
+    ? projections.map((item) => item.score!).reduce((left, right) => left + right, 0) / projections.length
+    : null;
+  const overallTier = overallScore == null ? null : scoreExerciseRank(1, overallScore).tier;
+  const placementEligible = overallScore != null;
+  const [previousOverall] = await sql<{
+    score: string | null; eligible_exercise_count: number; mapped_group_count: number; placement_eligible: boolean; tier: RankTier | null;
+  }[]>`SELECT score::text, eligible_exercise_count, mapped_group_count, placement_eligible, tier FROM overall_rank_snapshots WHERE user_id = ${userId} AND is_current`;
+  const previousScore = previousOverall?.score == null ? null : Number(previousOverall.score);
+  const overallChanged = !previousOverall || previousScore !== overallScore || previousOverall.eligible_exercise_count !== eligible[0].count || previousOverall.mapped_group_count !== projections.length || previousOverall.placement_eligible !== placementEligible || previousOverall.tier !== overallTier;
+  if (overallChanged) {
+    if (previousOverall) await sql`UPDATE overall_rank_snapshots SET is_current = false, superseded_at = ${calculatedAt} WHERE user_id = ${userId} AND is_current`;
+    await sql`INSERT INTO overall_rank_snapshots
+      (id, user_id, eligible_exercise_count, mapped_group_count, placement_eligible, score, tier, previous_value, delta_value, evidence_exercise_ids, rule_version, calculated_at)
+      VALUES (${randomUUID()}, ${userId}, ${eligible[0].count}, ${projections.length}, ${placementEligible}, ${overallScore}, ${overallTier}, ${previousScore}, ${overallScore == null || previousScore == null ? null : overallScore - previousScore}, ${projections.flatMap((item) => item.evidenceExerciseIds)}, ${EXERCISE_RANK_RULE_VERSION}, ${calculatedAt})`;
+  }
+  return { projections, overall: { eligibleExerciseCount: eligible[0].count, mappedGroupCount: projections.length, placementEligible, score: overallScore, tier: overallTier } };
 }

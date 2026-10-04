@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { requestAiBarcodeLookup, requestAiNutritionLabel, requestAiWorkoutDraft } from './ai-workout.js';
 import { getCalistreeCatalog, getCalistreeExerciseMetadata, searchCalistreeExercises } from './calistree.js';
 import { arcanaDefinitions, evaluateArcanaForUser, recordProgressionEvent } from './arcana.js';
-import { EXERCISE_RANK_RULE_VERSION, recomputeExerciseRanks } from './exercise-ranks.js';
+import { EXERCISE_RANK_RULE_VERSION, recomputeExerciseRanks, recomputeRankProjections } from './exercise-ranks.js';
 import { planDayExerciseUpdateSchema, workoutSetSchema } from './workout-tracking.js';
 
 const envSchema = z.object({
@@ -1839,6 +1839,50 @@ app.get('/v1/exercise-ranks/:exerciseId', async (request, reply) => {
   return reply.send({ rank: { ...rankResponse(row), evidence: evidence.map((item) => ({ sessionId: item.session_id, completedAt: item.ended_at, value: Number(item.value) })) } });
 });
 
+app.get('/v1/ranks/overview', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  await recomputeRankProjections(sql, userId);
+  const [overall] = await sql<{
+    eligible_exercise_count: number; mapped_group_count: number; placement_eligible: boolean;
+    score: string | null; tier: string | null; delta_value: string | null; calculated_at: Date; evidence_exercise_ids: string[];
+  }[]>`SELECT eligible_exercise_count, mapped_group_count, placement_eligible, score::text, tier, delta_value::text, calculated_at, evidence_exercise_ids
+    FROM overall_rank_snapshots WHERE user_id = ${userId} AND is_current LIMIT 1`;
+  const groups = await sql<{
+    muscle_group: string; region_id: string; body_side: string; eligible_exercise_count: number;
+    score: string | null; tier: string | null; delta_value: string | null; calculated_at: Date; evidence_exercise_ids: string[];
+  }[]>`SELECT muscle_group, region_id, body_side, eligible_exercise_count, score::text, tier, delta_value::text, calculated_at, evidence_exercise_ids
+    FROM muscle_rank_snapshots WHERE user_id = ${userId} AND is_current ORDER BY muscle_group`;
+  const label: Record<string, string> = { arms: 'Arms', back: 'Back', calves: 'Calves', chest: 'Chest', glutes: 'Glutes', hamstrings: 'Hamstrings', quads: 'Quads', shoulders: 'Shoulders' };
+  return reply.send({
+    overall: overall ? {
+      eligibleExerciseCount: overall.eligible_exercise_count, mappedGroupCount: overall.mapped_group_count,
+      placementEligible: overall.placement_eligible, score: overall.score == null ? null : Number(overall.score), tier: overall.tier,
+      delta: overall.delta_value == null ? null : Number(overall.delta_value), calculatedAt: overall.calculated_at,
+      evidenceExerciseIds: overall.evidence_exercise_ids,
+    } : { eligibleExerciseCount: 0, mappedGroupCount: 0, placementEligible: false, score: null, tier: null, delta: null, calculatedAt: null, evidenceExerciseIds: [] },
+    groups: groups.map((item) => ({
+      groupId: item.muscle_group, label: label[item.muscle_group] ?? item.muscle_group, regionId: item.region_id, bodySide: item.body_side,
+      eligibleExerciseCount: item.eligible_exercise_count, score: item.score == null ? null : Number(item.score), tier: item.tier,
+      delta: item.delta_value == null ? null : Number(item.delta_value), calculatedAt: item.calculated_at,
+      evidenceExerciseIds: item.evidence_exercise_ids,
+    })),
+    lastSessionChanges: groups.filter((item) => item.delta_value != null && Number(item.delta_value) > 0).map((item) => label[item.muscle_group] ?? item.muscle_group),
+  });
+});
+
+app.get('/v1/ranks/history', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const rows = await sql<{
+    eligible_exercise_count: number; score: string | null; tier: string | null; calculated_at: Date;
+  }[]>`SELECT eligible_exercise_count, score::text, tier, calculated_at FROM overall_rank_snapshots
+    WHERE user_id = ${userId} ORDER BY calculated_at DESC LIMIT 60`;
+  return reply.send({ history: rows.reverse().map((item) => ({
+    eligibleExerciseCount: item.eligible_exercise_count, score: item.score == null ? null : Number(item.score), tier: item.tier, calculatedAt: item.calculated_at,
+  })) });
+});
+
 app.post('/v1/sessions', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
@@ -2320,6 +2364,7 @@ app.delete('/v1/sessions/:id', async (request, reply) => {
   if (!params.success) return reply.code(400).send({ error: 'Invalid session id.' });
   const [deleted] = await sql<{ id: string }[]>`DELETE FROM workout_sessions WHERE id = ${params.data.id} AND user_id = ${userId} RETURNING id`;
   if (!deleted) return reply.code(404).send({ error: 'Workout session not found.' });
+  await recomputeExerciseRanks(sql, userId);
   return reply.code(204).send();
 });
 
