@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { requestAiBarcodeLookup, requestAiNutritionLabel, requestAiWorkoutDraft } from './ai-workout.js';
 import { getCalistreeCatalog, getCalistreeExerciseMetadata, searchCalistreeExercises } from './calistree.js';
 import { arcanaDefinitions, evaluateArcanaForUser, recordProgressionEvent } from './arcana.js';
+import { EXERCISE_RANK_RULE_VERSION, recomputeExerciseRanks } from './exercise-ranks.js';
 import { planDayExerciseUpdateSchema, workoutSetSchema } from './workout-tracking.js';
 
 const envSchema = z.object({
@@ -86,12 +87,45 @@ const refreshSchema = z.object({
 });
 
 const idParamsSchema = z.object({ id: z.string().uuid() });
+const exerciseRankParamsSchema = z.object({ exerciseId: z.string().uuid() });
+const exerciseRankQuerySchema = z.object({ q: z.string().trim().max(120).optional(), mode: z.enum(['reps', 'timed']).optional(), limit: z.coerce.number().int().min(1).max(100).default(40), offset: z.coerce.number().int().min(0).default(0) });
 const planIdParamsSchema = z.object({ planId: z.string().uuid() });
 const planSchema = z.object({
   name: z.string().trim().min(2).max(80),
   description: z.string().trim().max(200).optional(),
+  empty: z.boolean().optional(),
 });
 const planDaySchema = z.object({ dayName: z.string().trim().min(2).max(32) });
+const routineShareTokenSchema = z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{24,80}$/) });
+const routineShareCreateSchema = z.object({ routineDayId: z.string().uuid() });
+const routineShareListSchema = z.object({ routineDayId: z.string().uuid() });
+const routineShareImportSchema = z.object({
+  routineId: z.string().uuid(),
+  name: z.string().trim().min(2).max(32).optional(),
+});
+const routineShareSnapshotSchema = z.object({
+  routineName: z.string().trim().min(2).max(32),
+  folderName: z.string().trim().min(2).max(80),
+  ownerName: z.string().trim().min(2).max(80).nullable(),
+  ownerUsername: usernameSchema,
+  exercises: z.array(z.object({
+    exerciseId: z.string().uuid(),
+    name: z.string().trim().min(2).max(120),
+    category: z.string().trim().min(1).max(80),
+    muscleGroup: z.string().trim().min(1).max(80).nullable(),
+    targetSets: z.number().int().positive().max(20),
+    targetReps: z.number().int().positive().max(50),
+    trackingMode: z.enum(['reps', 'timed']),
+    targetDurationSeconds: z.number().int().positive().max(86_400).nullable(),
+    targetWeightKg: z.number().nonnegative().max(2_000).nullable(),
+  })).min(1).max(50),
+}).superRefine((snapshot, context) => {
+  for (const exercise of snapshot.exercises) {
+    if (exercise.trackingMode === 'timed' && exercise.targetDurationSeconds == null) {
+      context.addIssue({ code: 'custom', message: 'Timed exercises require a target duration.' });
+    }
+  }
+});
 const planDayExerciseSchema = z.object({
   exerciseId: z.string().uuid(),
   targetSets: z.number().int().positive().max(20).optional(),
@@ -808,16 +842,16 @@ app.post('/v1/plans', async (request, reply) => {
       VALUES (${randomUUID()}, ${userId}, ${parsed.data.name}, ${parsed.data.description ?? null}, false, now(), now())
       RETURNING id, name, description, created_at
     `;
-    const [day] = await transaction<{ id: string; day_name: string; sort_order: number }[]>`
+    const day = parsed.data.empty ? null : (await transaction<{ id: string; day_name: string; sort_order: number }[]>`
       INSERT INTO routine_days (id, routine_id, day_name, sort_order, created_at)
       VALUES (${randomUUID()}, ${created.id}, 'Day 1', 0, now())
       RETURNING id, day_name, sort_order
-    `;
+    `)[0];
     return { ...created, day };
   });
 
   return reply.code(201).send({
-    plan: { id: plan.id, name: plan.name, description: plan.description, createdAt: plan.created_at, days: [{ id: plan.day.id, name: plan.day.day_name, sortOrder: plan.day.sort_order, exerciseCount: 0 }] },
+    plan: { id: plan.id, name: plan.name, description: plan.description, createdAt: plan.created_at, days: plan.day ? [{ id: plan.day.id, name: plan.day.day_name, sortOrder: plan.day.sort_order, exerciseCount: 0 }] : [] },
   });
 });
 
@@ -1077,10 +1111,20 @@ app.delete('/v1/plans/:id', async (request, reply) => {
   const params = idParamsSchema.safeParse(request.params);
   if (!params.success) return reply.code(400).send({ error: 'Invalid workout plan id.' });
 
-  const [deleted] = await sql<{ id: string }[]>`
-    DELETE FROM routines WHERE id = ${params.data.id} AND user_id = ${userId} RETURNING id
-  `;
-  if (!deleted) return reply.code(404).send({ error: 'Workout plan not found.' });
+  const result = await sql.begin(async (transaction) => {
+    const [plan] = await transaction<{ id: string }[]>`
+      SELECT id FROM routines WHERE id = ${params.data.id} AND user_id = ${userId} FOR UPDATE
+    `;
+    if (!plan) return 'missing' as const;
+    const [session] = await transaction<{ id: string }[]>`
+      SELECT id FROM workout_sessions WHERE user_id = ${userId} AND routine_id = ${plan.id} LIMIT 1
+    `;
+    if (session) return 'used' as const;
+    await transaction`DELETE FROM routines WHERE id = ${plan.id}`;
+    return 'deleted' as const;
+  });
+  if (result === 'missing') return reply.code(404).send({ error: 'Workout plan not found.' });
+  if (result === 'used') return reply.code(409).send({ error: 'This folder has workout history and cannot be deleted. Rename it to keep that history intact.' });
   return reply.code(204).send();
 });
 
@@ -1134,13 +1178,310 @@ app.delete('/v1/plan-days/:id', async (request, reply) => {
       WHERE rd.id = ${params.data.id} AND r.user_id = ${userId} LIMIT 1
     `;
     if (!day) return { error: 'Workout day not found.', status: 404 } as const;
-    const [{ count }] = await transaction<{ count: number }[]>`SELECT count(*)::int AS count FROM routine_days WHERE routine_id = ${day.routine_id}`;
-    if (count <= 1) return { error: 'A workout plan must keep at least one day.', status: 409 } as const;
+    const [used] = await transaction<{ id: string; status: string }[]>`
+      SELECT id, status FROM workout_sessions
+      WHERE user_id = ${userId} AND routine_day_id = ${day.id}
+      LIMIT 1
+    `;
+    if (used) return { error: used.status === 'active'
+      ? 'Finish or discard the active workout before deleting this routine.'
+      : 'This routine has workout history and cannot be deleted. Rename it to keep that history intact.', status: 409 } as const;
     await transaction`DELETE FROM routine_days WHERE id = ${day.id}`;
     return { id: day.id } as const;
   });
   if ('error' in result) return reply.code(typeof result.status === 'number' ? result.status : 400).send({ error: result.error });
   return reply.code(204).send();
+});
+
+function routineShareStatus(share: { revoked_at: Date | null; expires_at: Date }) {
+  if (share.revoked_at) return 'revoked' as const;
+  if (share.expires_at.getTime() <= Date.now()) return 'expired' as const;
+  return 'active' as const;
+}
+
+function parseRoutineShareSnapshot(value: unknown) {
+  const raw = typeof value === 'string' ? JSON.parse(value) : value;
+  const parsed = routineShareSnapshotSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
+function routineSharePayload(share: {
+  id: string;
+  token: string;
+  routine_day_id: string;
+  created_at: Date;
+  expires_at: Date;
+  revoked_at: Date | null;
+  snapshot: unknown;
+}) {
+  const snapshot = parseRoutineShareSnapshot(share.snapshot);
+  if (!snapshot) return null;
+  return {
+    id: share.id,
+    token: share.token,
+    routineDayId: share.routine_day_id,
+    status: routineShareStatus(share),
+    createdAt: share.created_at,
+    expiresAt: share.expires_at,
+    snapshot,
+  };
+}
+
+function storedWeightToKg(weight: string | null, unit: string | null) {
+  if (weight == null) return null;
+  const value = Number(weight);
+  return unit === 'kg' ? value : value / 2.20462262185;
+}
+
+function kgToStoredWeight(weightKg: number | null, unit: string | null) {
+  if (weightKg == null) return null;
+  return unit === 'kg' ? weightKg : weightKg * 2.20462262185;
+}
+
+app.get('/v1/routine-shares', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = routineShareListSchema.safeParse(request.query);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid routine share query.' });
+  const shares = await sql<{
+    id: string; token: string; routine_day_id: string; created_at: Date;
+    expires_at: Date; revoked_at: Date | null; snapshot: unknown;
+  }[]>`
+    SELECT id, token, routine_day_id, created_at, expires_at, revoked_at, snapshot
+    FROM routine_share_snapshots
+    WHERE owner_user_id = ${userId} AND routine_day_id = ${parsed.data.routineDayId}
+    ORDER BY created_at DESC
+  `;
+  return reply.send({
+    shares: shares.map(routineSharePayload).filter((share) => share != null),
+  });
+});
+
+app.post('/v1/routine-shares', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = routineShareCreateSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid routine share payload.' });
+
+  const created = await sql.begin(async (transaction) => {
+    const [day] = await transaction<{
+      day_id: string; day_name: string; routine_id: string; folder_name: string;
+      owner_name: string | null; owner_username: string; weight_unit: string | null;
+    }[]>`
+      SELECT rd.id AS day_id, rd.day_name, r.id AS routine_id, r.name AS folder_name,
+        u.name AS owner_name, u.username, p.weight_unit
+      FROM routine_days rd
+      INNER JOIN routines r ON r.id = rd.routine_id
+      INNER JOIN users u ON u.id = r.user_id
+      LEFT JOIN user_preferences p ON p.user_id = r.user_id
+      WHERE rd.id = ${parsed.data.routineDayId} AND r.user_id = ${userId}
+      FOR UPDATE
+    `;
+    if (!day) return null;
+    const exercises = await transaction<{
+      exercise_id: string; name: string; category: string; muscle_group: string | null;
+      target_sets: number; target_reps: number | null; target_weight: string | null;
+      tracking_mode: string; target_duration_seconds: number | null;
+    }[]>`
+      SELECT e.id AS exercise_id, e.name, e.category, e.muscle_group,
+        rde.target_sets, rde.target_reps, rde.target_weight,
+        rde.tracking_mode, rde.target_duration_seconds
+      FROM routine_day_exercises rde
+      INNER JOIN exercises e ON e.id = rde.exercise_id
+      WHERE rde.routine_day_id = ${day.day_id}
+      ORDER BY rde.sort_order ASC, rde.id ASC
+    `;
+    if (exercises.length === 0) return { empty: true } as const;
+    const snapshot = routineShareSnapshotSchema.parse({
+      routineName: day.day_name,
+      folderName: day.folder_name,
+      ownerName: day.owner_name,
+      ownerUsername: day.owner_username,
+      exercises: exercises.map((exercise) => ({
+        exerciseId: exercise.exercise_id,
+        name: exercise.name,
+        category: exercise.category,
+        muscleGroup: exercise.muscle_group,
+        targetSets: exercise.target_sets,
+        targetReps: exercise.target_reps ?? 10,
+        trackingMode: exercise.tracking_mode,
+        targetDurationSeconds: exercise.target_duration_seconds,
+        targetWeightKg: storedWeightToKg(exercise.target_weight, day.weight_unit),
+      })),
+    });
+    const [share] = await transaction<{
+      id: string; token: string; routine_day_id: string; created_at: Date;
+      expires_at: Date; revoked_at: Date | null; snapshot: unknown;
+    }[]>`
+      INSERT INTO routine_share_snapshots
+        (id, token, owner_user_id, routine_id, routine_day_id, snapshot, created_at, expires_at)
+      VALUES
+        (${randomUUID()}, ${randomBytes(24).toString('base64url')}, ${userId},
+         ${day.routine_id}, ${day.day_id}, ${JSON.stringify(snapshot)}, now(), now() + interval '30 days')
+      RETURNING id, token, routine_day_id, created_at, expires_at, revoked_at, snapshot
+    `;
+    return { share } as const;
+  });
+  if (created == null) return reply.code(404).send({ code: 'routine_not_found', error: 'Routine not found.' });
+  if ('empty' in created) {
+    return reply.code(409).send({
+      code: 'routine_share_empty',
+      error: 'Add at least one exercise before sharing this routine.',
+    });
+  }
+  const share = routineSharePayload(created.share);
+  if (!share) return reply.code(500).send({ error: 'Could not prepare this routine share.' });
+  return reply.code(201).send({ share });
+});
+
+app.delete('/v1/routine-shares/:token', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = routineShareTokenSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: 'Invalid routine share link.' });
+  const [revoked] = await sql<{ id: string }[]>`
+    UPDATE routine_share_snapshots
+    SET revoked_at = COALESCE(revoked_at, now())
+    WHERE token = ${params.data.token} AND owner_user_id = ${userId}
+    RETURNING id
+  `;
+  if (!revoked) return reply.code(404).send({ code: 'routine_share_not_found', error: 'Routine link not found.' });
+  return reply.code(204).send();
+});
+
+app.get('/v1/routine-shares/:token', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = routineShareTokenSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: 'Invalid routine share link.' });
+  const [share] = await sql<{
+    id: string; token: string; routine_day_id: string; created_at: Date;
+    expires_at: Date; revoked_at: Date | null; snapshot: unknown;
+  }[]>`
+    SELECT id, token, routine_day_id, created_at, expires_at, revoked_at, snapshot
+    FROM routine_share_snapshots
+    WHERE token = ${params.data.token}
+    LIMIT 1
+  `;
+  if (!share) return reply.code(404).send({ code: 'routine_share_not_found', error: 'Routine link not found.' });
+  const status = routineShareStatus(share);
+  if (status === 'revoked') return reply.code(410).send({ code: 'routine_share_revoked', error: 'This routine link was revoked.' });
+  if (status === 'expired') return reply.code(410).send({ code: 'routine_share_expired', error: 'This routine link has expired.' });
+  const payload = routineSharePayload(share);
+  if (!payload) return reply.code(404).send({ code: 'routine_share_not_found', error: 'Routine link not found.' });
+  return reply.send({ share: payload.snapshot });
+});
+
+app.post('/v1/routine-shares/:token/import', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = routineShareTokenSchema.safeParse(request.params);
+  const parsed = routineShareImportSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid routine import payload.' });
+  const result = await sql.begin(async (transaction) => {
+    const [share] = await transaction<{
+      id: string; token: string; routine_day_id: string; created_at: Date;
+      expires_at: Date; revoked_at: Date | null; snapshot: unknown;
+    }[]>`
+      SELECT id, token, routine_day_id, created_at, expires_at, revoked_at, snapshot
+      FROM routine_share_snapshots WHERE token = ${params.data.token} FOR UPDATE
+    `;
+    if (!share) return { error: 'routine_share_not_found' } as const;
+    const status = routineShareStatus(share);
+    if (status !== 'active') return { error: `routine_share_${status}` } as const;
+    const snapshot = parseRoutineShareSnapshot(share.snapshot);
+    if (!snapshot) return { error: 'routine_share_not_found' } as const;
+    const [folder] = await transaction<{ id: string; weight_unit: string | null }[]>`
+      SELECT r.id, p.weight_unit
+      FROM routines r
+      LEFT JOIN user_preferences p ON p.user_id = r.user_id
+      WHERE r.id = ${parsed.data.routineId} AND r.user_id = ${userId}
+      FOR UPDATE
+    `;
+    if (!folder) return { error: 'routine_folder_not_found' } as const;
+    for (const entry of snapshot.exercises) {
+      const [exercise] = await transaction<{ id: string }[]>`
+        SELECT id FROM exercises WHERE id = ${entry.exerciseId} LIMIT 1
+      `;
+      if (!exercise) return { error: 'routine_share_exercise_unavailable', name: entry.name } as const;
+    }
+    const [day] = await transaction<{ id: string; day_name: string; sort_order: number }[]>`
+      INSERT INTO routine_days (id, routine_id, day_name, sort_order, created_at, imported_from_share_id)
+      VALUES (
+        ${randomUUID()}, ${folder.id}, ${parsed.data.name ?? snapshot.routineName},
+        (SELECT coalesce(max(sort_order), -1) + 1 FROM routine_days WHERE routine_id = ${folder.id}),
+        now(), ${share.id}
+      )
+      RETURNING id, day_name, sort_order
+    `;
+    for (const [index, entry] of snapshot.exercises.entries()) {
+      await transaction`
+        INSERT INTO routine_day_exercises
+          (id, routine_day_id, exercise_id, sort_order, target_sets, target_reps, target_weight, tracking_mode, target_duration_seconds)
+        VALUES (
+          ${randomUUID()}, ${day.id}, ${entry.exerciseId}, ${index}, ${entry.targetSets},
+          ${entry.targetReps}, ${kgToStoredWeight(entry.targetWeightKg, folder.weight_unit)?.toString() ?? null},
+          ${entry.trackingMode}, ${entry.trackingMode === 'timed' ? entry.targetDurationSeconds : null}
+        )
+      `;
+    }
+    return { day } as const;
+  });
+  if ('error' in result) {
+    const message = result.error === 'routine_share_revoked'
+      ? 'This routine link was revoked.'
+      : result.error === 'routine_share_expired'
+      ? 'This routine link has expired.'
+      : result.error === 'routine_share_exercise_unavailable'
+      ? `“${result.name}” is no longer available to import.`
+      : result.error === 'routine_folder_not_found'
+      ? 'Choose a routine folder you own.'
+      : 'Routine link not found.';
+    const status = result.error === 'routine_share_revoked' || result.error === 'routine_share_expired' ? 410 : 404;
+    return reply.code(status).send({ code: result.error, error: message });
+  }
+  return reply.code(201).send({
+    day: {
+      id: result.day.id,
+      name: result.day.day_name,
+      sortOrder: result.day.sort_order,
+      sourceShareToken: params.data.token,
+    },
+  });
+});
+
+app.post('/v1/plan-days/:id/reorder', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = reorderSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid routine reorder payload.' });
+
+  const result = await sql.begin(async (transaction) => {
+    const [day] = await transaction<{ id: string; routine_id: string }[]>`
+      SELECT rd.id, rd.routine_id FROM routine_days rd
+      INNER JOIN routines r ON r.id = rd.routine_id
+      WHERE rd.id = ${params.data.id} AND r.user_id = ${userId} LIMIT 1
+    `;
+    if (!day) return null;
+    const days = await transaction<{ id: string }[]>`
+      SELECT id FROM routine_days WHERE routine_id = ${day.routine_id}
+      ORDER BY sort_order ASC, id ASC FOR UPDATE
+    `;
+    const fromIndex = days.findIndex((item) => item.id === day.id);
+    const toIndex = parsed.data.direction === 'up' ? fromIndex - 1 : fromIndex + 1;
+    if (fromIndex < 0 || toIndex < 0 || toIndex >= days.length) return day;
+    const reordered = [...days];
+    const [moved] = reordered.splice(fromIndex, 1);
+    reordered.splice(toIndex, 0, moved);
+    for (const [index, item] of reordered.entries()) {
+      await transaction`UPDATE routine_days SET sort_order = ${index} WHERE id = ${item.id}`;
+    }
+    await transaction`UPDATE routines SET updated_at = now() WHERE id = ${day.routine_id}`;
+    return day;
+  });
+  if (!result) return reply.code(404).send({ error: 'Routine not found.' });
+  return reply.send({ id: result.id });
 });
 
 app.post('/v1/plan-days/:id/exercises', async (request, reply) => {
@@ -1357,8 +1698,8 @@ app.post('/v1/quick-add', async (request, reply) => {
 
   const result = await sql.begin(async (transaction) => {
     const [session] = await transaction<{ id: string; started_at: Date; ended_at: Date }[]>`
-      INSERT INTO workout_sessions (id, user_id, routine_id, routine_day_id, started_at, ended_at, status)
-      VALUES (${randomUUID()}, ${userId}, NULL, NULL, ${startedAt}, ${now}, 'completed')
+      INSERT INTO workout_sessions (id, user_id, routine_id, routine_day_id, started_at, ended_at, status, origin)
+      VALUES (${randomUUID()}, ${userId}, NULL, NULL, ${startedAt}, ${now}, 'completed', 'quick_add')
       RETURNING id, started_at, ended_at
     `;
     const [sessionExercise] = await transaction<{ id: string }[]>`
@@ -1396,6 +1737,108 @@ app.post('/v1/quick-add', async (request, reply) => {
   });
 });
 
+async function startActiveWorkout(
+  userId: string,
+  routineId: string | null,
+  routineDayId: string | null,
+  origin: 'plan_day' | 'freeform',
+  startedAt: Date,
+) {
+  return sql.begin(async (transaction) => {
+    // Both start routes serialize on the user row. The partial unique index in
+    // migration 011 also protects against writers outside these routes.
+    await transaction`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`;
+    const [active] = await transaction<{ id: string }[]>`
+      SELECT id FROM workout_sessions
+      WHERE user_id = ${userId} AND status = 'active' LIMIT 1
+    `;
+    if (active) return { activeSessionId: active.id, session: null };
+    const [session] = await transaction<{ id: string; started_at: Date }[]>`
+      INSERT INTO workout_sessions
+        (id, user_id, routine_id, routine_day_id, started_at, status, origin)
+      VALUES
+        (${randomUUID()}, ${userId}, ${routineId}, ${routineDayId}, ${startedAt}, 'active', ${origin})
+      RETURNING id, started_at
+    `;
+    return { activeSessionId: null, session };
+  });
+}
+
+function rankResponse(row: {
+  exercise_id: string; exercise_name: string; category: string; muscle_group: string | null;
+  tracking_mode: string | null; metric: string | null; baseline_value: string | null;
+  best_value: string | null; tier: string | null; subdivision: number | null;
+  progress_points: number | null; next_threshold: string | null; rule_version: number | null;
+  calculated_at: Date | null;
+}) {
+  return {
+    exerciseId: row.exercise_id, exerciseName: row.exercise_name, category: row.category,
+    muscleGroup: row.muscle_group, trackingMode: row.tracking_mode,
+    metric: row.metric, baselineValue: row.baseline_value == null ? null : Number(row.baseline_value),
+    bestValue: row.best_value == null ? null : Number(row.best_value), tier: row.tier,
+    subdivision: row.subdivision, progressPoints: row.progress_points,
+    nextThreshold: row.next_threshold == null ? null : Number(row.next_threshold),
+    ruleVersion: row.rule_version, calculatedAt: row.calculated_at,
+  };
+}
+
+app.get('/v1/exercise-ranks', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const query = exerciseRankQuerySchema.safeParse(request.query);
+  if (!query.success) return reply.code(400).send({ error: 'Invalid rank query.' });
+  const rows = await sql<{
+    exercise_id: string; exercise_name: string; category: string; muscle_group: string | null;
+    tracking_mode: string | null; metric: string | null; baseline_value: string | null;
+    best_value: string | null; tier: string | null; subdivision: number | null;
+    progress_points: number | null; next_threshold: string | null; rule_version: number | null; calculated_at: Date | null;
+  }[]>`
+    SELECT e.id AS exercise_id, e.name AS exercise_name, e.category, e.muscle_group,
+      ers.tracking_mode, ers.metric, ers.baseline_value, ers.best_value, ers.tier,
+      ers.subdivision, ers.progress_points, ers.next_threshold, ers.rule_version, ers.calculated_at
+    FROM exercises e
+    LEFT JOIN exercise_rank_snapshots ers ON ers.exercise_id = e.id AND ers.user_id = ${userId}
+      AND ers.is_current ${query.data.mode ? sql`AND ers.tracking_mode = ${query.data.mode}` : sql``}
+    WHERE (${query.data.q ?? ''} = '' OR e.name ILIKE ${`%${query.data.q ?? ''}%`})
+    ORDER BY (ers.tier IS NULL), e.name ASC
+    LIMIT ${query.data.limit} OFFSET ${query.data.offset}
+  `;
+  return reply.send({ ruleVersion: EXERCISE_RANK_RULE_VERSION, ranks: rows.map(rankResponse), nextOffset: rows.length === query.data.limit ? query.data.offset + rows.length : null });
+});
+
+app.get('/v1/exercise-ranks/:exerciseId', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = exerciseRankParamsSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: 'Invalid exercise id.' });
+  const [row] = await sql<{
+    exercise_id: string; exercise_name: string; category: string; muscle_group: string | null;
+    tracking_mode: string | null; metric: string | null; baseline_value: string | null;
+    best_value: string | null; tier: string | null; subdivision: number | null;
+    progress_points: number | null; next_threshold: string | null; rule_version: number | null; calculated_at: Date | null;
+    evidence_session_ids: string[] | null;
+  }[]>`
+    SELECT e.id AS exercise_id, e.name AS exercise_name, e.category, e.muscle_group,
+      ers.tracking_mode, ers.metric, ers.baseline_value, ers.best_value, ers.tier,
+      ers.subdivision, ers.progress_points, ers.next_threshold, ers.rule_version, ers.calculated_at,
+      ers.evidence_session_ids
+    FROM exercises e LEFT JOIN exercise_rank_snapshots ers
+      ON ers.exercise_id = e.id AND ers.user_id = ${userId} AND ers.is_current
+    WHERE e.id = ${params.data.exerciseId} LIMIT 1
+  `;
+  if (!row) return reply.code(404).send({ error: 'Exercise not found.' });
+  const evidence = row.evidence_session_ids?.length
+    ? await sql<{ session_id: string; ended_at: Date; value: string }[]>`
+        SELECT ws.id AS session_id, ws.ended_at,
+          coalesce(max(wset.duration_seconds)::numeric, max(wset.weight * (1 + least(wset.reps, 12)::numeric / 30)), max(wset.reps)::numeric)::text AS value
+        FROM workout_sessions ws INNER JOIN workout_sets wset ON wset.session_id = ws.id
+        WHERE ws.id = ANY(${row.evidence_session_ids}::uuid[]) AND wset.exercise_id = ${row.exercise_id}
+        GROUP BY ws.id, ws.ended_at ORDER BY ws.ended_at ASC
+      `
+    : [];
+  return reply.send({ rank: { ...rankResponse(row), evidence: evidence.map((item) => ({ sessionId: item.session_id, completedAt: item.ended_at, value: Number(item.value) })) } });
+});
+
 app.post('/v1/sessions', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
@@ -1407,12 +1850,28 @@ app.post('/v1/sessions', async (request, reply) => {
     WHERE rd.id = ${parsed.data.routineDayId} AND r.user_id = ${userId} LIMIT 1
   `;
   if (!day) return reply.code(404).send({ error: 'Workout day not found.' });
-  const [session] = await sql<{ id: string; started_at: Date }[]>`
-    INSERT INTO workout_sessions (id, user_id, routine_id, routine_day_id, started_at, status)
-    VALUES (${randomUUID()}, ${userId}, ${day.routine_id}, ${parsed.data.routineDayId}, ${parseStartedAt(parsed.data.startedAtDate)}, 'active')
-    RETURNING id, started_at
-  `;
-  return reply.code(201).send({ session: { id: session.id, startedAt: session.started_at } });
+  const result = await startActiveWorkout(
+    userId, day.routine_id, parsed.data.routineDayId, 'plan_day',
+    parseStartedAt(parsed.data.startedAtDate),
+  );
+  if (result.activeSessionId) return reply.code(409).send({
+    code: 'active_session_exists',
+    error: 'Resume your existing workout.',
+    activeSessionId: result.activeSessionId,
+  });
+  return reply.code(201).send({ session: { id: result.session!.id, startedAt: result.session!.started_at, origin: 'plan_day' } });
+});
+
+app.post('/v1/sessions/freeform', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const result = await startActiveWorkout(userId, null, null, 'freeform', new Date());
+  if (result.activeSessionId) return reply.code(409).send({
+    code: 'active_session_exists',
+    error: 'Resume your existing workout.',
+    activeSessionId: result.activeSessionId,
+  });
+  return reply.code(201).send({ session: { id: result.session!.id, startedAt: result.session!.started_at, origin: 'freeform' } });
 });
 
 app.get('/v1/sessions/:id', async (request, reply) => {
@@ -1421,8 +1880,8 @@ app.get('/v1/sessions/:id', async (request, reply) => {
   const params = idParamsSchema.safeParse(request.params);
   if (!params.success) return reply.code(400).send({ error: 'Invalid session id.' });
 
-  const [session] = await sql<{ id: string; status: string; started_at: Date; ended_at: Date | null; routine_name: string | null; day_name: string | null; routine_day_id: string | null }[]>`
-    SELECT ws.id, ws.status, ws.started_at, ws.ended_at, ws.routine_day_id, r.name AS routine_name, rd.day_name
+  const [session] = await sql<{ id: string; status: string; origin: string; started_at: Date; ended_at: Date | null; routine_id: string | null; routine_name: string | null; day_name: string | null; routine_day_id: string | null }[]>`
+    SELECT ws.id, ws.status, ws.origin, ws.started_at, ws.ended_at, ws.routine_id, ws.routine_day_id, r.name AS routine_name, rd.day_name
     FROM workout_sessions ws
     LEFT JOIN routines r ON r.id = ws.routine_id
     LEFT JOIN routine_days rd ON rd.id = ws.routine_day_id
@@ -1472,8 +1931,10 @@ app.get('/v1/sessions/:id', async (request, reply) => {
   const plannedIds = new Set(plannedExercises.map((exercise) => exercise.id));
   const sessionExercises = [...plannedExercises, ...addedExercises.filter((exercise) => !plannedIds.has(exercise.id))];
   const sessionExerciseIds = sessionExercises.map((exercise) => exercise.id);
+  const repExerciseIds = sessionExercises.filter((exercise) => exercise.tracking_mode !== 'timed').map((exercise) => exercise.id);
+  const timedExerciseIds = sessionExercises.filter((exercise) => exercise.tracking_mode === 'timed').map((exercise) => exercise.id);
   const previousPerformances = sessionExerciseIds.length
-    ? await sql<{ exercise_id: string; started_at: Date; ordinal: number; reps: number; weight: string | null }[]>`
+    ? await sql<{ exercise_id: string; started_at: Date; ordinal: number; reps: number; weight: string | null; duration_seconds: number | null }[]>`
         WITH latest_completed AS (
           SELECT DISTINCT ON (wset.exercise_id) wset.exercise_id, ws.id AS session_id, ws.started_at
           FROM workout_sets wset
@@ -1482,16 +1943,18 @@ app.get('/v1/sessions/:id', async (request, reply) => {
             AND ws.status = 'completed'
             AND ws.id <> ${session.id}
             AND wset.is_warmup = false
-            AND wset.duration_seconds IS NULL
-            AND wset.exercise_id = ANY(${sessionExerciseIds}::uuid[])
+            AND ((wset.duration_seconds IS NULL AND wset.exercise_id = ANY(${repExerciseIds}::uuid[]))
+              OR (wset.duration_seconds IS NOT NULL AND wset.exercise_id = ANY(${timedExerciseIds}::uuid[])))
           ORDER BY wset.exercise_id, ws.started_at DESC, ws.id DESC
         )
         SELECT wset.exercise_id, latest_completed.started_at,
           row_number() OVER (PARTITION BY wset.exercise_id ORDER BY wset.created_at ASC, wset.id ASC)::int AS ordinal,
-          wset.reps, wset.weight
+          wset.reps, wset.weight, wset.duration_seconds
         FROM workout_sets wset
         INNER JOIN latest_completed ON latest_completed.session_id = wset.session_id AND latest_completed.exercise_id = wset.exercise_id
-        WHERE wset.is_warmup = false AND wset.duration_seconds IS NULL
+        WHERE wset.is_warmup = false
+          AND ((wset.duration_seconds IS NULL AND wset.exercise_id = ANY(${repExerciseIds}::uuid[]))
+            OR (wset.duration_seconds IS NOT NULL AND wset.exercise_id = ANY(${timedExerciseIds}::uuid[])))
         ORDER BY wset.exercise_id, ordinal ASC
       `
     : [];
@@ -1499,6 +1962,9 @@ app.get('/v1/sessions/:id', async (request, reply) => {
     session: {
       id: session.id,
       status: session.status,
+      origin: session.origin,
+      routineId: session.routine_id,
+      routineDayId: session.routine_day_id,
       startedAt: session.started_at,
       endedAt: session.ended_at,
       routineName: session.routine_name,
@@ -1508,7 +1974,7 @@ app.get('/v1/sessions/:id', async (request, reply) => {
     exercises: sessionExercises.map((exercise) => ({ id: exercise.id, name: exercise.name, category: exercise.category, muscleGroup: exercise.muscle_group, targetSets: exercise.target_sets, targetReps: exercise.target_reps, targetWeight: exercise.target_weight, trackingMode: exercise.tracking_mode, targetDurationSeconds: exercise.target_duration_seconds, demoUrl: exercise.demo_url, demoSourceName: exercise.demo_source_name })),
     libraryExercises: libraryExercises.map((exercise) => ({ id: exercise.id, name: exercise.name, category: exercise.category, muscleGroup: exercise.muscle_group, demoUrl: exercise.demo_url, demoSourceName: exercise.demo_source_name })),
     sets: sets.map((set) => ({ id: set.id, exerciseId: set.exercise_id, setOrder: set.set_order, reps: set.reps, weight: set.weight, durationSeconds: set.duration_seconds, isWarmup: set.is_warmup, createdAt: set.created_at })),
-    previousPerformances: previousPerformances.map((set) => ({ exerciseId: set.exercise_id, startedAt: set.started_at, order: set.ordinal, reps: set.reps, weight: set.weight })),
+    previousPerformances: previousPerformances.map((set) => ({ exerciseId: set.exercise_id, startedAt: set.started_at, order: set.ordinal, reps: set.reps, weight: set.weight, durationSeconds: set.duration_seconds })),
   });
 });
 
@@ -1790,15 +2256,16 @@ app.patch('/v1/sets/:id', async (request, reply) => {
   const parsed = workoutSetSchema.safeParse(request.body);
   if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid workout set payload.' });
   const timed = parsed.data.durationSeconds != null;
-  const [updated] = await sql<{ id: string; session_id: string }[]>`
+  const [updated] = await sql<{ id: string; session_id: string; exercise_id: string; status: string }[]>`
     UPDATE workout_sets wset SET exercise_id = ${parsed.data.exerciseId}, reps = ${timed ? 1 : parsed.data.reps!}, weight = ${timed ? null : parsed.data.weight?.toString() ?? null}, duration_seconds = ${parsed.data.durationSeconds ?? null}, is_warmup = ${parsed.data.isWarmup ?? false}
     FROM workout_sessions ws
     WHERE wset.id = ${params.data.id} AND wset.session_id = ws.id AND ws.user_id = ${userId}
-    RETURNING wset.id, wset.session_id
+    RETURNING wset.id, wset.session_id, wset.exercise_id, ws.status
   `;
   if (!updated) return reply.code(404).send({ error: 'Workout set not found.' });
   await recordProgressionEvent(sql, userId, 'workout_set_updated', 'workout_set', updated.id, { sessionId: updated.session_id });
   await evaluateArcanaForUser(sql, userId);
+  if (updated.status === 'completed') await recomputeExerciseRanks(sql, userId, [updated.exercise_id, parsed.data.exerciseId]);
   return reply.send({ set: { id: updated.id, sessionId: updated.session_id } });
 });
 
@@ -1808,8 +2275,8 @@ app.delete('/v1/sets/:id', async (request, reply) => {
   const params = idParamsSchema.safeParse(request.params);
   if (!params.success) return reply.code(400).send({ error: 'Invalid workout set id.' });
   const result = await sql.begin(async (transaction) => {
-    const [ownedSet] = await transaction<{ id: string; session_id: string }[]>`
-      SELECT wset.id, wset.session_id FROM workout_sets wset
+    const [ownedSet] = await transaction<{ id: string; session_id: string; exercise_id: string; status: string }[]>`
+      SELECT wset.id, wset.session_id, wset.exercise_id, ws.status FROM workout_sets wset
       INNER JOIN workout_sessions ws ON ws.id = wset.session_id
       WHERE wset.id = ${params.data.id} AND ws.user_id = ${userId} LIMIT 1
     `;
@@ -1824,6 +2291,7 @@ app.delete('/v1/sets/:id', async (request, reply) => {
   if (!result) return reply.code(404).send({ error: 'Workout set not found.' });
   await recordProgressionEvent(sql, userId, 'workout_set_deleted', 'workout_set', result.id, { sessionId: result.session_id });
   await evaluateArcanaForUser(sql, userId);
+  if (result.status === 'completed') await recomputeExerciseRanks(sql, userId, [result.exercise_id]);
   return reply.code(204).send();
 });
 
@@ -1840,7 +2308,9 @@ app.post('/v1/sessions/:id/complete', async (request, reply) => {
   if (!updated) return reply.code(404).send({ error: 'Workout session not found.' });
   await recordProgressionEvent(sql, userId, 'workout_session_completed', 'workout_session', updated.id, { endedAt: updated.ended_at });
   await evaluateArcanaForUser(sql, userId);
-  return reply.send({ session: { id: updated.id, status: 'completed', endedAt: updated.ended_at } });
+  const exerciseIds = await sql<{ exercise_id: string }[]>`SELECT DISTINCT exercise_id FROM workout_sets WHERE session_id = ${updated.id} AND is_warmup = false`;
+  const rankUpdates = await recomputeExerciseRanks(sql, userId, exerciseIds.map((row) => row.exercise_id));
+  return reply.send({ session: { id: updated.id, status: 'completed', endedAt: updated.ended_at }, rankUpdates });
 });
 
 app.delete('/v1/sessions/:id', async (request, reply) => {
@@ -2663,7 +3133,9 @@ app.get('/v1/record', async (request, reply) => {
   const [user, activeSession, routines, planExercises, exercises, sessions, recoverySessions, foods, meals, activeFast, fasts, progress, incoming, outgoing, preferences] = await Promise.all([
     sql`SELECT id, username, name, email FROM users WHERE id = ${userId} LIMIT 1`,
     sql`
-      SELECT ws.id, ws.status, ws.started_at, ws.ended_at, r.name AS routine_name, rd.day_name
+      SELECT ws.id, ws.status, ws.origin, ws.started_at, ws.ended_at,
+        CASE WHEN ws.origin = 'freeform' THEN 'Empty Workout' ELSE r.name END AS routine_name,
+        CASE WHEN ws.origin = 'freeform' THEN 'Freeform' ELSE rd.day_name END AS day_name
       FROM workout_sessions ws
       LEFT JOIN routines r ON r.id = ws.routine_id
       LEFT JOIN routine_days rd ON rd.id = ws.routine_day_id
@@ -2717,7 +3189,9 @@ app.get('/v1/record', async (request, reply) => {
       ORDER BY e.name ASC LIMIT 300
     `,
     sql`
-      SELECT ws.id, ws.status, ws.started_at, ws.ended_at, coalesce(r.name, 'Quick Add') AS routine_name, coalesce(rd.day_name, 'Quick Add') AS day_name,
+      SELECT ws.id, ws.status, ws.origin, ws.started_at, ws.ended_at,
+        CASE WHEN ws.origin = 'freeform' THEN 'Empty Workout' ELSE coalesce(r.name, 'Quick Add') END AS routine_name,
+        CASE WHEN ws.origin = 'freeform' THEN 'Freeform' ELSE coalesce(rd.day_name, 'Quick Add') END AS day_name,
         count(wset.id)::int AS set_count
       FROM workout_sessions ws
       LEFT JOIN routines r ON r.id = ws.routine_id

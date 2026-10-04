@@ -12,7 +12,8 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:arcana": "tsx --test src/arcana.test.ts",
-    "test:workout-tracking": "tsx --test src/workout-tracking.test.ts"
+    "test:workout-tracking": "tsx --test src/workout-tracking.test.ts",
+    "test:exercise-ranks": "tsx --test src/exercise-ranks.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1095.0",
