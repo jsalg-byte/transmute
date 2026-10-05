@@ -161,15 +161,19 @@ export async function recomputeRankProjections(sql: Sql, userId: string) {
     muscle_group: string; region_id: string; body_side: 'front' | 'back';
     eligible_exercise_count: number; score: string | null; evidence_exercise_ids: string[];
   }[]>`
-    WITH ranked AS (
-      SELECT c.muscle_group, c.region_id, c.body_side, c.contribution_weight, ers.exercise_id,
-        (ers.best_value / nullif(ers.baseline_value, 0))::numeric AS ratio,
-        row_number() OVER (PARTITION BY c.muscle_group ORDER BY (ers.best_value / nullif(ers.baseline_value, 0)) DESC, ers.exercise_id) AS position,
-        count(DISTINCT ers.exercise_id) OVER (PARTITION BY c.muscle_group) AS eligible_count
+    WITH distinct_exercise AS (
+      SELECT DISTINCT c.muscle_group, c.region_id, c.body_side, c.contribution_weight, ers.exercise_id,
+        (ers.best_value / nullif(ers.baseline_value, 0))::numeric AS ratio
       FROM exercise_rank_snapshots ers
       INNER JOIN exercise_muscle_contributions c ON c.exercise_id = ers.exercise_id
       WHERE ers.user_id = ${userId} AND ers.is_current AND ers.tier IS NOT NULL
         AND ers.baseline_value IS NOT NULL AND ers.best_value IS NOT NULL
+    ),
+    ranked AS (
+      SELECT muscle_group, region_id, body_side, contribution_weight, exercise_id, ratio,
+        row_number() OVER (PARTITION BY muscle_group ORDER BY ratio DESC, exercise_id) AS position,
+        count(exercise_id) OVER (PARTITION BY muscle_group) AS eligible_count
+      FROM distinct_exercise
     )
     SELECT muscle_group, min(region_id) AS region_id, min(body_side) AS body_side,
       max(eligible_count)::int AS eligible_exercise_count,
