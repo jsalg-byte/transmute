@@ -272,6 +272,14 @@ const nutritionTargetInputSchema = z.object({
 const nutritionDiaryQuerySchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
+const recipesQuerySchema = z.object({
+  query: z.string().trim().max(100).optional(),
+});
+const recipeLogSchema = z.object({
+  portionServings: z.number().positive().max(50).default(1),
+  mealType: z.enum(['breakfast', 'lunch', 'dinner', 'snack', 'uncategorized']).default('lunch'),
+  consumedAt: z.string().datetime().optional(),
+});
 const fastSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('start'), note: z.string().trim().max(240).optional(), targetMinutes: z.number().int().min(1).max(60 * 24 * 7).optional() }),
   z.object({ action: z.literal('end'), note: z.string().trim().max(240).optional() }),
@@ -3128,6 +3136,268 @@ app.get('/v1/nutrition/diary', async (request, reply) => {
     },
     remainingCalories,
     meals,
+  });
+});
+
+app.get('/v1/recipes', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = recipesQuerySchema.safeParse(request.query);
+  const q = parsed.success && parsed.data.query ? `%${parsed.data.query.toLowerCase()}%` : null;
+
+  const rows = await sql<{
+    id: string;
+    title: string;
+    description: string;
+    author_name: string;
+    servings: number;
+    serving_calories_kcal: number;
+    serving_protein_g: string;
+    serving_carbs_g: string;
+    serving_fat_g: string;
+    serving_size_g: string;
+    serving_size_unit: string;
+    image_url: string | null;
+    instructions: string[] | string;
+    version: number;
+    is_curated: boolean;
+  }[]>`
+    SELECT id, title, description, author_name, servings,
+      serving_calories_kcal, serving_protein_g, serving_carbs_g, serving_fat_g,
+      serving_size_g, serving_size_unit, image_url, instructions, version, is_curated
+    FROM recipes
+    WHERE (${q}::text IS NULL OR lower(title) LIKE ${q}::text OR lower(description) LIKE ${q}::text)
+    ORDER BY is_curated DESC, title ASC
+    LIMIT 50
+  `;
+
+  const recipeIds = rows.map((r) => r.id);
+  const ingredientRows = recipeIds.length > 0
+    ? await sql<{
+        recipe_id: string;
+        name: string;
+        amount: string;
+        unit: string;
+        sort_order: number;
+      }[]>`
+        SELECT recipe_id, name, amount, unit, sort_order
+        FROM recipe_ingredients
+        WHERE recipe_id = ANY(${recipeIds}::uuid[])
+        ORDER BY sort_order ASC
+      `
+    : [];
+
+  const ingredientsByRecipe: Record<string, Array<{ name: string; amount: number; unit: string }>> = {};
+  for (const ing of ingredientRows) {
+    if (!ingredientsByRecipe[ing.recipe_id]) ingredientsByRecipe[ing.recipe_id] = [];
+    ingredientsByRecipe[ing.recipe_id].push({
+      name: ing.name,
+      amount: parseFloat(ing.amount),
+      unit: ing.unit,
+    });
+  }
+
+  const recipes = rows.map((r) => {
+    let instructionsList: string[] = [];
+    if (Array.isArray(r.instructions)) {
+      instructionsList = r.instructions;
+    } else if (typeof r.instructions === 'string') {
+      try { instructionsList = JSON.parse(r.instructions); } catch { instructionsList = []; }
+    }
+
+    return {
+      id: r.id,
+      title: r.title,
+      description: r.description,
+      authorName: r.author_name,
+      servings: r.servings,
+      servingCaloriesKcal: r.serving_calories_kcal,
+      servingProteinG: parseFloat(r.serving_protein_g),
+      servingCarbsG: parseFloat(r.serving_carbs_g),
+      servingFatG: parseFloat(r.serving_fat_g),
+      servingSizeGrams: parseFloat(r.serving_size_g),
+      servingSizeUnit: r.serving_size_unit,
+      imageUrl: r.image_url,
+      ingredients: ingredientsByRecipe[r.id] ?? [],
+      instructions: instructionsList,
+      version: r.version,
+      isCurated: r.is_curated,
+    };
+  });
+
+  return reply.send({ recipes });
+});
+
+app.get('/v1/recipes/:id', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: 'Invalid recipe id.' });
+
+  const [recipeRow] = await sql<{
+    id: string;
+    title: string;
+    description: string;
+    author_name: string;
+    servings: number;
+    serving_calories_kcal: number;
+    serving_protein_g: string;
+    serving_carbs_g: string;
+    serving_fat_g: string;
+    serving_size_g: string;
+    serving_size_unit: string;
+    image_url: string | null;
+    instructions: string[] | string;
+    version: number;
+    is_curated: boolean;
+  }[]>`
+    SELECT id, title, description, author_name, servings,
+      serving_calories_kcal, serving_protein_g, serving_carbs_g, serving_fat_g,
+      serving_size_g, serving_size_unit, image_url, instructions, version, is_curated
+    FROM recipes
+    WHERE id = ${params.data.id}
+    LIMIT 1
+  `;
+  if (!recipeRow) return reply.code(404).send({ error: 'Recipe not found.' });
+
+  const ingredientRows = await sql<{
+    name: string;
+    amount: string;
+    unit: string;
+    sort_order: number;
+  }[]>`
+    SELECT name, amount, unit, sort_order
+    FROM recipe_ingredients
+    WHERE recipe_id = ${recipeRow.id}
+    ORDER BY sort_order ASC
+  `;
+
+  let instructionsList: string[] = [];
+  if (Array.isArray(recipeRow.instructions)) {
+    instructionsList = recipeRow.instructions;
+  } else if (typeof recipeRow.instructions === 'string') {
+    try { instructionsList = JSON.parse(recipeRow.instructions); } catch { instructionsList = []; }
+  }
+
+  return reply.send({
+    recipe: {
+      id: recipeRow.id,
+      title: recipeRow.title,
+      description: recipeRow.description,
+      authorName: recipeRow.author_name,
+      servings: recipeRow.servings,
+      servingCaloriesKcal: recipeRow.serving_calories_kcal,
+      servingProteinG: parseFloat(recipeRow.serving_protein_g),
+      servingCarbsG: parseFloat(recipeRow.serving_carbs_g),
+      servingFatG: parseFloat(recipeRow.serving_fat_g),
+      servingSizeGrams: parseFloat(recipeRow.serving_size_g),
+      servingSizeUnit: recipeRow.serving_size_unit,
+      imageUrl: recipeRow.image_url,
+      ingredients: ingredientRows.map((ing) => ({
+        name: ing.name,
+        amount: parseFloat(ing.amount),
+        unit: ing.unit,
+      })),
+      instructions: instructionsList,
+      version: recipeRow.version,
+      isCurated: recipeRow.is_curated,
+    },
+  });
+});
+
+app.post('/v1/recipes/:id/log', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  const parsed = recipeLogSchema.safeParse(request.body);
+  if (!params.success || !parsed.success) {
+    request.log.warn({ paramsError: params.error, bodyError: parsed.error, body: request.body }, 'Recipe log payload invalid');
+    return reply.code(400).send({ error: 'Invalid recipe log payload.' });
+  }
+
+  const [recipeRow] = await sql<{
+    id: string;
+    title: string;
+    serving_calories_kcal: number;
+    serving_protein_g: string;
+    serving_carbs_g: string;
+    serving_fat_g: string;
+    serving_size_g: string;
+    serving_size_unit: string;
+    version: number;
+  }[]>`
+    SELECT id, title, serving_calories_kcal, serving_protein_g, serving_carbs_g, serving_fat_g,
+      serving_size_g, serving_size_unit, version
+    FROM recipes
+    WHERE id = ${params.data.id}
+    LIMIT 1
+  `;
+  if (!recipeRow) return reply.code(404).send({ error: 'Recipe not found.' });
+
+  const portionServings = parsed.data.portionServings;
+  const consumedAt = parsed.data.consumedAt ? new Date(parsed.data.consumedAt) : new Date();
+
+  // Find or create a food record snapshot representing this recipe version
+  const foodName = `${recipeRow.title} (Recipe v${recipeRow.version})`;
+  let [food] = await sql<{ id: string }[]>`
+    SELECT id FROM foods
+    WHERE name = ${foodName} AND serving_size_unit = 'serving'
+    LIMIT 1
+  `;
+
+  if (!food) {
+    const [createdFood] = await sql<{ id: string }[]>`
+      INSERT INTO foods (
+        id, name, calories_kcal, serving_size_g, serving_size_unit, serving_size_text,
+        protein_g, carbs_g, fat_g, created_by_user_id, created_at
+      )
+      VALUES (
+        ${randomUUID()},
+        ${foodName},
+        ${recipeRow.serving_calories_kcal},
+        1,
+        'serving',
+        '1 serving',
+        ${recipeRow.serving_protein_g},
+        ${recipeRow.serving_carbs_g},
+        ${recipeRow.serving_fat_g},
+        ${userId},
+        now()
+      )
+      RETURNING id
+    `;
+    food = createdFood;
+  }
+
+  const [meal] = await sql<{ id: string; consumed_at: Date }[]>`
+    INSERT INTO meal_logs (id, user_id, food_id, quantity, meal_type, consumed_at, notes)
+    VALUES (
+      ${randomUUID()},
+      ${userId},
+      ${food.id},
+      ${portionServings.toString()},
+      ${parsed.data.mealType},
+      ${consumedAt},
+      ${`Logged from recipe ${recipeRow.title} v${recipeRow.version}`}
+    )
+    RETURNING id, consumed_at
+  `;
+
+  await recordProgressionEvent(sql, userId, 'meal_logged', 'meal_log', meal.id, {
+    mealType: parsed.data.mealType,
+    consumedAt: meal.consumed_at,
+    recipeId: recipeRow.id,
+    recipeVersion: recipeRow.version,
+  });
+  await evaluateArcanaForUser(sql, userId);
+
+  return reply.code(201).send({
+    meal: {
+      id: meal.id,
+      consumedAt: meal.consumed_at.toISOString(),
+      recipeId: recipeRow.id,
+      recipeVersion: recipeRow.version,
+    },
   });
 });
 
