@@ -15,6 +15,7 @@ import { getCalistreeCatalog, getCalistreeExerciseMetadata, searchCalistreeExerc
 import { arcanaDefinitions, evaluateArcanaForUser, recordProgressionEvent } from './arcana.js';
 import { EXERCISE_RANK_RULE_VERSION, recomputeExerciseRanks, recomputeRankProjections, scoreExerciseRank } from './exercise-ranks.js';
 import { awardXp, getUserProgression, REWARDS_CATALOG } from './progression.js';
+import { getStreaksAndCalendar, recomputeStreaksForUser } from './calendar-streaks.js';
 import { planDayExerciseUpdateSchema, workoutSetSchema } from './workout-tracking.js';
 
 const envSchema = z.object({
@@ -2624,6 +2625,8 @@ app.post('/v1/sessions/:id/complete', async (request, reply) => {
     );
   }
 
+  await recomputeStreaksForUser(sql, userId);
+
   return reply.send({ session: { id: updated.id, status: 'completed', endedAt: updated.ended_at }, rankUpdates });
 });
 
@@ -2635,6 +2638,7 @@ app.delete('/v1/sessions/:id', async (request, reply) => {
   const [deleted] = await sql<{ id: string }[]>`DELETE FROM workout_sessions WHERE id = ${params.data.id} AND user_id = ${userId} RETURNING id`;
   if (!deleted) return reply.code(404).send({ error: 'Workout session not found.' });
   await recomputeExerciseRanks(sql, userId);
+  await recomputeStreaksForUser(sql, userId);
   return reply.code(204).send();
 });
 
@@ -3276,6 +3280,36 @@ app.post('/v1/rewards/:id/claim', async (request, reply) => {
     rewardId: rewardDef.id,
     claimedAt: claimed.claimed_at.toISOString(),
   });
+});
+
+app.get('/v1/streaks', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const querySchema = z.object({
+    year: z.coerce.number().int().min(2000).max(2100).optional(),
+    month: z.coerce.number().int().min(1).max(12).optional(),
+  });
+  const parsed = querySchema.safeParse(request.query);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid calendar query.' });
+
+  const data = await getStreaksAndCalendar(sql, userId, parsed.data.year, parsed.data.month);
+  return reply.send(data);
+});
+
+app.patch('/v1/user/timezone', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const bodySchema = z.object({
+    timezone: z.string().min(1),
+  });
+  const parsed = bodySchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid timezone.' });
+
+  await sql`
+    UPDATE user_preferences SET timezone = ${parsed.data.timezone}, updated_at = now()
+    WHERE user_id = ${userId}
+  `;
+  return reply.send({ ok: true, timezone: parsed.data.timezone });
 });
 
 app.post('/v1/friends', async (request, reply) => {
