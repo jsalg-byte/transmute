@@ -14,6 +14,7 @@ import { requestAiBarcodeLookup, requestAiNutritionLabel, requestAiWorkoutDraft 
 import { getCalistreeCatalog, getCalistreeExerciseMetadata, searchCalistreeExercises } from './calistree.js';
 import { arcanaDefinitions, evaluateArcanaForUser, recordProgressionEvent } from './arcana.js';
 import { EXERCISE_RANK_RULE_VERSION, recomputeExerciseRanks, recomputeRankProjections, scoreExerciseRank } from './exercise-ranks.js';
+import { awardXp, getUserProgression, REWARDS_CATALOG } from './progression.js';
 import { planDayExerciseUpdateSchema, workoutSetSchema } from './workout-tracking.js';
 
 const envSchema = z.object({
@@ -2575,6 +2576,54 @@ app.post('/v1/sessions/:id/complete', async (request, reply) => {
   await evaluateArcanaForUser(sql, userId);
   const exerciseIds = await sql<{ exercise_id: string }[]>`SELECT DISTINCT exercise_id FROM workout_sets WHERE session_id = ${updated.id} AND is_warmup = false`;
   const rankUpdates = await recomputeExerciseRanks(sql, userId, exerciseIds.map((row) => row.exercise_id));
+
+  // XP progression calculation (Transmute v1 rules)
+  // 1. Qualified completed session (>=3 working sets) earns 100 XP
+  // 2. Each of the first 10 working sets earns 10 XP (up to 100 XP)
+  // 3. First tier promotion in this session earns 50 XP
+  const workingSets = await sql<{ id: string; exercise_id: string }[]>`
+    SELECT id, exercise_id FROM workout_sets
+    WHERE session_id = ${updated.id} AND is_warmup = false
+    ORDER BY set_order ASC LIMIT 10
+  `;
+  const completionDate = updated.ended_at.toISOString().slice(0, 10);
+  if (workingSets.length >= 3) {
+    await awardXp(
+      sql,
+      userId,
+      'workout_session',
+      updated.id,
+      100,
+      'Completed qualified workout',
+      completionDate,
+      { sessionId: updated.id, workingSetCount: workingSets.length },
+    );
+  }
+  for (const set of workingSets) {
+    await awardXp(
+      sql,
+      userId,
+      'workout_set',
+      set.id,
+      10,
+      'Completed working set',
+      completionDate,
+      { sessionId: updated.id, setId: set.id },
+    );
+  }
+  if (rankUpdates.some((u) => u.established)) {
+    await awardXp(
+      sql,
+      userId,
+      'tier_promotion',
+      updated.id,
+      50,
+      'Promoted exercise tier',
+      completionDate,
+      { sessionId: updated.id },
+    );
+  }
+
   return reply.send({ session: { id: updated.id, status: 'completed', endedAt: updated.ended_at }, rankUpdates });
 });
 
@@ -3189,6 +3238,44 @@ app.delete('/v1/bodyweight/:id', async (request, reply) => {
   const [deleted] = await sql`DELETE FROM bodyweight_measurements WHERE id = ${params.data.id} AND user_id = ${userId} RETURNING id`;
   if (!deleted) return reply.code(404).send({ error: 'Measurement not found.' });
   return reply.code(204).send();
+});
+
+app.get('/v1/progression', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const progression = await getUserProgression(sql, userId);
+  return reply.send(progression);
+});
+
+app.post('/v1/rewards/:id/claim', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = z.object({ id: z.string().min(1) }).safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: 'Invalid reward id.' });
+
+  const rewardDef = REWARDS_CATALOG.find((r) => r.id === params.data.id);
+  if (!rewardDef) return reply.code(404).send({ error: 'Reward not found.' });
+
+  const progression = await getUserProgression(sql, userId);
+  if (progression.currentLevel < rewardDef.requiredLevel) {
+    return reply.code(400).send({
+      error: `Reward requires Level ${rewardDef.requiredLevel}. You are Level ${progression.currentLevel}.`,
+    });
+  }
+
+  // Idempotent claim
+  const [claimed] = await sql<{ id: string; claimed_at: Date }[]>`
+    INSERT INTO reward_claims (user_id, reward_id, level_at_claim, claimed_at)
+    VALUES (${userId}, ${rewardDef.id}, ${progression.currentLevel}, now())
+    ON CONFLICT (user_id, reward_id) DO UPDATE SET claimed_at = reward_claims.claimed_at
+    RETURNING id, claimed_at
+  `;
+
+  return reply.send({
+    claimed: true,
+    rewardId: rewardDef.id,
+    claimedAt: claimed.claimed_at.toISOString(),
+  });
 });
 
 app.post('/v1/friends', async (request, reply) => {
