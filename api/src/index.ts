@@ -10,7 +10,7 @@ import postgres from 'postgres';
 import type { Worker } from 'tesseract.js';
 import { z } from 'zod';
 
-import { requestAiBarcodeLookup, requestAiNutritionLabel, requestAiWorkoutDraft } from './ai-workout.js';
+import { requestAiBarcodeLookup, requestAiFoodPhoto, requestAiNutritionLabel, requestAiWorkoutDraft } from './ai-workout.js';
 import { getCalistreeCatalog, getCalistreeExerciseMetadata, searchCalistreeExercises } from './calistree.js';
 import { arcanaDefinitions, evaluateArcanaForUser, recordProgressionEvent } from './arcana.js';
 import { EXERCISE_RANK_RULE_VERSION, recomputeExerciseRanks, recomputeRankProjections, scoreExerciseRank } from './exercise-ranks.js';
@@ -181,6 +181,22 @@ const aiBarcodeFoodSchema = z.object({
   fatG: z.number().nonnegative().max(500),
   confidence: z.number().min(0).max(1),
 }).strict();
+const aiFoodPhotoCandidateSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  servingSizeValue: z.number().positive().max(5_000).nullable(),
+  servingSizeUnit: z.enum(['g', 'ml', 'oz', 'fl oz', 'cup', 'tbsp', 'tsp', 'piece', 'bottle', 'can', 'packet', 'slice', 'serving']).nullable(),
+  servingSizeText: z.string().trim().min(1).max(120).nullable(),
+  caloriesKcal: z.number().int().nonnegative().max(5_000),
+  proteinG: z.number().nonnegative().max(500),
+  carbsG: z.number().nonnegative().max(500),
+  fatG: z.number().nonnegative().max(500),
+  confidence: z.number().min(0).max(1).nullable(),
+  estimatedPortionGrams: z.number().positive().max(5_000).nullable(),
+});
+const aiFoodPhotoAnalysisSchema = z.object({
+  suggestedPortionGrams: z.number().positive().max(5_000).nullable(),
+  candidates: z.array(aiFoodPhotoCandidateSchema).min(1).max(5),
+});
 const aiWorkoutImportSchema = z.object({ plan: aiWorkoutDraftSchema });
 const reorderSchema = z.object({ direction: z.enum(['up', 'down']) });
 const exerciseSchema = z.object({
@@ -909,6 +925,16 @@ function parseAiBarcodeFood(response: string) {
   if (start < 0 || end <= start) throw new Error('The barcode assistant did not return JSON.');
   const parsed = aiBarcodeFoodSchema.safeParse(JSON.parse(unwrapped.slice(start, end + 1)));
   if (!parsed.success) throw new Error('The barcode assistant returned incomplete product nutrition.');
+  return parsed.data;
+}
+
+function parseAiFoodPhotoAnalysis(response: string) {
+  const unwrapped = response.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  const start = unwrapped.indexOf('{');
+  const end = unwrapped.lastIndexOf('}');
+  if (start < 0 || end <= start) throw new Error('The food photo assistant did not return JSON.');
+  const parsed = aiFoodPhotoAnalysisSchema.safeParse(JSON.parse(unwrapped.slice(start, end + 1)));
+  if (!parsed.success) throw new Error('The food photo assistant returned invalid food candidates.');
   return parsed.data;
 }
 
@@ -2748,6 +2774,52 @@ app.post('/v1/nutrition-label/parse', { bodyLimit: 13 * 1024 * 1024 }, async (re
   } finally {
     await worker?.terminate().catch(() => undefined);
   }
+});
+
+app.post('/v1/nutrition-photo/analyze', { bodyLimit: 13 * 1024 * 1024 }, async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = nutritionLabelOcrSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Choose a readable food photo smaller than 9 MB.' });
+  const encoded = parsed.data.imageBase64.replace(/^data:[^;]+;base64,/, '');
+
+  if (env.AI_WORKOUT_WORKER_URL && env.AI_WORKOUT_WORKER_TOKEN) {
+    try {
+      const response = await requestAiFoodPhoto({
+        workerUrl: env.AI_WORKOUT_WORKER_URL,
+        workerToken: env.AI_WORKOUT_WORKER_TOKEN,
+        imageBase64: encoded,
+      });
+      const analysis = parseAiFoodPhotoAnalysis(response);
+      return reply.send({
+        source: 'ai',
+        suggestedPortionGrams: analysis.suggestedPortionGrams,
+        candidates: analysis.candidates,
+      });
+    } catch (error) {
+      request.log.warn(error, 'Food-photo AI analysis failed; falling back to heuristic candidate');
+    }
+  }
+
+  // Fallback heuristic candidate if AI worker is not configured or fails
+  return reply.send({
+    source: 'simulation',
+    suggestedPortionGrams: 250,
+    candidates: [
+      {
+        name: 'Mixed plate',
+        caloriesKcal: 380,
+        proteinG: 28,
+        carbsG: 35,
+        fatG: 14,
+        servingSizeValue: 250,
+        servingSizeUnit: 'g',
+        servingSizeText: '250 g portion',
+        confidence: 0.70,
+        estimatedPortionGrams: 250,
+      },
+    ],
+  });
 });
 
 app.post('/v1/foods', async (request, reply) => {

@@ -87,3 +87,31 @@ export async function requestAiBarcodeLookup({
   }
   return body.text;
 }
+
+export async function requestAiFoodPhoto({
+  workerUrl,
+  workerToken,
+  imageBase64,
+}: { workerUrl: string; workerToken: string; imageBase64: string }) {
+  const response = await fetch(`${workerUrl.replace(/\/$/, '')}/food-photo`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${workerToken}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ imageBase64 }),
+    signal: AbortSignal.timeout(120_000),
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error || 'The food photo assistant could not respond right now.');
+  }
+
+  const body = await response.json().catch(() => null) as { text?: unknown } | null;
+  if (typeof body?.text !== 'string' || !body.text.trim()) {
+    throw new Error('The food photo assistant returned an empty response.');
+  }
+  return body.text;
+}
+
