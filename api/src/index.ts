@@ -342,10 +342,17 @@ const goalSchema = z.object({
   targetValue: z.number().finite().default(1),
   unit: z.string().trim().max(32).default('count'),
   targetDate: recordDateSchema.default(() => new Date(Date.now() + 90 * 86_400_000).toISOString().slice(0, 10)),
+  exerciseId: z.string().uuid().optional(),
+  trackingMode: z.enum(['reps', 'timed']).optional(),
   note: z.string().trim().max(800).optional(),
 });
 const goalUpdateSchema = goalSchema.partial().extend({ status: z.enum(['active', 'completed', 'archived']).optional() });
 const goalAssessmentSchema = z.object({ value: z.number().finite(), note: z.string().trim().min(2).max(1000), decision: z.string().trim().max(500).optional(), assessedAt: recordDateSchema.optional() });
+const bodyweightMeasurementSchema = z.object({
+  measuredAt: recordDateSchema,
+  weightKg: z.number().finite().positive().max(1000),
+  notes: z.string().trim().max(500).optional(),
+});
 const pinArcanaSchema = z.object({ slot: z.enum(['past', 'present', 'becoming']), cardId: z.string().min(1).max(32) });
 
 type UserRow = {
@@ -3037,8 +3044,15 @@ app.get('/v1/goals', async (request, reply) => {
   const userId = await requireUserId(request.headers.authorization);
   if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
   const goals = await sql`
-    SELECT g.*, coalesce(json_agg(a ORDER BY a.assessed_on DESC) FILTER (WHERE a.id IS NOT NULL), '[]'::json) AS assessments
-    FROM goals g LEFT JOIN goal_assessments a ON a.goal_id = g.id WHERE g.user_id = ${userId} GROUP BY g.id ORDER BY g.created_at DESC
+    SELECT g.*,
+      e.name AS exercise_name,
+      coalesce(json_agg(a ORDER BY a.assessed_on DESC) FILTER (WHERE a.id IS NOT NULL), '[]'::json) AS assessments
+    FROM goals g
+    LEFT JOIN exercises e ON e.id = g.exercise_id
+    LEFT JOIN goal_assessments a ON a.goal_id = g.id
+    WHERE g.user_id = ${userId}
+    GROUP BY g.id, e.name
+    ORDER BY g.created_at DESC
   `;
   return reply.send({ goals });
 });
@@ -3049,8 +3063,8 @@ app.post('/v1/goals', async (request, reply) => {
   const parsed = goalSchema.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: 'Invalid goal.' });
   const [goal] = await sql`
-    INSERT INTO goals (id, user_id, domain, metric_type, baseline_value, target_value, measurement_method, target_date, status, created_at)
-    VALUES (${randomUUID()}, ${userId}, ${parsed.data.category}, ${parsed.data.title}, ${parsed.data.baselineValue}, ${parsed.data.targetValue}, ${parsed.data.unit}, ${parsed.data.targetDate}, 'active', now()) RETURNING *
+    INSERT INTO goals (id, user_id, domain, metric_type, baseline_value, target_value, measurement_method, target_date, status, exercise_id, tracking_mode, created_at)
+    VALUES (${randomUUID()}, ${userId}, ${parsed.data.category}, ${parsed.data.title}, ${parsed.data.baselineValue}, ${parsed.data.targetValue}, ${parsed.data.unit}, ${parsed.data.targetDate}, 'active', ${parsed.data.exerciseId ?? null}, ${parsed.data.trackingMode ?? null}, now()) RETURNING *
   `;
   await recordProgressionEvent(sql, userId, 'goal_created', 'goal', goal.id, { category: goal.domain, title: goal.metric_type });
   return reply.code(201).send({ goal, arcana: await evaluateArcanaForUser(sql, userId) });
@@ -3063,12 +3077,32 @@ app.patch('/v1/goals/:id', async (request, reply) => {
   const parsed = goalUpdateSchema.safeParse(request.body);
   if (!params.success || !parsed.success) return reply.code(400).send({ error: 'Invalid goal update.' });
   const [goal] = await sql`
-    UPDATE goals SET domain = coalesce(${parsed.data.category ?? null}, domain), metric_type = coalesce(${parsed.data.title ?? null}, metric_type), baseline_value = coalesce(${parsed.data.baselineValue ?? null}, baseline_value), target_value = coalesce(${parsed.data.targetValue ?? null}, target_value), measurement_method = coalesce(${parsed.data.unit ?? null}, measurement_method), target_date = coalesce(${parsed.data.targetDate ?? null}, target_date), status = coalesce(${parsed.data.status ?? null}, status), completed_at = CASE WHEN ${parsed.data.status ?? null} = 'completed' THEN now() ELSE completed_at END
+    UPDATE goals SET
+      domain = coalesce(${parsed.data.category ?? null}, domain),
+      metric_type = coalesce(${parsed.data.title ?? null}, metric_type),
+      baseline_value = coalesce(${parsed.data.baselineValue ?? null}, baseline_value),
+      target_value = coalesce(${parsed.data.targetValue ?? null}, target_value),
+      measurement_method = coalesce(${parsed.data.unit ?? null}, measurement_method),
+      target_date = coalesce(${parsed.data.targetDate ?? null}, target_date),
+      status = coalesce(${parsed.data.status ?? null}, status),
+      exercise_id = coalesce(${parsed.data.exerciseId ?? null}, exercise_id),
+      tracking_mode = coalesce(${parsed.data.trackingMode ?? null}, tracking_mode),
+      completed_at = CASE WHEN ${parsed.data.status ?? null} = 'completed' THEN now() ELSE completed_at END
     WHERE id = ${params.data.id} AND user_id = ${userId} RETURNING *
   `;
   if (!goal) return reply.code(404).send({ error: 'Goal not found.' });
   await recordProgressionEvent(sql, userId, 'goal_updated', 'goal', goal.id, { status: goal.status });
   return reply.send({ goal, arcana: await evaluateArcanaForUser(sql, userId) });
+});
+
+app.delete('/v1/goals/:id', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: 'Invalid goal id.' });
+  const [deleted] = await sql`DELETE FROM goals WHERE id = ${params.data.id} AND user_id = ${userId} RETURNING id`;
+  if (!deleted) return reply.code(404).send({ error: 'Goal not found.' });
+  return reply.code(204).send();
 });
 
 app.post('/v1/goals/:id/assessments', async (request, reply) => {
@@ -3085,6 +3119,76 @@ app.post('/v1/goals/:id/assessments', async (request, reply) => {
   `;
   await recordProgressionEvent(sql, userId, 'goal_assessed', 'goal_assessment', assessment.id, { goalId: goal.id, value: assessment.value });
   return reply.code(201).send({ assessment, arcana: await evaluateArcanaForUser(sql, userId) });
+});
+
+app.get('/v1/bodyweight', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const rows = await sql<{
+    id: string;
+    measured_at: string;
+    weight_kg: string;
+    notes: string | null;
+    created_at: Date;
+  }[]>`
+    SELECT id, to_char(measured_at, 'YYYY-MM-DD') AS measured_at, weight_kg::text, notes, created_at
+    FROM bodyweight_measurements
+    WHERE user_id = ${userId}
+    ORDER BY measured_at DESC, created_at DESC
+  `;
+  return reply.send({
+    measurements: rows.map((r) => ({
+      id: r.id,
+      measuredAt: r.measured_at,
+      weightKg: Number(r.weight_kg),
+      notes: r.notes,
+      createdAt: r.created_at,
+    })),
+  });
+});
+
+app.post('/v1/bodyweight', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = bodyweightMeasurementSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid bodyweight measurement.' });
+
+  const [row] = await sql<{
+    id: string;
+    measured_at: string;
+    weight_kg: string;
+    notes: string | null;
+    created_at: Date;
+  }[]>`
+    INSERT INTO bodyweight_measurements (id, user_id, measured_at, weight_kg, notes, created_at, updated_at)
+    VALUES (${randomUUID()}, ${userId}, ${parsed.data.measuredAt}, ${parsed.data.weightKg}, ${parsed.data.notes ?? null}, now(), now())
+    ON CONFLICT (user_id, measured_at)
+    DO UPDATE SET
+      weight_kg = EXCLUDED.weight_kg,
+      notes = coalesce(EXCLUDED.notes, bodyweight_measurements.notes),
+      updated_at = now()
+    RETURNING id, to_char(measured_at, 'YYYY-MM-DD') AS measured_at, weight_kg::text, notes, created_at
+  `;
+
+  return reply.code(201).send({
+    measurement: {
+      id: row.id,
+      measuredAt: row.measured_at,
+      weightKg: Number(row.weight_kg),
+      notes: row.notes,
+      createdAt: row.created_at,
+    },
+  });
+});
+
+app.delete('/v1/bodyweight/:id', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const params = idParamsSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: 'Invalid measurement id.' });
+  const [deleted] = await sql`DELETE FROM bodyweight_measurements WHERE id = ${params.data.id} AND user_id = ${userId} RETURNING id`;
+  if (!deleted) return reply.code(404).send({ error: 'Measurement not found.' });
+  return reply.code(204).send();
 });
 
 app.post('/v1/friends', async (request, reply) => {
