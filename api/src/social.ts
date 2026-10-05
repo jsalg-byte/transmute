@@ -407,7 +407,7 @@ export async function getLeagueStandings(
   }[]>`
     SELECT 
       count(DISTINCT ers.exercise_id)::int AS exercise_count,
-      count(DISTINCT emc.muscle_group_id)::int AS group_count,
+      count(DISTINCT emc.muscle_group)::int AS group_count,
       up.league_opt_in
     FROM users u
     LEFT JOIN user_preferences up ON up.user_id = u.id
@@ -439,7 +439,7 @@ export async function getLeagueStandings(
       WHERE ers.user_id = u.id AND ers.is_current = true AND ers.tier IS NOT NULL
     ) >= 10
     AND (
-      SELECT count(DISTINCT emc.muscle_group_id)
+      SELECT count(DISTINCT emc.muscle_group)
       FROM exercise_rank_snapshots ers
       INNER JOIN exercise_muscle_contributions emc ON emc.exercise_id = ers.exercise_id
       WHERE ers.user_id = u.id AND ers.is_current = true AND ers.tier IS NOT NULL
