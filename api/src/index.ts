@@ -16,6 +16,16 @@ import { arcanaDefinitions, evaluateArcanaForUser, recordProgressionEvent } from
 import { EXERCISE_RANK_RULE_VERSION, recomputeExerciseRanks, recomputeRankProjections, scoreExerciseRank } from './exercise-ranks.js';
 import { awardXp, getUserProgression, REWARDS_CATALOG } from './progression.js';
 import { getStreaksAndCalendar, recomputeStreaksForUser } from './calendar-streaks.js';
+import {
+  getFriendsActivityFeed,
+  getFriendsLeaderboard,
+  getLeagueStandings,
+  getOrCreateInvitation,
+  getSocialPrivacyPreferences,
+  resolveInvitation,
+  revokeInvitation,
+  updateSocialPrivacyPreferences,
+} from './social.js';
 import { planDayExerciseUpdateSchema, workoutSetSchema } from './workout-tracking.js';
 
 const envSchema = z.object({
@@ -3946,6 +3956,76 @@ app.delete('/v1/friends/:id', async (request, reply) => {
   `;
   if (!deleted) return reply.code(404).send({ error: 'Friendship not found.' });
   return reply.code(204).send();
+});
+
+const socialPreferencesSchema = z.object({
+  socialActivityOptIn: z.boolean().optional(),
+  leagueOptIn: z.boolean().optional(),
+});
+
+app.get('/v1/social/preferences', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const prefs = await getSocialPrivacyPreferences(sql, userId);
+  return reply.send(prefs);
+});
+
+app.patch('/v1/social/preferences', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = socialPreferencesSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid social preferences payload.' });
+  const updated = await updateSocialPrivacyPreferences(sql, userId, parsed.data);
+  return reply.send(updated);
+});
+
+app.get('/v1/friends/activity', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const query = request.query as { cursor?: string; limit?: string };
+  const cursor = query.cursor;
+  const limit = query.limit ? parseInt(query.limit, 10) : 20;
+  const feed = await getFriendsActivityFeed(sql, userId, cursor, limit);
+  return reply.send(feed);
+});
+
+app.post('/v1/friends/invitations', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const invite = await getOrCreateInvitation(sql, userId);
+  return reply.send(invite);
+});
+
+app.get('/v1/friends/invitations/:token', async (request, reply) => {
+  const { token } = request.params as { token: string };
+  const resolved = await resolveInvitation(sql, token);
+  if (!resolved) return reply.code(404).send({ error: 'Invitation not found or expired.' });
+  return reply.send(resolved);
+});
+
+app.delete('/v1/friends/invitations/:token', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const { token } = request.params as { token: string };
+  const revoked = await revokeInvitation(sql, userId, token);
+  if (!revoked) return reply.code(404).send({ error: 'Invitation not found or already inactive.' });
+  return reply.send({ ok: true, revoked: true });
+});
+
+app.get('/v1/leaderboards/friends', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const query = request.query as { period?: string };
+  const leaderboard = await getFriendsLeaderboard(sql, userId, query.period);
+  return reply.send(leaderboard);
+});
+
+app.get('/v1/leagues', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const query = request.query as { period?: string };
+  const league = await getLeagueStandings(sql, userId, query.period);
+  return reply.send(league);
 });
 
 app.put('/v1/preferences/weight-unit', async (request, reply) => {
