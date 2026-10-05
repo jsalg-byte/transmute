@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { requestAiBarcodeLookup, requestAiNutritionLabel, requestAiWorkoutDraft } from './ai-workout.js';
 import { getCalistreeCatalog, getCalistreeExerciseMetadata, searchCalistreeExercises } from './calistree.js';
 import { arcanaDefinitions, evaluateArcanaForUser, recordProgressionEvent } from './arcana.js';
-import { EXERCISE_RANK_RULE_VERSION, recomputeExerciseRanks, recomputeRankProjections } from './exercise-ranks.js';
+import { EXERCISE_RANK_RULE_VERSION, recomputeExerciseRanks, recomputeRankProjections, scoreExerciseRank } from './exercise-ranks.js';
 import { planDayExerciseUpdateSchema, workoutSetSchema } from './workout-tracking.js';
 
 const envSchema = z.object({
@@ -89,6 +89,10 @@ const refreshSchema = z.object({
 const idParamsSchema = z.object({ id: z.string().uuid() });
 const exerciseRankParamsSchema = z.object({ exerciseId: z.string().uuid() });
 const exerciseRankQuerySchema = z.object({ q: z.string().trim().max(120).optional(), mode: z.enum(['reps', 'timed']).optional(), limit: z.coerce.number().int().min(1).max(100).default(40), offset: z.coerce.number().int().min(0).default(0) });
+const trainingAnalyticsQuerySchema = z.object({
+  period: z.enum(['7d', '14d', '30d']).default('14d'),
+  metric: z.enum(['duration', 'volume', 'reps']).default('volume'),
+});
 const planIdParamsSchema = z.object({ planId: z.string().uuid() });
 const planSchema = z.object({
   name: z.string().trim().min(2).max(80),
@@ -1881,6 +1885,216 @@ app.get('/v1/ranks/history', async (request, reply) => {
   return reply.send({ history: rows.reverse().map((item) => ({
     eligibleExerciseCount: item.eligible_exercise_count, score: item.score == null ? null : Number(item.score), tier: item.tier, calculatedAt: item.calculated_at,
   })) });
+});
+
+
+app.get('/v1/progress/training', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = trainingAnalyticsQuerySchema.safeParse(request.query);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid training query parameters.' });
+  const period = parsed.data.period;
+  const metric = parsed.data.metric;
+  const days = period === '7d' ? 7 : period === '30d' ? 30 : 14;
+
+  const [aggregates] = await sql<{
+    workout_count: number;
+    total_duration_seconds: number;
+    total_volume_kg: string;
+    total_reps: number;
+    working_set_count: number;
+  }[]>`
+    SELECT
+      count(DISTINCT ws.id)::int AS workout_count,
+      coalesce(sum(EXTRACT(EPOCH FROM (ws.ended_at - ws.started_at))), 0)::int AS total_duration_seconds,
+      coalesce(sum(CASE WHEN wset.duration_seconds IS NULL AND coalesce(wset.weight, 0) > 0 THEN wset.weight * wset.reps ELSE 0 END), 0)::text AS total_volume_kg,
+      coalesce(sum(CASE WHEN wset.duration_seconds IS NULL THEN wset.reps ELSE 0 END), 0)::int AS total_reps,
+      count(wset.id)::int AS working_set_count
+    FROM workout_sessions ws
+    LEFT JOIN workout_sets wset ON wset.session_id = ws.id AND wset.is_warmup = false
+    WHERE ws.user_id = ${userId}
+      AND ws.status = 'completed'
+      AND ws.ended_at IS NOT NULL
+      AND ws.ended_at >= now() - (${days} || ' days')::interval
+  `;
+
+  const dailyBuckets = await sql<{
+    date: string;
+    session_count: number;
+    duration_seconds: number;
+    volume_kg: string;
+    reps: number;
+  }[]>`
+    SELECT
+      to_char(ws.ended_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS date,
+      count(DISTINCT ws.id)::int AS session_count,
+      coalesce(sum(EXTRACT(EPOCH FROM (ws.ended_at - ws.started_at))), 0)::int AS duration_seconds,
+      coalesce(sum(CASE WHEN wset.duration_seconds IS NULL AND coalesce(wset.weight, 0) > 0 THEN wset.weight * wset.reps ELSE 0 END), 0)::text AS volume_kg,
+      coalesce(sum(CASE WHEN wset.duration_seconds IS NULL THEN wset.reps ELSE 0 END), 0)::int AS reps
+    FROM workout_sessions ws
+    LEFT JOIN workout_sets wset ON wset.session_id = ws.id AND wset.is_warmup = false
+    WHERE ws.user_id = ${userId}
+      AND ws.status = 'completed'
+      AND ws.ended_at IS NOT NULL
+      AND ws.ended_at >= now() - (${days} || ' days')::interval
+    GROUP BY to_char(ws.ended_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')
+    ORDER BY date ASC
+  `;
+
+  const prCountRow = await sql<{ count: number }[]>`
+    SELECT count(DISTINCT p.id)::int AS count
+    FROM progression_events p
+    WHERE p.user_id = ${userId}
+      AND p.event_type = 'personal_record'
+      AND p.created_at >= now() - (${days} || ' days')::interval
+  `;
+
+  return reply.send({
+    period,
+    metric,
+    days,
+    summary: {
+      workoutCount: aggregates.workout_count,
+      totalDurationSeconds: aggregates.total_duration_seconds,
+      totalVolumeKg: Number(aggregates.total_volume_kg),
+      totalReps: aggregates.total_reps,
+      workingSetCount: aggregates.working_set_count,
+      personalRecordCount: prCountRow[0]?.count ?? 0,
+    },
+    daily: dailyBuckets.map((b) => ({
+      date: b.date,
+      sessionCount: b.session_count,
+      durationSeconds: b.duration_seconds,
+      volumeKg: Number(b.volume_kg),
+      reps: b.reps,
+    })),
+  });
+});
+
+app.get('/v1/ranks/analysis', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+
+  // Category averages
+  const categoryStats = await sql<{
+    category: string;
+    ranked_count: number;
+    total_count: number;
+    avg_ratio: string | null;
+  }[]>`
+    SELECT
+      e.category,
+      count(ers.exercise_id) FILTER (WHERE ers.tier IS NOT NULL)::int AS ranked_count,
+      count(e.id)::int AS total_count,
+      avg(ers.best_value / nullif(ers.baseline_value, 0)) FILTER (WHERE ers.tier IS NOT NULL)::text AS avg_ratio
+    FROM exercises e
+    LEFT JOIN exercise_rank_snapshots ers
+      ON ers.exercise_id = e.id AND ers.user_id = ${userId} AND ers.is_current
+    GROUP BY e.category
+    ORDER BY e.category ASC
+  `;
+
+  // Tier distribution
+  const distributionRows = await sql<{
+    tier: string;
+    count: number;
+  }[]>`
+    SELECT
+      ers.tier,
+      count(ers.exercise_id)::int AS count
+    FROM exercise_rank_snapshots ers
+    WHERE ers.user_id = ${userId}
+      AND ers.is_current
+      AND ers.tier IS NOT NULL
+    GROUP BY ers.tier
+  `;
+
+  // Weekly rank up counts in the last 12 weeks
+  const weeklyRankUps = await sql<{
+    week_start: string;
+    rank_up_count: number;
+  }[]>`
+    SELECT
+      to_char(date_trunc('week', calculated_at), 'YYYY-MM-DD') AS week_start,
+      count(id)::int AS rank_up_count
+    FROM exercise_rank_snapshots
+    WHERE user_id = ${userId}
+      AND tier IS NOT NULL
+      AND calculated_at >= now() - interval '12 weeks'
+    GROUP BY date_trunc('week', calculated_at)
+    ORDER BY week_start ASC
+  `;
+
+  // Upcoming targets / examples: rank snapshot with next_threshold
+  const upcomingTargets = await sql<{
+    exercise_id: string;
+    exercise_name: string;
+    category: string;
+    muscle_group: string | null;
+    tracking_mode: string;
+    metric: string;
+    best_value: string;
+    baseline_value: string;
+    tier: string;
+    progress_points: number;
+    next_threshold: string | null;
+  }[]>`
+    SELECT
+      e.id AS exercise_id,
+      e.name AS exercise_name,
+      e.category,
+      e.muscle_group,
+      ers.tracking_mode,
+      ers.metric,
+      ers.best_value::text,
+      ers.baseline_value::text,
+      ers.tier,
+      ers.progress_points,
+      ers.next_threshold::text
+    FROM exercise_rank_snapshots ers
+    INNER JOIN exercises e ON e.id = ers.exercise_id
+    WHERE ers.user_id = ${userId}
+      AND ers.is_current
+      AND ers.tier IS NOT NULL
+      AND ers.next_threshold IS NOT NULL
+    ORDER BY ers.progress_points DESC, e.name ASC
+    LIMIT 6
+  `;
+
+  return reply.send({
+    categories: categoryStats.map((c) => {
+      const avgRatio = c.avg_ratio != null ? Number(c.avg_ratio) : null;
+      const tier = avgRatio != null ? scoreExerciseRank(1, avgRatio).tier : null;
+      return {
+        category: c.category,
+        rankedCount: c.ranked_count,
+        totalCount: c.total_count,
+        averageRatio: avgRatio,
+        averageTier: tier,
+      };
+    }),
+    tierDistribution: distributionRows.map((d) => ({
+      tier: d.tier,
+      count: d.count,
+    })),
+    weeklyRankUps: weeklyRankUps.map((w) => ({
+      weekStart: w.week_start,
+      count: w.rank_up_count,
+    })),
+    upcomingTargets: upcomingTargets.map((t) => ({
+      exerciseId: t.exercise_id,
+      exerciseName: t.exercise_name,
+      category: t.category,
+      muscleGroup: t.muscle_group,
+      trackingMode: t.tracking_mode,
+      metric: t.metric,
+      currentValue: Number(t.best_value),
+      baselineValue: Number(t.baseline_value),
+      tier: t.tier,
+      progressPoints: t.progress_points,
+      nextThreshold: t.next_threshold != null ? Number(t.next_threshold) : null,
+    })),
+  });
 });
 
 app.post('/v1/sessions', async (request, reply) => {

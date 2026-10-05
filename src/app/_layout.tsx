@@ -27,6 +27,7 @@ function RootNavigator() {
         <Stack.Screen name="index" />
         <Stack.Screen name="sign-in" />
         <Stack.Screen name="sign-up" />
+        <Stack.Screen name="+not-found" />
         <Stack.Screen name="first-login" />
         <Stack.Screen name="dashboard" />
         <Stack.Screen name="workout-plans" />
