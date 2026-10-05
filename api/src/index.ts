@@ -2971,7 +2971,7 @@ app.get('/v1/nutrition/diary', async (request, reply) => {
     protein_g: string;
     carbs_g: string;
     fat_g: string;
-    serving_size_value: string | null;
+    serving_size_g: string | null;
     serving_size_unit: string | null;
     serving_size_text: string | null;
   }[]>`
@@ -2986,7 +2986,7 @@ app.get('/v1/nutrition/diary', async (request, reply) => {
       f.protein_g,
       f.carbs_g,
       f.fat_g,
-      f.serving_size_value,
+      f.serving_size_g,
       f.serving_size_unit,
       f.serving_size_text
     FROM meal_logs ml
@@ -3003,10 +3003,12 @@ app.get('/v1/nutrition/diary', async (request, reply) => {
 
   const meals = mealRows.map((row) => {
     const qty = parseFloat(row.quantity) || 1;
-    const cals = Math.round(row.calories_kcal * qty);
-    const protein = parseFloat((parseFloat(row.protein_g) * qty).toFixed(1));
-    const carbs = parseFloat((parseFloat(row.carbs_g) * qty).toFixed(1));
-    const fat = parseFloat((parseFloat(row.fat_g) * qty).toFixed(1));
+    const servingG = row.serving_size_g ? parseFloat(row.serving_size_g) : 100;
+    const scale = servingG > 0 ? qty / servingG : 1;
+    const cals = Math.round(row.calories_kcal * scale);
+    const protein = parseFloat((parseFloat(row.protein_g) * scale).toFixed(1));
+    const carbs = parseFloat((parseFloat(row.carbs_g) * scale).toFixed(1));
+    const fat = parseFloat((parseFloat(row.fat_g) * scale).toFixed(1));
 
     totalCalories += cals;
     totalProtein += protein;
@@ -3024,7 +3026,7 @@ app.get('/v1/nutrition/diary', async (request, reply) => {
       proteinG: protein,
       carbsG: carbs,
       fatG: fat,
-      servingSizeValue: row.serving_size_value ? parseFloat(row.serving_size_value) : null,
+      servingSizeValue: row.serving_size_g ? parseFloat(row.serving_size_g) : null,
       servingSizeUnit: row.serving_size_unit,
       servingSizeText: row.serving_size_text,
     };
