@@ -234,7 +234,7 @@ const nutritionLabelOcrSchema = z.object({
   imageBase64: z.string().min(100).max(12_000_000),
 });
 const mealSchema = z.object({
-  mealType: z.enum(['breakfast', 'lunch', 'dinner', 'snack']),
+  mealType: z.enum(['breakfast', 'lunch', 'dinner', 'snack', 'uncategorized']),
   consumedAt: z.string().datetime().optional(),
   items: z.array(z.object({
     foodId: z.string().uuid(),
@@ -242,9 +242,19 @@ const mealSchema = z.object({
   })).min(1).max(20),
 });
 const mealUpdateSchema = z.object({
-  mealType: z.enum(['breakfast', 'lunch', 'dinner', 'snack']),
+  mealType: z.enum(['breakfast', 'lunch', 'dinner', 'snack', 'uncategorized']),
   consumedAt: z.string().datetime(),
   grams: z.number().positive().max(5000),
+});
+const nutritionTargetInputSchema = z.object({
+  caloriesTarget: z.number().int().positive().max(20000),
+  proteinGTarget: z.number().nonnegative().max(1000).default(0),
+  carbsGTarget: z.number().nonnegative().max(2000).default(0),
+  fatGTarget: z.number().nonnegative().max(1000).default(0),
+  effectiveDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+});
+const nutritionDiaryQuerySchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
 const fastSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('start'), note: z.string().trim().max(240).optional(), targetMinutes: z.number().int().min(1).max(60 * 24 * 7).optional() }),
@@ -2835,6 +2845,216 @@ app.delete('/v1/meals/:id', async (request, reply) => {
   await recordProgressionEvent(sql, userId, 'meal_deleted', 'meal_log', params.data.id, {});
   await evaluateArcanaForUser(sql, userId);
   return reply.code(204).send();
+});
+
+app.get('/v1/nutrition/targets', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+
+  const [target] = await sql<{
+    id: string;
+    calories_target: number;
+    protein_g_target: string;
+    carbs_g_target: string;
+    fat_g_target: string;
+    effective_date: string;
+  }[]>`
+    SELECT id, calories_target, protein_g_target, carbs_g_target, fat_g_target, effective_date::text
+    FROM daily_nutrition_targets
+    WHERE user_id = ${userId}
+    ORDER BY effective_date DESC, created_at DESC
+    LIMIT 1
+  `;
+
+  if (!target) {
+    return reply.send({ target: null });
+  }
+
+  return reply.send({
+    target: {
+      id: target.id,
+      caloriesTarget: target.calories_target,
+      proteinGTarget: parseFloat(target.protein_g_target),
+      carbsGTarget: parseFloat(target.carbs_g_target),
+      fatGTarget: parseFloat(target.fat_g_target),
+      effectiveDate: target.effective_date,
+    },
+  });
+});
+
+app.post('/v1/nutrition/targets', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = nutritionTargetInputSchema.safeParse(request.body);
+  if (!parsed.success) return reply.code(400).send({ error: 'Invalid target payload.' });
+
+  const effectiveDate = parsed.data.effectiveDate || new Date().toISOString().substring(0, 10);
+
+  const [saved] = await sql<{
+    id: string;
+    calories_target: number;
+    protein_g_target: string;
+    carbs_g_target: string;
+    fat_g_target: string;
+    effective_date: string;
+  }[]>`
+    INSERT INTO daily_nutrition_targets (
+      user_id, calories_target, protein_g_target, carbs_g_target, fat_g_target, effective_date
+    )
+    VALUES (
+      ${userId},
+      ${parsed.data.caloriesTarget},
+      ${parsed.data.proteinGTarget.toString()},
+      ${parsed.data.carbsGTarget.toString()},
+      ${parsed.data.fatGTarget.toString()},
+      ${effectiveDate}
+    )
+    ON CONFLICT (user_id, effective_date)
+    DO UPDATE SET
+      calories_target = EXCLUDED.calories_target,
+      protein_g_target = EXCLUDED.protein_g_target,
+      carbs_g_target = EXCLUDED.carbs_g_target,
+      fat_g_target = EXCLUDED.fat_g_target,
+      created_at = now()
+    RETURNING id, calories_target, protein_g_target, carbs_g_target, fat_g_target, effective_date::text
+  `;
+
+  return reply.code(201).send({
+    target: {
+      id: saved.id,
+      caloriesTarget: saved.calories_target,
+      proteinGTarget: parseFloat(saved.protein_g_target),
+      carbsGTarget: parseFloat(saved.carbs_g_target),
+      fatGTarget: parseFloat(saved.fat_g_target),
+      effectiveDate: saved.effective_date,
+    },
+  });
+});
+
+app.get('/v1/nutrition/diary', async (request, reply) => {
+  const userId = await requireUserId(request.headers.authorization);
+  if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+  const parsed = nutritionDiaryQuerySchema.safeParse(request.query);
+  const targetDate = parsed.success && parsed.data.date ? parsed.data.date : new Date().toISOString().substring(0, 10);
+
+  // Fetch effective target on or before targetDate
+  const [targetRow] = await sql<{
+    id: string;
+    calories_target: number;
+    protein_g_target: string;
+    carbs_g_target: string;
+    fat_g_target: string;
+    effective_date: string;
+  }[]>`
+    SELECT id, calories_target, protein_g_target, carbs_g_target, fat_g_target, effective_date::text
+    FROM daily_nutrition_targets
+    WHERE user_id = ${userId} AND effective_date <= ${targetDate}
+    ORDER BY effective_date DESC, created_at DESC
+    LIMIT 1
+  `;
+
+  // Fetch user timezone from preferences for local date grouping
+  const [pref] = await sql<{ timezone?: string | null }[]>`
+    SELECT timezone FROM user_preferences WHERE user_id = ${userId} LIMIT 1
+  `;
+  const tz = pref?.timezone || 'UTC';
+
+  // Query meal logs for the given local date
+  const mealRows = await sql<{
+    id: string;
+    meal_type: string;
+    quantity: string;
+    consumed_at: Date;
+    food_id: string;
+    food_name: string;
+    calories_kcal: number;
+    protein_g: string;
+    carbs_g: string;
+    fat_g: string;
+    serving_size_value: string | null;
+    serving_size_unit: string | null;
+    serving_size_text: string | null;
+  }[]>`
+    SELECT
+      ml.id,
+      ml.meal_type,
+      ml.quantity,
+      ml.consumed_at,
+      f.id AS food_id,
+      f.name AS food_name,
+      f.calories_kcal,
+      f.protein_g,
+      f.carbs_g,
+      f.fat_g,
+      f.serving_size_value,
+      f.serving_size_unit,
+      f.serving_size_text
+    FROM meal_logs ml
+    JOIN foods f ON f.id = ml.food_id
+    WHERE ml.user_id = ${userId}
+      AND (ml.consumed_at AT TIME ZONE ${tz})::date = ${targetDate}::date
+    ORDER BY ml.consumed_at ASC
+  `;
+
+  let totalCalories = 0;
+  let totalProtein = 0;
+  let totalCarbs = 0;
+  let totalFat = 0;
+
+  const meals = mealRows.map((row) => {
+    const qty = parseFloat(row.quantity) || 1;
+    const cals = Math.round(row.calories_kcal * qty);
+    const protein = parseFloat((parseFloat(row.protein_g) * qty).toFixed(1));
+    const carbs = parseFloat((parseFloat(row.carbs_g) * qty).toFixed(1));
+    const fat = parseFloat((parseFloat(row.fat_g) * qty).toFixed(1));
+
+    totalCalories += cals;
+    totalProtein += protein;
+    totalCarbs += carbs;
+    totalFat += fat;
+
+    return {
+      id: row.id,
+      foodId: row.food_id,
+      foodName: row.food_name,
+      mealType: row.meal_type,
+      grams: qty,
+      consumedAt: row.consumed_at.toISOString(),
+      caloriesKcal: cals,
+      proteinG: protein,
+      carbsG: carbs,
+      fatG: fat,
+      servingSizeValue: row.serving_size_value ? parseFloat(row.serving_size_value) : null,
+      servingSizeUnit: row.serving_size_unit,
+      servingSizeText: row.serving_size_text,
+    };
+  });
+
+  const target = targetRow
+    ? {
+        id: targetRow.id,
+        caloriesTarget: targetRow.calories_target,
+        proteinGTarget: parseFloat(targetRow.protein_g_target),
+        carbsGTarget: parseFloat(targetRow.carbs_g_target),
+        fatGTarget: parseFloat(targetRow.fat_g_target),
+        effectiveDate: targetRow.effective_date,
+      }
+    : null;
+
+  const remainingCalories = target ? target.caloriesTarget - totalCalories : null;
+
+  return reply.send({
+    date: targetDate,
+    target,
+    consumed: {
+      calories: totalCalories,
+      proteinG: parseFloat(totalProtein.toFixed(1)),
+      carbsG: parseFloat(totalCarbs.toFixed(1)),
+      fatG: parseFloat(totalFat.toFixed(1)),
+    },
+    remainingCalories,
+    meals,
+  });
 });
 
 app.post('/v1/meals/:id/photo/presign', async (request, reply) => {
