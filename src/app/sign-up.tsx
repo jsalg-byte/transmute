@@ -22,8 +22,8 @@ export default function SignUpScreen() {
   const [loading, setLoading] = useState(false);
 
   const attemptRegistration = async () => {
-    if (!username.trim() || password.length < 8) {
-      setNotice('Choose a username and a password of at least 8 characters.');
+    if (!username.trim() || password.length < 7) {
+      setNotice('Choose a username and a password of at least 7 characters.');
       return;
     }
 
@@ -62,7 +62,7 @@ export default function SignUpScreen() {
           <View style={styles.form}>
             <Field label="Username" placeholder="Choose a username" placeholderTextColor={palette.mutedSoft} value={username} onChangeText={setUsername} autoComplete="username" onSubmitEditing={() => displayNameInput.current?.focus()} returnKeyType="next" />
             <Field label="Display Name (optional)" placeholder="What should we call you?" placeholderTextColor={palette.mutedSoft} value={name} onChangeText={setName} autoComplete="name" inputRef={displayNameInput} onSubmitEditing={() => passwordInput.current?.focus()} returnKeyType="next" />
-            <Field label="Password" placeholder="At least 8 characters" placeholderTextColor={palette.mutedSoft} value={password} onChangeText={setPassword} autoComplete="new-password" inputRef={passwordInput} onSubmitEditing={attemptRegistration} returnKeyType="done" secureTextEntry />
+            <Field label="Password" placeholder="At least 7 characters" placeholderTextColor={palette.mutedSoft} value={password} onChangeText={setPassword} autoComplete="new-password" inputRef={passwordInput} onSubmitEditing={attemptRegistration} returnKeyType="done" secureTextEntry />
             <Pressable accessibilityRole="button" disabled={loading} onPress={attemptRegistration} style={({ pressed }) => [styles.button, pressed && styles.buttonPressed, loading && styles.buttonDisabled]}>
               <Text style={styles.buttonText}>{loading ? 'Registering…' : 'Register'}</Text>
             </Pressable>

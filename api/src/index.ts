@@ -72,21 +72,21 @@ const usernameSchema = z
 const registrationSchema = z.object({
   username: usernameSchema,
   name: z.string().trim().min(2).max(80).optional(),
-  password: z.string().min(8).max(128),
+  password: z.string().min(7).max(128),
 });
 
 const adminCreateUserSchema = z.object({
   username: usernameSchema,
   name: z.string().trim().min(2).max(80).optional(),
   email: z.string().trim().email().max(120).optional(),
-  password: z.string().min(8).max(128),
+  password: z.string().min(7).max(128),
 });
 
 const adminUpdateUserSchema = z.object({
   username: usernameSchema,
   name: z.string().trim().min(2).max(80).optional(),
   email: z.string().trim().email().max(120).optional(),
-  password: z.string().min(8).max(128).optional(),
+  password: z.string().min(7).max(128).optional(),
 });
 
 const loginSchema = z.object({
