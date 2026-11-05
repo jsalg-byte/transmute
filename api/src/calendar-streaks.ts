@@ -164,7 +164,7 @@ export async function recomputeStreaksForUser(sql: Sql, userId: string): Promise
     INSERT INTO user_streak_snapshots (
       user_id, current_streak, best_streak, last_qualified_date, updated_at
     ) VALUES (
-      ${userId}, ${currentStreak}, ${bestStreak}, ${lastQualified ? lastQualified + '::date' : null}, now()
+      ${userId}, ${currentStreak}, ${bestStreak}, ${lastQualified}::date, now()
     )
     ON CONFLICT (user_id) DO UPDATE SET
       current_streak = EXCLUDED.current_streak,

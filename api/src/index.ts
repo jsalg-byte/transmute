@@ -2622,7 +2622,7 @@ app.post('/v1/sessions/:id/complete', async (request, reply) => {
   const params = idParamsSchema.safeParse(request.params);
   if (!params.success) return reply.code(400).send({ error: 'Invalid session id.' });
   const [updated] = await sql<{ id: string; ended_at: Date }[]>`
-    UPDATE workout_sessions SET status = 'completed', ended_at = now()
+    UPDATE workout_sessions SET status = 'completed', ended_at = coalesce(ended_at, now())
     WHERE id = ${params.data.id} AND user_id = ${userId}
     RETURNING id, ended_at
   `;
